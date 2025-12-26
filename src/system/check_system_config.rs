@@ -9,7 +9,6 @@ use std::time::Duration;
 use thiserror::Error;
 
 
-
 #[derive(Error, Debug)]
 pub enum ErrorType {
     #[error("❌ Error genérico")]
@@ -26,11 +25,14 @@ pub enum ErrorType {
 #[derive(Debug, Default)]
 pub struct MtlsConfig {
     pub listener: Option<u16>,
+    pub tls_version: Option<String>,
     pub cafile: Option<PathBuf>,
     pub certfile: Option<PathBuf>,
     pub keyfile: Option<PathBuf>,
     pub require_certificate: bool,
     pub use_identity_as_username: bool,
+    pub allow_anonymous: bool,
+    pub connection_messages: bool,
 }
 
 
@@ -39,43 +41,47 @@ pub fn check_system_config() {
 
     match which("mosquitto") {
         Ok(path) => println!("✅ Éxito: El binario de mosquitto existe y es ejecutable en: {:?}", path),
-        Err(_) => println!("❌ Fallo: El binario de mosquitto no existe"),
+        Err(_) => {
+            eprintln!("❌ Error: El binario de mosquitto no existe. Instale mosquitto y vuelva a intentarlo");
+            eprintln!("   Por favor instálalo con: sudo apt install mosquitto");
+            std::process::exit(1);  // Salir con codigo 1 (indica error al sistema operativo)
+        },
     }
 
     match service_active("mosquitto") {
         Ok(_) => println!("✅ Éxito: El servicio de sistema mosquitto está activo"),
-        Err(_) => println!("❌ Fallo: El servicio de sistema mosquitto no está activo"),
+        Err(_) => eprintln!("❌ Error: El servicio de sistema mosquitto no está activo"),
     }
 
     match mosquitto_listening("127.0.0.1:8883") {
         Ok(_) => println!("✅ Éxito: El servicio de sistema mosquitto está escuchando"),
-        Err(_) => println!("❌ Fallo: El servicio de sistema mosquitto no está escuchando"),
+        Err(_) => eprintln!("❌ Error: El servicio de sistema mosquitto no está escuchando"),
     }
 
     match validate_mosquitto_file_config("/etc/mosquitto/mosquitto.conf") {
-        Ok(_) => println!("✅ Éxito: El archivo conf es válido (existe y con contenido)"),
-        Err(error) => println!("{}", error),
+        Ok(_) => println!("✅ Éxito: El archivo mosquitto.conf es válido"),
+        Err(error) => eprintln!("{}", error),
     }
 
-    let cfg = match check_mtls_config(Path::new("/etc/mosquitto/mosquitto.conf")) {
+    let cfg = match validate_mtls_file_config() {
         Ok(config) => {
             println!("✅ Éxito: Mosquitto configurado para mTLS");
             config
         },
         Err(e) => {
-            println!("❌ FALLO: Mosquitto no está configurado para exigir certificados mTLS");
+            eprintln!("❌ Error: Mosquitto no está configurado para exigir certificados mTLS");
             return;
         }
     };
 
-    match check_certificate_files(&cfg) {
-        Ok(_) => println!("✅ ÉXITO: Los certificados mTLS correctos"),
-        Err(error) => println!("{}", error),
+    match validate_certificate_files(&cfg) {
+        Ok(_) => println!("✅ Éxito: Los certificados mTLS son correctos"),
+        Err(error) => eprintln!("{}", error),
     }
 
-    match check_certificate_coherence(&cfg) {
-        Ok(_) => println!("✅ ÉXITO: Los certificados mTLS son coherentes"),
-        Err(error) => println!("{}", error),
+    match validate_certificate_coherence(&cfg) {
+        Ok(_) => println!("✅ Éxito: Los certificados mTLS son coherentes"),
+        Err(error) => eprintln!("{}", error),
     }
 }
 
@@ -102,10 +108,9 @@ fn service_active(service_name: &str) -> Result<(), ErrorType>  {
 
 fn mosquitto_listening(address: &str) -> Result<(), ErrorType> {
     let timeout = Duration::from_secs(1);
-    match TcpStream::connect_timeout(&address.parse().unwrap(), timeout) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(ErrorType::Generic),
-    }
+    let addr = address.parse().map_err(|_| ErrorType::Generic)?;
+    TcpStream::connect_timeout(&addr, timeout)?;
+    Ok(())
 }
 
 
@@ -113,26 +118,75 @@ fn validate_mosquitto_file_config(ruta: &str) -> Result<(), ErrorType> {
     let path = Path::new(ruta);
 
     let metadata = std::fs::metadata(path).map_err(|_| ErrorType::Config(
-        "❌ FALLO: El archivo de configuración de mosquitto no existe o no es accesible".into()
+        "❌ Error: El archivo de configuración de mosquitto no existe o no es accesible".into()
     ))?;
 
     if metadata.len() == 0 {
-        return Err(ErrorType::Config("❌ FALLO: El archivo de configuración de mosquitto esta vacío".into()));
+        return Err(ErrorType::Config("❌ Error: El archivo de configuración de mosquitto esta vacío".into()));
     }
+
+    scan_mosquitto_file_config(&path)?;
 
     Ok(())
 }
 
 
-pub fn check_mtls_config(main_conf: &Path) -> Result<MtlsConfig, ErrorType> {
+fn scan_mosquitto_file_config(path: &Path) -> Result<(), ErrorType> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let key = parts.next().unwrap();
+        let value = parts.next();
+
+        match (key, value) {
+            ("include_dir", Some(dir)) => {
+                return if Path::new(dir) == Path::new("/etc/mosquitto/conf.d") {
+                    Ok(())
+                } else {
+                    Err(ErrorType::Config("❌ Error: El directorio de configuración de mTLS no es correcto".into()))
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(ErrorType::Config("❌ Error: No se encontró el directorio de configuración de mTLS".into()))
+}
+
+
+fn validate_mtls_file_config() -> Result<MtlsConfig, ErrorType> {
     let mut config = MtlsConfig::default();
-    scan_mosquitto_config(main_conf, &mut config)?;
+    scan_mtls_config(Path::new("/etc/mosquitto/conf.d/mtls.conf"), &mut config)?;
 
     if config.listener.is_some()
-        && config.cafile.is_some()
-        && config.certfile.is_some()
-        && config.keyfile.is_some()
+        && match config.tls_version.as_deref() {
+            Some("tlsv1.2") => true,
+            _ => false,
+        }
+        && config.cafile
+            .as_deref()
+            .is_some_and(|p| p == Path::new("/etc/mosquitto/certs/ca.crt"))
+
+        && config.certfile
+            .as_deref()
+            .is_some_and(|p| p == Path::new("/etc/mosquitto/certs/server.crt"))
+
+        && config.keyfile
+            .as_deref()
+            .is_some_and(|p| p == Path::new("/etc/mosquitto/certs/server.key"))
+
         && config.require_certificate
+        && config.use_identity_as_username
+        && !config.allow_anonymous
+        && config.connection_messages
     {
         Ok(config)
     } else {
@@ -141,7 +195,7 @@ pub fn check_mtls_config(main_conf: &Path) -> Result<MtlsConfig, ErrorType> {
 }
 
 
-fn scan_mosquitto_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> {
+fn scan_mtls_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
 
@@ -159,22 +213,14 @@ fn scan_mosquitto_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorT
 
         match (key, value) {
             ("listener", Some(p)) => cfg.listener = p.parse().ok(),
+            ("tls_version", Some(p)) => cfg.tls_version = p.parse().ok(),
             ("cafile", Some(p)) => cfg.cafile = Some(PathBuf::from(p)),
             ("certfile", Some(p)) => cfg.certfile = Some(PathBuf::from(p)),
             ("keyfile", Some(p)) => cfg.keyfile = Some(PathBuf::from(p)),
             ("require_certificate", Some("true")) => cfg.require_certificate = true,
-            ("use_identity_as_username", Some("true")) => {
-                cfg.use_identity_as_username = true
-            }
-
-            ("include_file", Some(p)) => {
-                scan_mosquitto_config(Path::new(p), cfg)?;
-            }
-
-            ("include_dir", Some(dir)) => {
-                scan_include_dir(Path::new(dir), cfg)?;
-            }
-
+            ("use_identity_as_username", Some("true")) => cfg.use_identity_as_username = true,
+            ("allow_anonymous", Some("false")) => cfg.allow_anonymous = false,
+            ("connection_messages", Some("true")) => cfg.connection_messages = true,
             _ => {}
         }
     }
@@ -183,25 +229,7 @@ fn scan_mosquitto_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorT
 }
 
 
-fn scan_include_dir(dir: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().and_then(|e| e.to_str()) == Some("conf") {
-            scan_mosquitto_config(&path, cfg)?;
-        }
-    }
-
-    Ok(())
-}
-
-
-pub fn check_certificate_files(cfg: &MtlsConfig) -> Result<(), ErrorType> {
+fn validate_certificate_files(cfg: &MtlsConfig) -> Result<(), ErrorType> {
     check_cert_file(cfg.cafile.as_ref().unwrap(), false)?;
     check_cert_file(cfg.certfile.as_ref().unwrap(), false)?;
     check_cert_file(cfg.keyfile.as_ref().unwrap(), true)?;
@@ -213,11 +241,11 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
     let metadata = fs::metadata(path)?;
 
     if !metadata.is_file() {
-        return Err(ErrorType::Config("❌ FALLO: Certificado mTLS inválido".into()));
+        return Err(ErrorType::Config("❌ Error: Certificado mTLS inválido".into()));
     }
 
     if metadata.len() == 0 {
-        return Err(ErrorType::Config("❌ FALLO: Certificado mTLS vacío".into()));
+        return Err(ErrorType::Config("❌ Error: Certificado mTLS vacío".into()));
     }
 
     #[cfg(unix)]
@@ -226,7 +254,7 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
         let mode = metadata.permissions().mode();
 
         if is_private_key && (mode & 0o077) != 0 {
-            return Err(ErrorType::Config("❌ FALLO: Permisos de clave privada inseguros".into()));
+            return Err(ErrorType::Config("❌ Error: Permisos de clave privada inseguros".into()));
         }
     }
 
@@ -234,21 +262,21 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
 }
 
 
-pub fn check_certificate_coherence(cfg: &MtlsConfig) -> Result<(), ErrorType> {
+fn validate_certificate_coherence(cfg: &MtlsConfig) -> Result<(), ErrorType> {
     let ca = cfg.cafile.as_ref().unwrap();
     let cert = cfg.certfile.as_ref().unwrap();
     let key = cfg.keyfile.as_ref().unwrap();
 
     if ca == cert {
-        return Err(ErrorType::Config("❌ FALLO: Los certificados de CA y Server son iguales".into()));
+        return Err(ErrorType::Config("❌ Error: Los certificados de CA y Server son iguales".into()));
     }
 
     if cert.extension() != Some("crt".as_ref()) {
-        return Err(ErrorType::Config("❌ FALLO: La extensión de archivo del certificado Server es inválida".into()));
+        return Err(ErrorType::Config("❌ Error: La extensión de archivo del certificado Server es inválida".into()));
     }
 
     if key.extension() != Some("key".as_ref()) {
-        return Err(ErrorType::Config("❌ FALLO: La extensión de archivo de la clave privada es inválida".into()));
+        return Err(ErrorType::Config("❌ Error: La extensión de archivo de la clave privada es inválida".into()));
     }
 
     Ok(())

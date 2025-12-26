@@ -2,6 +2,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use crate::system::check_system_config::check_system_config;
+use crate::system::fix_system_config::fix_system_config;
 use crate::system::fsm::{first_config_task, tarea_mqtt};
 
 mod system;
@@ -36,4 +37,5 @@ async fn main() {
 
 fn main() {
     check_system_config();
+    fix_system_config();
 }
