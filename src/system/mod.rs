@@ -1,4 +1,4 @@
 pub mod network;
 pub mod fsm;
-pub mod check_system_config;
-pub mod fix_system_config;
+pub mod check_config;
+pub mod configurate_system;

@@ -1,106 +1,179 @@
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::sync::broadcast;
+use crate::message::msg_type::{Message};
+use crate::system::check_config::{check_system_config, ErrorType};
+use crate::system::configurate_system::configurate_system;
 
-
+pub enum InternalEvent {
+    ServerConnected,
+    ServerDisconnected,
+    IncomingFromServer(Vec<u8>),
+    LocalBrokerConnected,
+    LocalBrokerDisconnected,
+    FromLocalBroker(Vec<u8>),
+}
 
 
 #[derive(Debug, Clone)]
 pub enum SubStateInit {
-    Check,
-    FirstConfig,
-    Setup,
+    CheckConfig,
+    ConfigurateSystem,
+    InitSystem,
+}
+
+
+#[derive(Debug, Clone)]
+pub enum SubStateBalanceMode {
+    InitBalanceMode,
+    InHandshake,
+    Quorum(SubStateQuorum),
+    Phase(SubStatePhase),
+    OutHandshake,
+}
+
+
+#[derive(Debug, Clone)]
+pub enum SubStateQuorum {
+    CheckQuorum,
+    RepeatHandshake,
+}
+
+
+#[derive(Debug, Clone)]
+pub enum SubStatePhase {
+    Alert,
+    Data,
+    Monitor,
 }
 
 
 #[derive(Debug, Clone)]
 pub enum State {
     Init(SubStateInit),
-    BalanceMode,
+    BalanceMode(SubStateBalanceMode),
     Normal,
     SafeMode,
-    StoreMessages,
-    Error,
 }
 
 
-#[derive(Debug)]
-pub enum Event {
-    CheckOk,
-    CheckError,
-    FirstConfigOk,
-    SetupOk,
-    ConfiguracionCompletada,
-    CriticalError,
-    Ping,
+#[derive(Debug, Clone)]
+pub enum EventSystem {
+    EventServerConnected,
+    EventServerDisconnected,
+    EventLocalBrokerConnected,
+    EventLocalBrokerDisconnected,
+    EventMessage(Message),
+    EventSystemOk,
+}
+
+
+pub enum Flag {
+    MosquittoConf,
+    MtlsConf,
+    MosquittoServiceInactive,
+    Null,
 }
 
 
 
-pub async fn run_fsm(mut rx: mpsc::Receiver<Event>) {
-    let mut state = State::Init(SubStateInit::Check);
+pub async fn run_fsm(tx: broadcast::Sender<EventSystem>, mut rx: mpsc::Receiver<EventSystem>) {
+    let mut state = State::Init(SubStateInit::CheckConfig);
+    let mut flag = Flag::Null;
 
     while let Some(event) = rx.recv().await {
 
-        match (&state, event) {
+        match (&state, &flag) {
 
-            (State::Init(SubStateInit::Check), _) => {
-                println!("Apenas se pone a ejecutar la maquina, no hay eventos activo, entrara aca");
-
-
+            (State::Init(SubStateInit::CheckConfig), _) => {
+                match check_system_config() {
+                    Ok(_) => state = State::Init(SubStateInit::InitSystem),
+                    Err(error) => {
+                        match error {
+                            ErrorType::MosquittoNotInstalled => std::process::exit(1),  // Salir con codigo 1 (indica error al sistema operativo)
+                            ErrorType::MosquittoServiceInactive => {
+                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MosquittoServiceInactive);
+                            },
+                            ErrorType::MosquittoConf(_) => {
+                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MosquittoConf);
+                            },
+                            ErrorType::MtlsConfig(_) => {
+                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MtlsConf);
+                            },
+                            _ => {}
+                        }
+                    },
+                }
             }
 
-            (State::Init(SubStateInit::Setup), Event::SetupOk) => {
-                println!("El setup fue correcto.");
-                state = State::BalanceMode;
+            (State::Init(SubStateInit::InitSystem), _) => {
+                tx.send(EventSystem::EventSystemOk).unwrap();
+                state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);
             },
 
-            (State::Init(SubStateInit::FirstConfig), Event::FirstConfigOk) => {
-                println!("El sistema fue configurado correctamente.");
-                state = State::Init(SubStateInit::Setup)
+            (State::Init(SubStateInit::ConfigurateSystem), _) => {
+                match configurate_system(&flag) {
+                    Ok(_) => state = State::Init(SubStateInit::InitSystem),
+                    Err(error) => {
+                        state = State::Init(SubStateInit::CheckConfig);
+                    }
+                }
             },
 
-            (_, Event::CriticalError) => {
-                println!("¡Error detectado! Reiniciando subsistemas...");
-                state = State::Error;
-            },
+            (State::BalanceMode(SubStateBalanceMode::InitBalanceMode), _) => {
+                println!("entry: update_balance_epoch()");
+                state = State::BalanceMode(SubStateBalanceMode::InHandshake);
+            }
 
-            (State::Error, _) => {
-                println!("Hacer un hard-reset, error critico!");
-            },
+            (State::BalanceMode(SubStateBalanceMode::InHandshake), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
+            }
 
-            _ => {
-                println!("Unhandled event");
-            },
+            (State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum)), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake));
+                state = State::Normal;
+                state = State::SafeMode;
+                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert));
+            }
+
+            (State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake)), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
+            }
+
+            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert)), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data));
+            }
+
+            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data)), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor));
+            }
+
+            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor)), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::OutHandshake);
+            }
+
+            (State::BalanceMode(SubStateBalanceMode::OutHandshake), _) => {
+                println!("entry: update_state_msg(), ...");
+                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
+            }
+
+            (State::Normal, _) => {
+                println!("entry: normal");
+            }
+
+            (State::SafeMode, _) => {
+                println!("entry: safe");
+                state = State::Normal;
+            }
         }
     }
 }
 
-
-
-
-
-// --- TAREA DE CONFIGURACIÓN ---
-pub async fn first_config_task(tx: mpsc::Sender<Event>) {
-    println!("Verificando certificados y carpetas...");
-
-    // En la vida real usarías tokio::fs para chequear archivos de forma asíncrona
-    sleep(Duration::from_secs(2)).await;
-
-    // Si todo sale bien o terminamos de configurar:
-    println!("Configuración exitosa.");
-    let _ = tx.send(Event::FirstConfigOk).await;
-}
-
-
-
-// --- TAREA DE RED / MQTT SIMULADA ---
-pub async fn tarea_mqtt(tx: mpsc::Sender<Event>) {
-    // Simulamos que llega un mensaje cada 3 segundos
-    loop {
-        sleep(Duration::from_secs(3)).await;
-        //let _ = tx.send(Event::MqttMensaje("Payload Binario".to_string())).await;
-    }
-}
 
 
 

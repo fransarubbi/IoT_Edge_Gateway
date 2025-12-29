@@ -12,13 +12,25 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ErrorType {
     #[error("❌ Error genérico")]
+    MosquittoNotInstalled,
+
+    #[error("❌ Error genérico")]
+    MosquittoServiceInactive,
+
+    #[error("❌ Error genérico")]
     Generic,
 
     #[error("{0}")]
-    Config(String),
+    MosquittoConf(String),
+
+    #[error("{0}")]
+    MtlsConfig(String),
 
     #[error("❌ Error de lectura/escritura (IO)")]
     Io(#[from] io::Error),
+
+    #[error("❌ Error de lectura/escritura (IO)")]
+    ClientError(#[from] rumqttc::ClientError),
 }
 
 
@@ -37,40 +49,49 @@ pub struct MtlsConfig {
 
 
 
-pub fn check_system_config() {
+pub fn check_system_config() -> Result<(), ErrorType> {
 
     match which("mosquitto") {
         Ok(path) => println!("✅ Éxito: El binario de mosquitto existe y es ejecutable en: {:?}", path),
         Err(_) => {
             eprintln!("❌ Error: El binario de mosquitto no existe. Instale mosquitto y vuelva a intentarlo");
             eprintln!("   Por favor instálalo con: sudo apt install mosquitto");
-            std::process::exit(1);  // Salir con codigo 1 (indica error al sistema operativo)
+            return Err(ErrorType::MosquittoNotInstalled);
         },
     }
 
     match service_active("mosquitto") {
         Ok(_) => println!("✅ Éxito: El servicio de sistema mosquitto está activo"),
-        Err(_) => eprintln!("❌ Error: El servicio de sistema mosquitto no está activo"),
+        Err(_) => {
+            eprintln!("❌ Error: El servicio de sistema mosquitto no está activo");
+            return Err(ErrorType::MosquittoServiceInactive);
+        },
     }
 
     match mosquitto_listening("127.0.0.1:8883") {
         Ok(_) => println!("✅ Éxito: El servicio de sistema mosquitto está escuchando"),
-        Err(_) => eprintln!("❌ Error: El servicio de sistema mosquitto no está escuchando"),
+        Err(_) => {
+            eprintln!("❌ Error: El servicio de sistema mosquitto no está escuchando");
+            return Err(ErrorType::MosquittoServiceInactive);
+        },
     }
 
-    match validate_mosquitto_file_config("/etc/mosquitto/mosquitto.conf") {
+    match validate_mosquitto_conf(Path::new("/etc/mosquitto/mosquitto.conf")) {
         Ok(_) => println!("✅ Éxito: El archivo mosquitto.conf es válido"),
-        Err(error) => eprintln!("{}", error),
+        Err(error) => {
+            eprintln!("{}", error);
+            return Err(error);
+        },
     }
 
-    let cfg = match validate_mtls_file_config() {
+    let cfg = match validate_mtls_conf(Path::new("/etc/mosquitto/conf.d/mtls.conf")) {
         Ok(config) => {
             println!("✅ Éxito: Mosquitto configurado para mTLS");
             config
         },
-        Err(e) => {
-            eprintln!("❌ Error: Mosquitto no está configurado para exigir certificados mTLS");
-            return;
+        Err(error) => {
+            eprintln!("{}", error);
+            return Err(error);
         }
     };
 
@@ -81,8 +102,13 @@ pub fn check_system_config() {
 
     match validate_certificate_coherence(&cfg) {
         Ok(_) => println!("✅ Éxito: Los certificados mTLS son coherentes"),
-        Err(error) => eprintln!("{}", error),
+        Err(error) => {
+            eprintln!("{}", error);
+            return Err(ErrorType::Generic);
+        },
     }
+
+    Ok(())
 }
 
 
@@ -114,15 +140,14 @@ fn mosquitto_listening(address: &str) -> Result<(), ErrorType> {
 }
 
 
-fn validate_mosquitto_file_config(ruta: &str) -> Result<(), ErrorType> {
-    let path = Path::new(ruta);
+fn validate_mosquitto_conf(path: &Path) -> Result<(), ErrorType> {
 
-    let metadata = std::fs::metadata(path).map_err(|_| ErrorType::Config(
+    let metadata = std::fs::metadata(path).map_err(|_| ErrorType::MosquittoConf(
         "❌ Error: El archivo de configuración de mosquitto no existe o no es accesible".into()
     ))?;
 
     if metadata.len() == 0 {
-        return Err(ErrorType::Config("❌ Error: El archivo de configuración de mosquitto esta vacío".into()));
+        return Err(ErrorType::MosquittoConf("❌ Error: El archivo de configuración de mosquitto esta vacío".into()));
     }
 
     scan_mosquitto_file_config(&path)?;
@@ -132,7 +157,9 @@ fn validate_mosquitto_file_config(ruta: &str) -> Result<(), ErrorType> {
 
 
 fn scan_mosquitto_file_config(path: &Path) -> Result<(), ErrorType> {
-    let file = File::open(path)?;
+    let file = File::open(path)
+        .map_err(|_| ErrorType::MtlsConfig("❌ Error: No se pudo abrir el archivo mosquitto conf".into()))?;
+
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
@@ -152,19 +179,19 @@ fn scan_mosquitto_file_config(path: &Path) -> Result<(), ErrorType> {
                 return if Path::new(dir) == Path::new("/etc/mosquitto/conf.d") {
                     Ok(())
                 } else {
-                    Err(ErrorType::Config("❌ Error: El directorio de configuración de mTLS no es correcto".into()))
+                    Err(ErrorType::MosquittoConf("❌ Error: El directorio de configuración de mTLS no es correcto".into()))
                 }
             }
             _ => {}
         }
     }
-    Err(ErrorType::Config("❌ Error: No se encontró el directorio de configuración de mTLS".into()))
+    Err(ErrorType::MosquittoConf("❌ Error: No se encontró el directorio de configuración de mTLS".into()))
 }
 
 
-fn validate_mtls_file_config() -> Result<MtlsConfig, ErrorType> {
+fn validate_mtls_conf(path: &Path) -> Result<MtlsConfig, ErrorType> {
     let mut config = MtlsConfig::default();
-    scan_mtls_config(Path::new("/etc/mosquitto/conf.d/mtls.conf"), &mut config)?;
+    scan_mtls_config(&path, &mut config)?;
 
     if config.listener.is_some()
         && match config.tls_version.as_deref() {
@@ -190,13 +217,14 @@ fn validate_mtls_file_config() -> Result<MtlsConfig, ErrorType> {
     {
         Ok(config)
     } else {
-        Err(ErrorType::Generic)
+        Err(ErrorType::MtlsConfig("❌ Error: No se encontraron los parámetros esperados en mtls conf".into()))
     }
 }
 
 
 fn scan_mtls_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> {
-    let file = File::open(path)?;
+    let file = File::open(path)
+        .map_err(|_| ErrorType::MtlsConfig("❌ Error: No se pudo abrir el archivo mtls conf".into()))?;
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
@@ -241,11 +269,11 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
     let metadata = fs::metadata(path)?;
 
     if !metadata.is_file() {
-        return Err(ErrorType::Config("❌ Error: Certificado mTLS inválido".into()));
+        return Err(ErrorType::MtlsConfig("❌ Error: Certificado mTLS inválido".into()));
     }
 
     if metadata.len() == 0 {
-        return Err(ErrorType::Config("❌ Error: Certificado mTLS vacío".into()));
+        return Err(ErrorType::MtlsConfig("❌ Error: Certificado mTLS vacío".into()));
     }
 
     #[cfg(unix)]
@@ -254,7 +282,7 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
         let mode = metadata.permissions().mode();
 
         if is_private_key && (mode & 0o077) != 0 {
-            return Err(ErrorType::Config("❌ Error: Permisos de clave privada inseguros".into()));
+            return Err(ErrorType::MtlsConfig("❌ Error: Permisos de clave privada inseguros".into()));
         }
     }
 
@@ -268,15 +296,15 @@ fn validate_certificate_coherence(cfg: &MtlsConfig) -> Result<(), ErrorType> {
     let key = cfg.keyfile.as_ref().unwrap();
 
     if ca == cert {
-        return Err(ErrorType::Config("❌ Error: Los certificados de CA y Server son iguales".into()));
+        return Err(ErrorType::MtlsConfig("❌ Error: Los certificados de CA y Server son iguales".into()));
     }
 
     if cert.extension() != Some("crt".as_ref()) {
-        return Err(ErrorType::Config("❌ Error: La extensión de archivo del certificado Server es inválida".into()));
+        return Err(ErrorType::MtlsConfig("❌ Error: La extensión de archivo del certificado Server es inválida".into()));
     }
 
     if key.extension() != Some("key".as_ref()) {
-        return Err(ErrorType::Config("❌ Error: La extensión de archivo de la clave privada es inválida".into()));
+        return Err(ErrorType::MtlsConfig("❌ Error: La extensión de archivo de la clave privada es inválida".into()));
     }
 
     Ok(())

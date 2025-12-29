@@ -5,30 +5,66 @@ use std::process::Command;
 use std::ffi::CString;
 use libc::{chown, uid_t, gid_t};
 use std::os::unix::fs::PermissionsExt;
-use super::check_system_config::ErrorType;
+use crate::system::fsm::Flag;
+use super::check_config::ErrorType;
 
 
-pub fn fix_system_config() {
 
-    match activate_service() {
-        Ok(_) => println!("✅ Éxito: Servicio mosquitto activado correctamente"),
-        Err(_) => eprintln!("❌ Error: Systemctl falló al activar mosquitto"),
+pub fn configurate_system(event: &Flag) -> Result<(), ErrorType> {
+
+    match event {
+        Flag::MosquittoServiceInactive => {
+            match activate_service() {
+                Ok(_) => println!("✅ Éxito: Servicio mosquitto activado correctamente"),
+                Err(_) => eprintln!("❌ Error: Systemctl falló al activar mosquitto"),
+            }
+            
+            match create_mosquitto_conf() {
+                Ok(_) => println!("✅ Éxito: Archivo de configuración de mosquitto creado correctamente"),
+                Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mosquitto"),
+            }
+
+            match create_mtls_config_file() {
+                Ok(_) => println!("✅ Éxito: Archivo de configuración de mTLS creado correctamente"),
+                Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mTLS"),
+            }
+
+            match restart_service() {
+                Ok(_) => println!("✅ Éxito: Servicio mosquitto reiniciado correctamente"),
+                Err(_) => eprintln!("❌ Error: Systemctl falló al reiniciar mosquitto"),
+            }
+        },
+        Flag::MosquittoConf => {
+            match create_mosquitto_conf() {
+                Ok(_) => println!("✅ Éxito: Archivo de configuración de mosquitto creado correctamente"),
+                Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mosquitto"),
+            }
+
+            match create_mtls_config_file() {
+                Ok(_) => println!("✅ Éxito: Archivo de configuración de mTLS creado correctamente"),
+                Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mTLS"),
+            }
+
+            match restart_service() {
+                Ok(_) => println!("✅ Éxito: Servicio mosquitto reiniciado correctamente"),
+                Err(_) => eprintln!("❌ Error: Systemctl falló al reiniciar mosquitto"),
+            }
+        },
+        Flag::MtlsConf => {
+            match create_mtls_config_file() {
+                Ok(_) => println!("✅ Éxito: Archivo de configuración de mTLS creado correctamente"),
+                Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mTLS"),
+            }
+
+            match restart_service() {
+                Ok(_) => println!("✅ Éxito: Servicio mosquitto reiniciado correctamente"),
+                Err(_) => eprintln!("❌ Error: Systemctl falló al reiniciar mosquitto"),
+            }
+        },
+        _ => {},
     }
-
-    match create_mosquitto_conf() {
-        Ok(_) => println!("✅ Éxito: Archivo de configuración de mosquitto creado correctamente"),
-        Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mosquitto"),
-    }
-
-    match create_mtls_config_file() {
-        Ok(_) => println!("✅ Éxito: Archivo de configuración de mTLS creado correctamente"),
-        Err(_) => eprintln!("❌ Error: No se pudo crear el archivo de configuración de mTLS"),
-    }
-
-    match restart_service() {
-        Ok(_) => println!("✅ Éxito: Servicio mosquitto reiniciado correctamente"),
-        Err(_) => eprintln!("❌ Error: Systemctl falló al reiniciar mosquitto"),
-    }
+    
+    Ok(())
 }
 
 
