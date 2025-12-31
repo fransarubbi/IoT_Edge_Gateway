@@ -1,6 +1,5 @@
 use std::fs;
-use std::io::Read;
-use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Packet, Transport, Incoming, TlsConfiguration};
+use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
@@ -49,7 +48,7 @@ pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: Bro
                 }
                 Event::Incoming(Incoming::Publish(packet)) => {
                     event_tx.send(
-                        InternalEvent::IncomingFromServer(packet.payload.to_vec())
+                        InternalEvent::FromServer(packet.payload.to_vec())
                     ).await.unwrap();
                 }
                 _ => {}

@@ -644,6 +644,7 @@ name = "iot_broker"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "log",
  "rmp-serde",
  "rumqttc",
  "serde",

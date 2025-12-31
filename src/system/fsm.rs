@@ -1,20 +1,24 @@
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
 use crate::message::msg_type::{Message};
 use crate::system::check_config::{check_system_config, ErrorType};
 use crate::system::configurate_system::configurate_system;
 
+
+#[derive(PartialEq)]
 pub enum InternalEvent {
     ServerConnected,
     ServerDisconnected,
-    IncomingFromServer(Vec<u8>),
+    FromServer(Vec<u8>),
     LocalBrokerConnected,
     LocalBrokerDisconnected,
     FromLocalBroker(Vec<u8>),
+    IncomingMessage(Vec<u8>),
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubStateInit {
     CheckConfig,
     ConfigurateSystem,
@@ -22,7 +26,7 @@ pub enum SubStateInit {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubStateBalanceMode {
     InitBalanceMode,
     InHandshake,
@@ -32,14 +36,14 @@ pub enum SubStateBalanceMode {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubStateQuorum {
     CheckQuorum,
     RepeatHandshake,
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubStatePhase {
     Alert,
     Data,
@@ -47,7 +51,7 @@ pub enum SubStatePhase {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum State {
     Init(SubStateInit),
     BalanceMode(SubStateBalanceMode),
@@ -56,7 +60,7 @@ pub enum State {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EventSystem {
     EventServerConnected,
     EventServerDisconnected,
