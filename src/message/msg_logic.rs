@@ -1,16 +1,17 @@
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
-use crate::message::msg_type::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer};
+use crate::message::msg_type::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus};
 use crate::message::msg_type::MessageToServer::HubToServer;
 use crate::system::fsm::{InternalEvent};
+use crate::database::domain::TableDataVector;
 
 
 
 pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                         mut rx_from_fsm: mpsc::Receiver<MessageToHub>,
                         mut rx_from_server: mpsc::Receiver<MessageToHub>,
-                        mut rx_broker_status: watch::Receiver<InternalEvent>) {
+                        mut rx_broker_status: watch::Receiver<BrokerStatus>) {
     let mut broker_is_connected = false;
     loop {
         tokio::select! {
@@ -18,13 +19,12 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                 if status_result.is_ok() {
                     let nuevo_estado = rx_broker_status.borrow();
                     match *nuevo_estado {
-                        InternalEvent::LocalBrokerConnected => {
+                        BrokerStatus::Connected => {
                             broker_is_connected = true;
                         },
-                        InternalEvent::LocalBrokerDisconnected => {
+                        BrokerStatus::Disconnected => {
                             broker_is_connected = false;
                         },
-                        _ => {}
                     }
                 } else {
                     break;
@@ -81,7 +81,6 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
 }
 
 
-
 // tx para multiples rx -> fsm y dba
 // rx del mqtt
 // rx_server_status proveniente del Server Status
@@ -93,7 +92,7 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
 pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
                           tx_to_server: mpsc::Sender<MessageToServer>,
                           mut rx: mpsc::Receiver<InternalEvent>,
-                          mut rx_server_status: watch::Receiver<InternalEvent>) {
+                          mut rx_server_status: watch::Receiver<ServerStatus>) {
 
     let mut server_is_connected = false;
     loop {
@@ -102,13 +101,12 @@ pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
                 if status_result.is_ok() {
                     let nuevo_estado = rx_server_status.borrow();
                     match *nuevo_estado {
-                        InternalEvent::LocalBrokerConnected => {
+                        ServerStatus::Connected => {
                             server_is_connected = true;
                         },
-                        InternalEvent::LocalBrokerDisconnected => {
+                        ServerStatus::Disconnected => {
                             server_is_connected = false;
                         },
-                        _ => {}
                     }
                 } else {
                     break;
@@ -190,6 +188,89 @@ pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
     }
 }
 
+
+pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
+                           mut rx_from_fsm: mpsc::Receiver<MessageToServer>,
+                           mut rx_from_hub: mpsc::Receiver<MessageToServer>,
+                           mut rx_from_dba: mpsc::Receiver<MessageToServer>,
+                           mut rx_from_dba_batch: mpsc::Receiver<Vec<TableDataVector>>) {
+
+    loop {
+        tokio::select! {
+            msg_from_fsm = rx_from_fsm.recv() => {
+                match msg_from_fsm {
+                    _ => {},
+                }
+            }
+            
+            msg_from_hub = rx_from_hub.recv() => {
+                match msg_from_hub {
+                    Some(HubToServer(hub_to_server)) => {
+                        match hub_to_server {
+                            MessageFromHub::Report(report) => {
+                                send_to_hub(&tx_to_server, "/topico/topico", 0, &report).await;
+                            },
+                            MessageFromHub::Settings(settings) => {
+                                send_to_hub(&tx_to_server, "/topico/topico", 0, &settings).await;
+                            },
+                            MessageFromHub::AlertAir(alert_air) => {
+                                send_to_hub(&tx_to_server, "/topico/topico", 0, &alert_air).await;
+                            },
+                            MessageFromHub::AlertTem(alert_temp) => {
+                                send_to_hub(&tx_to_server, "/topico/topico", 0, &alert_temp).await;
+                            },
+                            MessageFromHub::Monitor(monitor) => {
+                                send_to_hub(&tx_to_server, "/topico/topico", 0, &monitor).await;
+                            },
+                            _ => {},
+                        }
+                    }
+                    _ => {},
+                }
+                
+            }
+            
+            msg_from_dba = rx_from_dba.recv() => {
+                match msg_from_dba {
+                    _ => {},
+                }
+            }
+            
+            msg_from_dba_batch = rx_from_dba_batch.recv() => {
+                match msg_from_dba_batch {
+                    _ => {},
+                }
+            }
+        }
+    }
+}
+
+
+pub async fn msg_from_server(tx_to_fsm: mpsc::Sender<MessageFromServer>,
+                            tx_to_hub: mpsc::Sender<MessageFromServer>,
+                            mut rx_from_server: mpsc::Receiver<InternalEvent>) {
+    loop {
+        match rx_from_server.recv().await {
+            Some(InternalEvent::IncomingMessage(packet)) => {
+                let decoded: Result<MessageFromServer, _> = from_slice(&packet);
+                match decoded {
+                    Ok(MessageFromServer::Settings(settings)) => {
+                        if tx_to_hub.send(MessageFromServer::Settings(settings)).await.is_err() {
+                            log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
+                        }
+                    },
+                    Ok(MessageFromServer::Network(network)) => {
+                        if tx_to_fsm.send(MessageFromServer::Network(network)).await.is_err() {
+                            log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            _ => {},
+        }
+    }
+}
 
 
 async fn send_to_hub<T: Serialize>(

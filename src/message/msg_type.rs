@@ -1,9 +1,9 @@
-use std::net::Ipv4Addr;
 use serde::{Serialize, Deserialize};
+use sqlx::{FromRow, Type};
 use crate::system::fsm::{State};
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
 pub enum DestinationType {
     Node,
     Edge,
@@ -11,7 +11,7 @@ pub enum DestinationType {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
 pub struct Metadata {
     pub sender_user_id: String,
     pub destination_type: DestinationType,
@@ -20,13 +20,14 @@ pub struct Metadata {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct Measurement {
+    #[sqlx(flatten)]
     pub metadata: Metadata,
-    pub ipv4addr: Ipv4Addr,
+    pub ipv4addr: String,
     pub wifi_ssid: String,
-    pub pulse_counter: u64,
-    pub pulse_max_duration: u64,
+    pub pulse_counter: i64,
+    pub pulse_max_duration: i64,
     pub temperature: f32,
     pub humidity: f32,
     pub co2_ppm: f32,
@@ -34,35 +35,38 @@ pub struct Measurement {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertAir {
+    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub co2_initial_ppm: f32,
     pub co2_actual_ppm: f32,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertTh {
+    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub initial_temp: f32,
     pub actual_temp: f32,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
 pub struct Monitor {
+    #[sqlx(flatten)]
     pub metadata: Metadata,
-    pub mem_free: u64,
-    pub mem_free_hm: u64,
-    pub mem_free_block: u64,
-    pub mem_free_internal: u64,
-    pub stack_free_min_coll: u64,
-    pub stack_free_min_pub: u64,
-    pub stack_free_min_mic: u64,
-    pub stack_free_min_th: u64,
-    pub stack_free_min_air: u64,
-    pub stack_free_min_mon: u64,
+    pub mem_free: i64,
+    pub mem_free_hm: i64,
+    pub mem_free_block: i64,
+    pub mem_free_internal: i64,
+    pub stack_free_min_coll: i64,
+    pub stack_free_min_pub: i64,
+    pub stack_free_min_mic: i64,
+    pub stack_free_min_th: i64,
+    pub stack_free_min_air: i64,
+    pub stack_free_min_mon: i64,
     pub wifi_ssid: String,
     pub wifi_rssi: i8,
     pub active_time: String,
@@ -169,20 +173,17 @@ pub enum MessageFromServer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageToServer {
     HubToServer(MessageFromHub),
-
 }
 
 
-pub enum MessageFlags {
-    Handshake,
-    Data,
-}
+pub enum BrokerStatus { Connected, Disconnected }
 
 
-enum BrokerStatus { Connected, Disconnected }
-enum ServerStatus { Connected, Disconnected }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerStatus { Connected, Disconnected }
 
 
+pub enum DataRequest { Get, NotGet }
 
 
 #[derive(Debug, Serialize, Deserialize)]

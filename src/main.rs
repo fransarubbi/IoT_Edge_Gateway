@@ -6,14 +6,13 @@ use tokio::time::sleep;
 use system::fsm::{run_fsm};
 use mqtt::local::run_local_mqtt;
 use mqtt::remote::run_remote_mqtt;
-use crate::message::msg_type::internal_message_processor;
 use crate::system::fsm::{EventSystem, InternalEvent};
 
 mod system;
 mod mqtt;
 mod message;
-mod sqlite;
-
+mod database;
+mod config;
 
 #[tokio::main]
 async fn main() {
@@ -27,12 +26,12 @@ async fn main() {
     tokio::spawn(run_fsm(tx_fsm, rx_fsm));
 
     let tx_local_mqtt = tx_mqtt.clone();
-    tokio::spawn(run_local_mqtt(tx_local_mqtt, rx_local_mqtt));
+    //tokio::spawn(run_local_mqtt(tx_local_mqtt, rx_local_mqtt));
 
     let tx_remote_mqtt = tx_mqtt.clone();
     tokio::spawn(run_remote_mqtt(tx_remote_mqtt, rx_remote_mqtt));
 
-    tokio::spawn(internal_message_processor(tx_ip, rx_ip));
+   
 
 
 
