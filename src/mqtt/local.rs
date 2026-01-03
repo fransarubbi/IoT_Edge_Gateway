@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
-use crate::message::msg_type::SerializedMessage;
+use crate::message::domain::SerializedMessage;
 use crate::system::check_config::ErrorType;
 use crate::system::fsm::{EventSystem, InternalEvent};
 

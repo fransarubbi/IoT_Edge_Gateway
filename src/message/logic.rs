@@ -1,8 +1,8 @@
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
-use crate::message::msg_type::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus};
-use crate::message::msg_type::MessageToServer::HubToServer;
+use crate::message::domain::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus};
+use crate::message::domain::MessageToServer::HubToServer;
 use crate::system::fsm::{InternalEvent};
 use crate::database::domain::TableDataVector;
 
@@ -11,7 +11,8 @@ use crate::database::domain::TableDataVector;
 pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                         mut rx_from_fsm: mpsc::Receiver<MessageToHub>,
                         mut rx_from_server: mpsc::Receiver<MessageToHub>,
-                        mut rx_broker_status: watch::Receiver<BrokerStatus>) {
+                        mut rx_broker_status: watch::Receiver<BrokerStatus>
+                        ) {
     let mut broker_is_connected = false;
     loop {
         tokio::select! {
@@ -92,7 +93,8 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
 pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
                           tx_to_server: mpsc::Sender<MessageToServer>,
                           mut rx: mpsc::Receiver<InternalEvent>,
-                          mut rx_server_status: watch::Receiver<ServerStatus>) {
+                          mut rx_server_status: watch::Receiver<ServerStatus>
+                          ) {
 
     let mut server_is_connected = false;
     loop {
@@ -193,7 +195,8 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
                            mut rx_from_fsm: mpsc::Receiver<MessageToServer>,
                            mut rx_from_hub: mpsc::Receiver<MessageToServer>,
                            mut rx_from_dba: mpsc::Receiver<MessageToServer>,
-                           mut rx_from_dba_batch: mpsc::Receiver<Vec<TableDataVector>>) {
+                           mut rx_from_dba_batch: mpsc::Receiver<Vec<TableDataVector>>
+                          ) {
 
     loop {
         tokio::select! {
@@ -248,7 +251,8 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
 
 pub async fn msg_from_server(tx_to_fsm: mpsc::Sender<MessageFromServer>,
                             tx_to_hub: mpsc::Sender<MessageFromServer>,
-                            mut rx_from_server: mpsc::Receiver<InternalEvent>) {
+                            mut rx_from_server: mpsc::Receiver<InternalEvent>
+                            ) {
     loop {
         match rx_from_server.recv().await {
             Some(InternalEvent::IncomingMessage(packet)) => {
@@ -273,12 +277,12 @@ pub async fn msg_from_server(tx_to_fsm: mpsc::Sender<MessageFromServer>,
 }
 
 
-async fn send_to_hub<T: Serialize>(
-    tx: &mpsc::Sender<SerializedMessage>,
-    topic: &str,
-    qos: u8,
-    msg: &T,
-) {
+async fn send_to_hub<T: Serialize>(tx: &mpsc::Sender<SerializedMessage>, 
+                                   topic: &str, 
+                                   qos: u8, 
+                                   msg: &T,
+                                   ) {
+    
     match to_vec(msg) {
         Ok(payload) => {
             let serialized = SerializedMessage::new(

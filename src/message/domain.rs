@@ -183,6 +183,7 @@ pub enum BrokerStatus { Connected, Disconnected }
 pub enum ServerStatus { Connected, Disconnected }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataRequest { Get, NotGet }
 
 

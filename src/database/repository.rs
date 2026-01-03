@@ -2,7 +2,7 @@ use std::time::Duration;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{FromRow, SqlitePool};
 use crate::config::sqlite::{LIMIT, WAIT_FOR};
-use crate::database::domain::{TableData, Table, TableDataVector};
+use crate::database::domain::{Table, TableDataVector};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
@@ -21,6 +21,7 @@ impl Repository {
         init_schema(&pool).await?;
         Ok(Self { pool })
     }
+
     pub async fn create_repository(path: &str) -> Self {
         loop {
             match Self::new(path).await {
@@ -32,59 +33,53 @@ impl Repository {
             }
         }
     }
-    pub async fn insert(&self, table_data: TableData) -> Result<(), sqlx::Error> {
-        match table_data {
-            TableData::Measurement(measurement) => {
-                insert_measurement(&self.pool, measurement).await?;
-            },
-            TableData::Monitor(monitor) => {
-                insert_monitor(&self.pool, monitor).await?;
-            },
-            TableData::AlertAir(alert_air) => {
-                insert_alert_air(&self.pool, alert_air).await?;
-            },
-            TableData::AlertTemp(alert_temp) => {
-                insert_alert_temp(&self.pool, alert_temp).await?;
-            },
+
+    pub async fn insert(&self, tdv: Vec<TableDataVector>) -> Result<(), sqlx::Error> {
+        for v in tdv {
+            match v {
+                TableDataVector::Measurement(measurement) => {
+                    insert_measurement(&self.pool, measurement).await?;
+                },
+                TableDataVector::Monitor(monitor) => {
+                    insert_monitor(&self.pool, monitor).await?;
+                },
+                TableDataVector::AlertTemp(alert_temp) => {
+                    insert_alert_temp(&self.pool, alert_temp).await?;
+                },
+                TableDataVector::AlertAir(alert_air) => {
+                    insert_alert_air(&self.pool, alert_air).await?;
+                },
+            }
         }
+
         Ok(())
     }
-    pub async fn pop_batch(&self) -> Result<Vec<TableDataVector>, sqlx::Error> {
-        let mut vec : Vec<TableDataVector> = Vec::new();
-        match pop_batch_measurement(&self.pool, Table::Measurement.table_name()).await {
-            Ok(measurements) => {
-                vec.push(TableDataVector::Measurement(measurements));
-            }
-            Err(e) => {
-                log::debug!("❌ Error: No se pudo eliminar de la tabla measurement {:?}", e);
-            }
+
+    pub async fn pop_batch(&self, table: Table) -> Result<TableDataVector, sqlx::Error> {
+        match table {
+            Table::Measurement => {
+                pop_batch_measurement(&self.pool, Table::Measurement.table_name())
+                    .await
+                    .map(TableDataVector::Measurement)
+            },
+            Table::Monitor => {
+                pop_batch_monitor(&self.pool, Table::Monitor.table_name())
+                    .await
+                    .map(TableDataVector::Monitor)
+            },
+            Table::AlertTemp => {
+                pop_batch_alert_temp(&self.pool, Table::AlertTemp.table_name())
+                    .await
+                    .map(TableDataVector::AlertTemp)
+            },
+            Table::AlertAir => {
+                pop_batch_alert_air(&self.pool, Table::AlertAir.table_name())
+                    .await
+                    .map(TableDataVector::AlertAir)
+            },
         }
-        match pop_batch_monitor(&self.pool, Table::Monitor.table_name()).await {
-            Ok(monitor) => {
-                vec.push(TableDataVector::Monitor(monitor));
-            }
-            Err(e) => {
-                log::debug!("❌ Error: No se pudo eliminar de la tabla monitor {:?}", e);
-            }
-        }
-        match pop_batch_alert_temp(&self.pool, Table::AlertTemp.table_name()).await {
-            Ok(alert_temp) => {
-                vec.push(TableDataVector::AlertTemp(alert_temp));
-            }
-            Err(e) => {
-                log::debug!("❌ Error: No se pudo eliminar de la tabla alert_temp {:?}", e);
-            }
-        }
-        match pop_batch_alert_air(&self.pool, Table::AlertAir.table_name()).await {
-            Ok(alert_air) => {
-                vec.push(TableDataVector::AlertAir(alert_air));
-            }
-            Err(e) => {
-                log::debug!("❌ Error: No se pudo eliminar de la tabla alert_air {:?}", e);
-            }
-        }
-        Ok(vec)
     }
+
     pub async fn has_data(&self, table: Table) -> Result<bool, sqlx::Error> {
         match table {
             Table::Measurement => {
@@ -102,7 +97,6 @@ impl Repository {
         }
     }
 }
-
 
 
 async fn create_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {

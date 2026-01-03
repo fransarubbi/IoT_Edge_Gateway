@@ -1,6 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::msg_type::Measurement;
+use crate::message::domain::Measurement;
 
 pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
     pool.execute(
@@ -29,10 +29,11 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
 
 
 pub async fn insert_measurement(pool: &SqlitePool,
-                            data: Measurement
+                            data_vec: Vec<Measurement>
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
+    for data in data_vec {
+        sqlx::query(
+            r#"
         INSERT INTO measurements (sender_user_id,
                                   destination_type,
                                   destination_id,
@@ -47,21 +48,22 @@ pub async fn insert_measurement(pool: &SqlitePool,
                                   sample)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
-    )
-        .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_type)
-        .bind(data.metadata.destination_id)
-        .bind(data.metadata.timestamp)
-        .bind(data.ipv4addr.to_string())
-        .bind(data.wifi_ssid)
-        .bind(data.pulse_counter)
-        .bind(data.pulse_max_duration)
-        .bind(data.temperature)
-        .bind(data.humidity)
-        .bind(data.co2_ppm)
-        .bind(data.sample)
-        .execute(pool)
-        .await?;
+        )
+            .bind(data.metadata.sender_user_id)
+            .bind(data.metadata.destination_type)
+            .bind(data.metadata.destination_id)
+            .bind(data.metadata.timestamp)
+            .bind(data.ipv4addr.to_string())
+            .bind(data.wifi_ssid)
+            .bind(data.pulse_counter)
+            .bind(data.pulse_max_duration)
+            .bind(data.temperature)
+            .bind(data.humidity)
+            .bind(data.co2_ppm)
+            .bind(data.sample)
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }

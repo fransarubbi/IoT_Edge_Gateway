@@ -1,6 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::msg_type::Monitor;
+use crate::message::domain::Monitor;
 
 pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
     pool.execute(
@@ -34,10 +34,12 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
 
 
 pub async fn insert_monitor(pool: &SqlitePool,
-                        data: Monitor
+                        data_vec: Vec<Monitor>
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
+    
+    for data in data_vec {
+        sqlx::query(
+            r#"
         INSERT INTO monitor (sender_user_id,
                              destination_type,
                              destination_id,
@@ -57,27 +59,28 @@ pub async fn insert_monitor(pool: &SqlitePool,
                              active_time)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
-    )
-        .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_type)
-        .bind(data.metadata.destination_id)
-        .bind(data.metadata.timestamp)
-        .bind(data.mem_free)
-        .bind(data.mem_free_hm)
-        .bind(data.mem_free_block)
-        .bind(data.mem_free_internal)
-        .bind(data.stack_free_min_coll)
-        .bind(data.stack_free_min_pub)
-        .bind(data.stack_free_min_mic)
-        .bind(data.stack_free_min_th)
-        .bind(data.stack_free_min_air)
-        .bind(data.stack_free_min_mon)
-        .bind(data.wifi_ssid)
-        .bind(data.wifi_rssi)
-        .bind(data.active_time)
-        .execute(pool)
-        .await?;
-
+        )
+            .bind(data.metadata.sender_user_id)
+            .bind(data.metadata.destination_type)
+            .bind(data.metadata.destination_id)
+            .bind(data.metadata.timestamp)
+            .bind(data.mem_free)
+            .bind(data.mem_free_hm)
+            .bind(data.mem_free_block)
+            .bind(data.mem_free_internal)
+            .bind(data.stack_free_min_coll)
+            .bind(data.stack_free_min_pub)
+            .bind(data.stack_free_min_mic)
+            .bind(data.stack_free_min_th)
+            .bind(data.stack_free_min_air)
+            .bind(data.stack_free_min_mon)
+            .bind(data.wifi_ssid)
+            .bind(data.wifi_rssi)
+            .bind(data.active_time)
+            .execute(pool)
+            .await?;
+    }
+    
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, watch};
-use crate::message::msg_type::{AlertAir, AlertTh, DataRequest, Measurement, MessageFromHub, MessageToServer, Monitor};
-use crate::message::msg_type::MessageToServer::HubToServer;
+use crate::message::domain::{AlertAir, AlertTh, DataRequest, Measurement, MessageFromHub, MessageToServer, Monitor};
+use crate::message::domain::MessageToServer::HubToServer;
 
 
 pub enum Route {
@@ -26,6 +26,14 @@ impl Table {
             Table::AlertAir => "alert_air",
             Table::AlertTemp => "alert_temp",
         }
+    }
+    pub fn all() -> &'static [Table] {
+        &[
+            Table::Measurement,
+            Table::Monitor,
+            Table::AlertAir,
+            Table::AlertTemp
+        ]
     }
 }
 
@@ -56,6 +64,57 @@ impl TableDataVector {
             TableDataVector::AlertAir(_) => Table::AlertAir,
             TableDataVector::AlertTemp(_) => Table::AlertTemp,
         }
+    }
+}
+
+
+#[derive(Default, Debug)] 
+pub struct Vectors {
+    pub measurements: Vec<Measurement>,
+    pub monitors: Vec<Monitor>,
+    pub alert_airs: Vec<AlertAir>,
+    pub alert_temps: Vec<AlertTh>,
+}
+
+
+impl Vectors {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            measurements: Vec::with_capacity(cap),
+            monitors: Vec::with_capacity(cap),
+            alert_airs: Vec::with_capacity(cap),
+            alert_temps: Vec::with_capacity(cap),
+        }
+    }
+    pub fn is_full(&self, cap: usize) -> bool {
+        if self.measurements.len() >= cap {
+            return true;
+        }
+        if self.monitors.len() >= cap {
+            return true;
+        }
+        if self.alert_airs.len() >= cap {
+            return true;
+        }
+        if self.alert_temps.len() >= cap {
+            return true;
+        }
+        false
+    }
+    pub fn is_empty(&self) -> bool {
+        if self.measurements.is_empty() {
+            return true;
+        }
+        if self.monitors.is_empty() {
+            return true;
+        }
+        if self.alert_airs.is_empty() {
+            return true;
+        }
+        if self.alert_temps.is_empty() {
+            return true;
+        }
+        false
     }
 }
 
@@ -117,7 +176,7 @@ impl StateFlag {
                 *self = StateFlag::Init;
             },
         }
-    } 
+    }
 }
 
 

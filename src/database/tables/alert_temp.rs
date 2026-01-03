@@ -1,6 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::msg_type::AlertTh;
+use crate::message::domain::AlertTh;
 
 pub async fn create_table_alert_temp(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
     pool.execute(
@@ -23,10 +23,12 @@ pub async fn create_table_alert_temp(pool: &SqlitePool) -> Result<(), sqlx::Erro
 
 
 pub async fn insert_alert_temp(pool: &SqlitePool,
-                           data: AlertTh
+                           data_vec: Vec<AlertTh>
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
+
+    for data in data_vec {
+        sqlx::query(
+            r#"
         INSERT INTO alert_temp (sender_user_id,
                                   destination_type,
                                   destination_id,
@@ -35,15 +37,16 @@ pub async fn insert_alert_temp(pool: &SqlitePool,
                                   actual_temp)
         VALUES (?, ?, ?, ?, ?, ?)
         "#
-    )
-        .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_type)
-        .bind(data.metadata.destination_id)
-        .bind(data.metadata.timestamp)
-        .bind(data.initial_temp)
-        .bind(data.actual_temp)
-        .execute(pool)
-        .await?;
+        )
+            .bind(data.metadata.sender_user_id)
+            .bind(data.metadata.destination_type)
+            .bind(data.metadata.destination_id)
+            .bind(data.metadata.timestamp)
+            .bind(data.initial_temp)
+            .bind(data.actual_temp)
+            .execute(pool)
+            .await?;
+    }
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::msg_type::AlertAir;
+use crate::message::domain::AlertAir;
 
 pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
     pool.execute(
@@ -22,10 +22,12 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
 
 
 pub async fn insert_alert_air(pool: &SqlitePool,
-                          data: AlertAir
+                          data_vec: Vec<AlertAir>
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
+    
+    for data in data_vec {
+        sqlx::query(
+            r#"
         INSERT INTO alert_air (sender_user_id,
                                   destination_type,
                                   destination_id,
@@ -34,16 +36,17 @@ pub async fn insert_alert_air(pool: &SqlitePool,
                                   co2_actual_ppm)
         VALUES (?, ?, ?, ?, ?, ?)
         "#
-    )
-        .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_type)
-        .bind(data.metadata.destination_id)
-        .bind(data.metadata.timestamp)
-        .bind(data.co2_initial_ppm)
-        .bind(data.co2_actual_ppm)
-        .execute(pool)
-        .await?;
-
+        )
+            .bind(data.metadata.sender_user_id)
+            .bind(data.metadata.destination_type)
+            .bind(data.metadata.destination_id)
+            .bind(data.metadata.timestamp)
+            .bind(data.co2_initial_ppm)
+            .bind(data.co2_actual_ppm)
+            .execute(pool)
+            .await?;
+    }
+    
     Ok(())
 }
 

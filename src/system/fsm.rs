@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
-use crate::message::msg_type::{Message};
+use crate::message::domain::{Message};
 use crate::system::check_config::{check_system_config, ErrorType};
 use crate::system::configurate_system::configurate_system;
 
