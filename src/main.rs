@@ -3,16 +3,18 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::watch::Sender;
 use tokio::time::sleep;
-use system::fsm::{run_fsm};
+use fsm::logic::{run_fsm};
 use mqtt::local::run_local_mqtt;
 use mqtt::remote::run_remote_mqtt;
-use crate::system::fsm::{EventSystem, InternalEvent};
+use fsm::logic::{EventSystem, InternalEvent};
 
 mod system;
 mod mqtt;
 mod message;
 mod database;
 mod config;
+mod network;
+mod fsm;
 
 #[tokio::main]
 async fn main() {

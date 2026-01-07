@@ -1,17 +1,18 @@
 use serde::{Serialize, Deserialize};
-use sqlx::{FromRow, Type};
-use crate::system::fsm::{State};
+use sqlx::{Type};
+use crate::fsm::domain::{State};
+use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MetadataRow, MonitorRow};
 
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
 pub enum DestinationType {
+    #[default]
     Node,
     Edge,
     Server,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Metadata {
     pub sender_user_id: String,
     pub destination_type: DestinationType,
@@ -20,9 +21,8 @@ pub struct Metadata {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Measurement {
-    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub ipv4addr: String,
     pub wifi_ssid: String,
@@ -35,27 +35,74 @@ pub struct Measurement {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+impl Measurement {
+    pub fn cast_measurement_to_row(self, topic: String) -> MeasurementRow {
+        let mut mr = MeasurementRow::default();
+        mr.metadata.sender_user_id = self.metadata.sender_user_id;
+        mr.metadata.destination_type = self.metadata.destination_type;
+        mr.metadata.destination_id = self.metadata.destination_id;
+        mr.metadata.timestamp = self.metadata.timestamp;
+        mr.metadata.topic_where_arrive = topic;
+        mr.wifi_ssid = self.wifi_ssid;
+        mr.pulse_counter = self.pulse_counter;
+        mr.pulse_max_duration = self.pulse_max_duration;
+        mr.temperature = self.temperature;
+        mr.humidity = self.humidity;
+        mr.co2_ppm = self.co2_ppm;
+        mr.sample = self.sample;
+        mr
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertAir {
-    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub co2_initial_ppm: f32,
     pub co2_actual_ppm: f32,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
+impl AlertAir {
+    pub fn cast_alert_air_to_row(self, topic: String) -> AlertAirRow {
+        let mut aar = AlertAirRow::default();
+        aar.metadata.sender_user_id = self.metadata.sender_user_id;
+        aar.metadata.destination_type = self.metadata.destination_type;
+        aar.metadata.destination_id = self.metadata.destination_id;
+        aar.metadata.timestamp = self.metadata.timestamp;
+        aar.metadata.topic_where_arrive = topic;
+        aar.co2_initial_ppm = self.co2_initial_ppm;
+        aar.co2_actual_ppm = self.co2_actual_ppm;
+        aar
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertTh {
-    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub initial_temp: f32,
     pub actual_temp: f32,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
+impl AlertTh {
+    pub fn cast_alert_th_to_row(self, topic: String) -> AlertThRow {
+        let mut ath = AlertThRow::default();
+        ath.metadata.sender_user_id = self.metadata.sender_user_id;
+        ath.metadata.destination_type = self.metadata.destination_type;
+        ath.metadata.destination_id = self.metadata.destination_id;
+        ath.metadata.timestamp = self.metadata.timestamp;
+        ath.metadata.topic_where_arrive = topic;
+        ath.initial_temp = self.initial_temp;
+        ath.actual_temp = self.actual_temp;
+        ath
+    }    
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Monitor {
-    #[sqlx(flatten)]
     pub metadata: Metadata,
     pub mem_free: i64,
     pub mem_free_hm: i64,
@@ -70,6 +117,31 @@ pub struct Monitor {
     pub wifi_ssid: String,
     pub wifi_rssi: i8,
     pub active_time: String,
+}
+
+
+impl Monitor {
+    pub fn cast_monitor_to_row(self, topic: String) -> MonitorRow {
+        let mut mr = MonitorRow::default();
+        mr.metadata.sender_user_id = self.metadata.sender_user_id;
+        mr.metadata.destination_type = self.metadata.destination_type;
+        mr.metadata.destination_id = self.metadata.destination_id;
+        mr.metadata.timestamp = self.metadata.timestamp;
+        mr.metadata.topic_where_arrive = topic;
+        mr.mem_free_hm = self.mem_free;
+        mr.mem_free_block = self.mem_free_block;
+        mr.mem_free_internal = self.mem_free_internal;
+        mr.stack_free_min_coll = self.stack_free_min_coll;
+        mr.stack_free_min_pub = self.stack_free_min_pub;
+        mr.stack_free_min_mic = self.stack_free_min_mic;
+        mr.stack_free_min_th = self.stack_free_min_th;
+        mr.stack_free_min_air = self.stack_free_min_air;
+        mr.stack_free_min_mon = self.stack_free_min_mon;
+        mr.wifi_ssid = self.wifi_ssid;
+        mr.wifi_rssi = self.wifi_rssi;
+        mr.active_time = self.active_time;
+        mr
+    }
 }
 
 
@@ -142,8 +214,22 @@ pub struct StateSafeMode {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageFromHub {
+    pub topic_where_arrive: String,
+    pub msg: MessageFromHubTypes,
+}
+
+
+impl MessageFromHub {
+    pub fn new(topic_where_arrive: String, msg: MessageFromHubTypes) -> Self {
+        Self { topic_where_arrive, msg }
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
-pub enum MessageFromHub {
+pub enum MessageFromHubTypes {
     Report(Measurement),
     Monitor(Monitor),
     AlertAir(AlertAir),
@@ -153,8 +239,22 @@ pub enum MessageFromHub {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageToHub {
+    pub topic_to: String,
+    pub msg: MessageToHubTypes,
+}
+
+
+impl MessageToHub {
+    pub fn new(topic_to: String, msg: MessageToHubTypes) -> Self {
+        Self { topic_to, msg }
+    }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MessageToHub {
+pub enum MessageToHubTypes {
     Handshake(HandshakeToHub),
     StateBalanceMode(StateBalanceMode),
     StateNormal(StateNormal),
@@ -164,7 +264,21 @@ pub enum MessageToHub {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MessageFromServer {
+pub struct MessageFromServer {
+    pub topic_where_arrive: String,
+    pub msg: MessageFromServerTypes,
+}
+
+
+impl MessageFromServer {
+    pub fn new(topic_where_arrive: String, msg: MessageFromServerTypes) -> Self {
+        Self { topic_where_arrive, msg }
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MessageFromServerTypes {
     Network(Network),
     Settings(Settings),
 }
@@ -181,6 +295,10 @@ pub enum BrokerStatus { Connected, Disconnected }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus { Connected, Disconnected }
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkChanged { Changed, NotChanged }
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

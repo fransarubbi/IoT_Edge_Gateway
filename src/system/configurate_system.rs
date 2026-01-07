@@ -5,7 +5,7 @@ use std::process::Command;
 use std::ffi::CString;
 use libc::{chown, uid_t, gid_t};
 use std::os::unix::fs::PermissionsExt;
-use crate::system::fsm::Flag;
+use crate::fsm::logic::Flag;
 use super::check_config::ErrorType;
 
 

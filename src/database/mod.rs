@@ -1,4 +1,4 @@
 mod logic;
 pub(crate) mod domain;
-mod repository;
+pub mod repository;
 mod tables;

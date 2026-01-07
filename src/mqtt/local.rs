@@ -4,9 +4,10 @@ use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
 use crate::message::domain::SerializedMessage;
+use crate::network::domain::NetworkManager;
 use crate::system::check_config::ErrorType;
-use crate::system::fsm::{EventSystem, InternalEvent};
-
+use crate::fsm::domain::{EventSystem, InternalEvent};
+use crate::mqtt::domain::PayloadTopic;
 
 #[derive(Debug)]
 enum StateClient {
@@ -19,7 +20,7 @@ enum StateClient {
 
 pub fn create_local_mqtt() -> Result<(AsyncClient, EventLoop), ErrorType> {
     let mut opts = MqttOptions::new(
-        "iot_edge_0",
+        "edge0",
         "localhost",
         8883
     );
@@ -44,10 +45,13 @@ pub fn create_local_mqtt() -> Result<(AsyncClient, EventLoop), ErrorType> {
 
 
 
-pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: BroadcastReceiver<EventSystem>, mut rx_msg: Receiver<SerializedMessage>) {
+pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, 
+                            mut rx_system: BroadcastReceiver<EventSystem>, 
+                            mut rx_msg: Receiver<SerializedMessage>,
+                            net_man: &NetworkManager) {
 
     loop {
-        match rx_system.recv().await {    // .recv().await suspende la tarea, no gasta CPU
+        match rx_system.recv().await {   
             Ok(EventSystem::EventSystemOk) => break,
             Err(_) => return,
             _ => {},
@@ -65,32 +69,38 @@ pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: Broa
                     Ok((c, el)) => {
                         client = Some(c.clone());
                         eventloop = Some(el);
-                        subscribe_topics(&c).await;
+                        subscribe_topics(&c, net_man).await;
                         state = StateClient::Work;
                     },
                     Err(e) => {
+                        log::error!("{}", e);
                         state = StateClient::Error;
                     }
                 }
             },
             StateClient::Work => {
                 if let Some(el) = eventloop.as_mut() {
-                    tokio::select! {  // select! permite recibir comandos del sistema mientras se escucha MQTT
+                    tokio::select! {  
                         notification = el.poll() => {
                             match notification {
                                 Ok(event) => match event {
                                     Event::Incoming(Incoming::Publish(packet)) => {
+                                        let msg = PayloadTopic::new(
+                                            packet.payload.to_vec(),
+                                            packet.topic
+                                        );
                                         let _ = event_tx.send(
-                                            InternalEvent::FromLocalBroker(packet.payload.to_vec())
+                                            InternalEvent::IncomingMessage(msg)
                                         ).await;
                                     },
                                     Event::Incoming(Incoming::ConnAck(_)) => {
-                                        let _ = event_tx.send(InternalEvent::LocalBrokerConnected).await;
+                                        let _ = event_tx.send(InternalEvent::LocalConnected).await;
                                     },
                                     _ => {}, // KeepAlive, Pings, etc.
                                 },
                                 Err(e) => {
-                                    let _ = event_tx.send(InternalEvent::LocalBrokerDisconnected).await;
+                                    log::error!("{}", e);
+                                    let _ = event_tx.send(InternalEvent::LocalDisconnected).await;
                                     state = StateClient::Error;  // Vamos a error para reconectar
                                 }
                             }
@@ -102,7 +112,7 @@ pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: Broa
                                     if let Some(c) = client.as_ref() {
                                         let res = c.publish(
                                             msg.topic,
-                                            cast_qos(msg.qos),
+                                            cast_qos(&msg.qos),
                                             msg.retain,
                                             msg.payload
                                         ).await;
@@ -114,9 +124,7 @@ pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: Broa
                                         eprintln!("Error: Intentando publicar pero el cliente MQTT no está listo.");
                                     }
                                 },
-                                None => {
-                                    // El canal se cerró
-                                },
+                                None => {},  // El canal se cerró
                             }
                         },
                     }
@@ -125,24 +133,27 @@ pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, mut rx_system: Broa
                 }
             },
             StateClient::Error => {
-                tokio::time::sleep(Duration::from_secs(5)).await;  // Logica de backoff (esperar antes de reintentar)
-                state = StateClient::Init;   // Intentamos reconectar volviendo a Init
+                tokio::time::sleep(Duration::from_secs(5)).await;  
+                state = StateClient::Init;   
             },
         }
     }
 }
 
 
-async fn subscribe_topics(client: &AsyncClient) {
-    client.subscribe("test/topic", QoS::AtMostOnce).await.unwrap();
-    client.subscribe("test/monitor", QoS::AtMostOnce).await.unwrap();
-    client.subscribe("test/alert", QoS::AtLeastOnce).await.unwrap();
-    client.subscribe("test/settings", QoS::AtMostOnce).await.unwrap();
-    client.subscribe("test/receive/network", QoS::ExactlyOnce).await.unwrap();
+async fn subscribe_topics(client: &AsyncClient, net_man: &NetworkManager) {
+    
+    for network in &net_man.networks {
+        client.subscribe(&network.1.topic_data.topic, cast_qos(&network.1.topic_data.qos)).await.unwrap();
+        client.subscribe(&network.1.topic_monitor.topic, cast_qos(&network.1.topic_monitor.qos)).await.unwrap();
+        client.subscribe(&network.1.topic_alert_air.topic, cast_qos(&network.1.topic_alert_air.qos)).await.unwrap();
+        client.subscribe(&network.1.topic_alert_temp.topic, cast_qos(&network.1.topic_alert_temp.qos)).await.unwrap();
+        client.subscribe(&network.1.topic_settings_from_hub.topic, cast_qos(&network.1.topic_settings_from_hub.qos)).await.unwrap();
+    }
 }
 
 
-fn cast_qos(qos: u8) -> QoS {
+fn cast_qos(qos: &u8) -> QoS {
     match qos {
         0 => QoS::AtMostOnce,
         1 => QoS::AtLeastOnce,

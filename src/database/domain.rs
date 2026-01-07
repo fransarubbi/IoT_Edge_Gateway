@@ -1,7 +1,7 @@
 use tokio::sync::{mpsc, watch};
 use crate::message::domain::{AlertAir, AlertTh, DataRequest, Measurement, MessageFromHub, MessageToServer, Monitor};
 use crate::message::domain::MessageToServer::HubToServer;
-
+use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
 
 pub enum Route {
     ToServer(MessageToServer),
@@ -15,6 +15,7 @@ pub enum Table {
     Monitor,
     AlertAir,
     AlertTemp,
+    Error,
 }
 
 
@@ -25,6 +26,7 @@ impl Table {
             Table::Monitor => "monitor",
             Table::AlertAir => "alert_air",
             Table::AlertTemp => "alert_temp",
+            _ => "error",
         }
     }
     pub fn all() -> &'static [Table] {
@@ -48,21 +50,44 @@ pub enum TableData {
 
 
 #[derive(Clone, Debug)]
-pub enum TableDataVector {
-    Measurement(Vec<Measurement>),
-    Monitor(Vec<Monitor>),
-    AlertAir(Vec<AlertAir>),
-    AlertTemp(Vec<AlertTh>),
+pub struct TableDataVector {
+    pub topic_where_arrive: String,
+    pub vec: TableDataVectorTypes,
 }
 
 
 impl TableDataVector {
+    pub fn is_empty(&self) -> bool {
+        match &self.vec {
+            TableDataVectorTypes::Measurement(v) => v.is_empty(),
+            TableDataVectorTypes::Monitor(v) => v.is_empty(),
+            TableDataVectorTypes::AlertAir(v) => v.is_empty(),
+            TableDataVectorTypes::AlertTemp(v) => v.is_empty(),
+        }
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub enum TableDataVectorTypes {
+    Measurement(Vec<MeasurementRow>),
+    Monitor(Vec<MonitorRow>),
+    AlertAir(Vec<AlertAirRow>),
+    AlertTemp(Vec<AlertThRow>),
+}
+
+
+impl TableDataVector {
+    pub fn new(topic_where_arrive: String, vec: TableDataVectorTypes) -> Self {
+        Self { topic_where_arrive, vec }
+    }
+
     pub fn table_type(&self) -> Table {
-        match self {
-            TableDataVector::Measurement(_) => Table::Measurement,
-            TableDataVector::Monitor(_) => Table::Monitor,
-            TableDataVector::AlertAir(_) => Table::AlertAir,
-            TableDataVector::AlertTemp(_) => Table::AlertTemp,
+        match self.vec {
+            TableDataVectorTypes::Measurement(_) => Table::Measurement,
+            TableDataVectorTypes::Monitor(_) => Table::Monitor,
+            TableDataVectorTypes::AlertAir(_) => Table::AlertAir,
+            TableDataVectorTypes::AlertTemp(_) => Table::AlertTemp,
         }
     }
 }
@@ -70,10 +95,10 @@ impl TableDataVector {
 
 #[derive(Default, Debug)] 
 pub struct Vectors {
-    pub measurements: Vec<Measurement>,
-    pub monitors: Vec<Monitor>,
-    pub alert_airs: Vec<AlertAir>,
-    pub alert_temps: Vec<AlertTh>,
+    pub measurements: Vec<MeasurementRow>,
+    pub monitors: Vec<MonitorRow>,
+    pub alert_airs: Vec<AlertAirRow>,
+    pub alert_temps: Vec<AlertThRow>,
 }
 
 
@@ -143,6 +168,7 @@ pub enum StateFlag {
     AlertAir,
     AlertTh,
 }
+
 
 impl StateFlag {
     pub async fn update_state(&mut self, flag: bool, tx: &watch::Sender<DataRequest>) {

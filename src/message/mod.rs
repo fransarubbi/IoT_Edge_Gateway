@@ -1,2 +1,3 @@
 pub mod domain;
-mod logic;
+pub mod logic;
+pub mod domain_for_table;

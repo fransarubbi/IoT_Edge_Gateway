@@ -1,82 +1,10 @@
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
-use crate::message::domain::{Message};
 use crate::system::check_config::{check_system_config, ErrorType};
 use crate::system::configurate_system::configurate_system;
+use super::domain::{EventSystem, State, SubStateInit, SubStateQuorum, SubStateBalanceMode, SubStatePhase, Flag};
 
 
-#[derive(PartialEq)]
-pub enum InternalEvent {
-    ServerConnected,
-    ServerDisconnected,
-    FromServer(Vec<u8>),
-    LocalBrokerConnected,
-    LocalBrokerDisconnected,
-    FromLocalBroker(Vec<u8>),
-    IncomingMessage(Vec<u8>),
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStateInit {
-    CheckConfig,
-    ConfigurateSystem,
-    InitSystem,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStateBalanceMode {
-    InitBalanceMode,
-    InHandshake,
-    Quorum(SubStateQuorum),
-    Phase(SubStatePhase),
-    OutHandshake,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStateQuorum {
-    CheckQuorum,
-    RepeatHandshake,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStatePhase {
-    Alert,
-    Data,
-    Monitor,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum State {
-    Init(SubStateInit),
-    BalanceMode(SubStateBalanceMode),
-    Normal,
-    SafeMode,
-}
-
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EventSystem {
-    EventServerConnected,
-    EventServerDisconnected,
-    EventLocalBrokerConnected,
-    EventLocalBrokerDisconnected,
-    EventMessage(Message),
-    EventSystemOk,
-}
-
-
-pub enum Flag {
-    MosquittoConf,
-    MtlsConf,
-    MosquittoServiceInactive,
-    Null,
-}
 
 
 
