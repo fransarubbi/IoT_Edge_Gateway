@@ -13,14 +13,6 @@ pub enum InternalEvent {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStateInit {
-    CheckConfig,
-    ConfigurateSystem,
-    InitSystem,
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubStateBalanceMode {
     InitBalanceMode,
     InHandshake,
@@ -47,7 +39,6 @@ pub enum SubStatePhase {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum State {
-    Init(SubStateInit),
     BalanceMode(SubStateBalanceMode),
     Normal,
     SafeMode,
@@ -65,6 +56,7 @@ pub enum EventSystem {
 }
 
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum Flag {
     MosquittoConf,
     MtlsConf,

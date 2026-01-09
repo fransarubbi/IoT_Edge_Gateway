@@ -45,8 +45,8 @@ use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_ai
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
-use crate::database::tables::network::{create_table_network, delete_network, get_all_network_data, insert_network};
-use crate::network::domain::{Network};
+use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database};
+use crate::network::domain::{Network, NetworkRow};
 
 
 /// Repositorio central de acceso a la base de datos.
@@ -68,6 +68,7 @@ use crate::network::domain::{Network};
 /// - Es seguro para uso concurrente.
 /// - No expone detalles SQL a capas superiores.
 ///
+#[derive(Clone)]
 pub struct Repository {
     pool: SqlitePool,
 }
@@ -110,7 +111,7 @@ impl Repository {
             match Self::new(path).await {
                 Ok(repo) => return repo,
                 Err(e) => {
-                    log::error!("❌ Error inicializando repo: {:?}", e);
+                    log::error!("Error inicializando repo: {:?}", e);
                     tokio::time::sleep(Duration::from_secs(WAIT_FOR)).await;
                 }
             }
@@ -217,7 +218,7 @@ impl Repository {
     ///
     /// Utilizado al recibir nuevas configuraciones desde el Servidor.
     pub async fn insert_network(&self, data: Network) -> Result<(), sqlx::Error> {
-        insert_network(&self.pool, data).await?;
+        insert_network_database(&self.pool, data).await?;
         Ok(())
     }
 
@@ -227,7 +228,7 @@ impl Repository {
     ///
     /// * `id` - El identificador único de la red (ej. "sala7").
     pub async fn delete_network(&self, id: &str) -> Result<(), sqlx::Error> {
-        delete_network(&self.pool, id).await?;
+        delete_network_database(&self.pool, id).await?;
         Ok(())
     }
 
@@ -237,13 +238,9 @@ impl Repository {
     ///
     /// Devuelve un vector de objetos [`Network`] mapeados desde la base de datos.
     /// Se utiliza para poblar la memoria (`NetworkManager`) al iniciar el sistema.
-    pub async fn get_all_network(&self) -> Result<Vec<Network>, sqlx::Error> {
+    pub async fn get_all_network(&self) -> Result<Vec<NetworkRow>, sqlx::Error> {
         let rows = get_all_network_data(&self.pool).await?;
-        let networks = rows.into_iter()
-            .map(Network::from)
-            .collect();
-
-        Ok(networks)
+        Ok(rows)
     }
 }
 

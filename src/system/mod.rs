@@ -1,3 +1,4 @@
-pub mod check_config;
-pub mod configurate_system;
+pub mod check;
+pub mod configurate;
 pub mod domain;
+pub mod fsm;

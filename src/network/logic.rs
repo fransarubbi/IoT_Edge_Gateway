@@ -1,30 +1,99 @@
+use std::sync::Arc;
+use rmp_serde::from_slice;
+use tokio::sync::{mpsc, RwLock};
+use tracing::error;
+use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
-use crate::network::domain::NetworkManager;
+use crate::fsm::domain::InternalEvent;
+use crate::message::domain::{MessageFromServerTypes};
+use crate::network::domain::{Network, NetworkManager};
+use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
+use crate::system::domain::System;
 
 
-pub async fn create_network_manager() -> NetworkManager {
+/// Carga las redes desde la base de datos, al Network Manager.
+///
+/// Como de la base de datos obtiene un vector de NetworkRow, se crea
+/// el Hash Map y se inserta cada elemento del vector, casteado a Network.
+///
 
-    let net_man = NetworkManager::new(
-        "edge0/message/handshake".to_string(),
-        0,
-        "edge0/message/state".to_string(),
-        1
-    );
+pub async fn load_networks(repo: &Repository,
+                           net_man: &Arc<RwLock<NetworkManager>>,
+                           system: &System,
+                           ) {
 
-    net_man
-}
-
-
-pub async fn load_networks(repo: &Repository, net_man: &mut NetworkManager) {
     match repo.get_all_network().await {
-        Ok(networks) => {
-            for network in networks {
-                net_man.add_network(network);
+        Ok(networks_row_vec) => {
+            let mut manager = net_man.write().await;
+
+            for networks_row in networks_row_vec {
+                let network = networks_row.cast_to_network(system);
+                manager.add_network(network);
             }
-        },
+        }
         Err(e) => {
-            log::error!("{}", e);
-        },
+            error!("{}", e);
+        }
     }
 }
 
+
+/// Tarea que procesa mensajes del servidor para modificar las redes del sistema.
+///
+/// Una vez que llega el mensaje, se decodifica. Si la red existe:
+/// - Se elimina si `delete_network` es true.
+/// - Se modifica el valor de `active` si `delete_network` es false.
+/// Si la red no existe:
+/// - Se ingresa al sistema si `delete_network` es false
+///
+pub async fn run_network_task(mut rx_from_server: mpsc::Receiver<InternalEvent>,
+                              app_context: AppContext,
+                             ) {
+    loop {
+        tokio::select! {
+            Some(msg_from_server) = rx_from_server.recv() => {
+                if let InternalEvent::IncomingMessage(msg) = msg_from_server {
+                    if let Ok(MessageFromServerTypes::Network(network)) = from_slice::<MessageFromServerTypes>(&msg.payload) {
+                        let action = {
+                            let manager = app_context.net_man.read().await;
+                            match (manager.networks.get(&network.id_network), network.delete_network) {
+                                (Some(_), true) => Delete,
+                                (Some(existing), false) if existing.active != network.active => {
+                                    Update
+                                }
+                                (None, false) => Insert,
+                                _ => Ignore,
+                            }
+                        };
+
+                        if let Delete = action {
+                            if let Err(e) = app_context.repo.delete_network(&network.id_network).await {
+                                error!("Error eliminando red {}: {}", network.id_network, e);
+                                continue;
+                            }
+                        }
+
+                        let mut manager = app_context.net_man.write().await;
+                        match action {
+                            Delete => {
+                                manager.remove_network(&network.id_network);
+                            }
+                            Update => {
+                                manager.change_active(network.active, &network.id_network);
+                            }
+                            Insert => {
+                                manager.add_network(Network::new(
+                                    network.id_network,
+                                    network.name_network,
+                                    network.active,
+                                    &app_context.system,
+                                ));
+                            }
+                            Ignore => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

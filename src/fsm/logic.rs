@@ -1,56 +1,17 @@
 use tokio::sync::mpsc;
 use tokio::sync::broadcast;
-use crate::system::check_config::{check_system_config, ErrorType};
-use crate::system::configurate_system::configurate_system;
-use super::domain::{EventSystem, State, SubStateInit, SubStateQuorum, SubStateBalanceMode, SubStatePhase, Flag};
-
-
+use super::domain::{EventSystem, State, SubStateQuorum, SubStateBalanceMode, SubStatePhase, Flag};
 
 
 
 pub async fn run_fsm(tx: broadcast::Sender<EventSystem>, mut rx: mpsc::Receiver<EventSystem>) {
-    let mut state = State::Init(SubStateInit::CheckConfig);
+    let mut state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);
     let mut flag = Flag::Null;
 
     while let Some(event) = rx.recv().await {
 
         match (&state, &flag) {
-
-            (State::Init(SubStateInit::CheckConfig), _) => {
-                match check_system_config() {
-                    Ok(_) => state = State::Init(SubStateInit::InitSystem),
-                    Err(error) => {
-                        match error {
-                            ErrorType::MosquittoNotInstalled => std::process::exit(1),  // Salir con codigo 1 (indica error al sistema operativo)
-                            ErrorType::MosquittoServiceInactive => {
-                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MosquittoServiceInactive);
-                            },
-                            ErrorType::MosquittoConf(_) => {
-                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MosquittoConf);
-                            },
-                            ErrorType::MtlsConfig(_) => {
-                                (state, flag) = (State::Init(SubStateInit::ConfigurateSystem), Flag::MtlsConf);
-                            },
-                            _ => {}
-                        }
-                    },
-                }
-            }
-
-            (State::Init(SubStateInit::InitSystem), _) => {
-                tx.send(EventSystem::EventSystemOk).unwrap();
-                state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);
-            },
-
-            (State::Init(SubStateInit::ConfigurateSystem), _) => {
-                match configurate_system(&flag) {
-                    Ok(_) => state = State::Init(SubStateInit::InitSystem),
-                    Err(error) => {
-                        state = State::Init(SubStateInit::CheckConfig);
-                    }
-                }
-            },
-
+            
             (State::BalanceMode(SubStateBalanceMode::InitBalanceMode), _) => {
                 println!("entry: update_balance_epoch()");
                 state = State::BalanceMode(SubStateBalanceMode::InHandshake);

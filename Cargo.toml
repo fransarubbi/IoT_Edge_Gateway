@@ -13,3 +13,6 @@ thiserror = "1.0"
 libc = "0.2.178"
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "macros"] }
 log = "0.4.29"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # en el futuro cambiar el writer a journald
+toml = "0.9.10+spec-1.1.0"

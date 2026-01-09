@@ -1,7 +1,8 @@
 use serde::{Serialize, Deserialize};
 use sqlx::{Type};
 use crate::fsm::domain::{State};
-use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MetadataRow, MonitorRow};
+use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
+
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
 pub enum DestinationType {
@@ -12,7 +13,7 @@ pub enum DestinationType {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Metadata {
     pub sender_user_id: String,
     pub destination_type: DestinationType,
@@ -21,7 +22,7 @@ pub struct Metadata {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Measurement {
     pub metadata: Metadata,
     pub ipv4addr: String,
@@ -55,7 +56,7 @@ impl Measurement {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertAir {
     pub metadata: Metadata,
     pub co2_initial_ppm: f32,
@@ -78,7 +79,7 @@ impl AlertAir {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertTh {
     pub metadata: Metadata,
     pub initial_temp: f32,
@@ -97,11 +98,11 @@ impl AlertTh {
         ath.initial_temp = self.initial_temp;
         ath.actual_temp = self.actual_temp;
         ath
-    }    
+    }
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Monitor {
     pub metadata: Metadata,
     pub mem_free: i64,
@@ -150,10 +151,8 @@ pub struct Network {
     pub metadata: Metadata,
     pub id_network: String,
     pub name_network: String,
-    pub topic_data: String,
-    pub topic_alert: String,
-    pub topic_monitor: String,
     pub active: bool,
+    pub delete_network: bool,
 }
 
 

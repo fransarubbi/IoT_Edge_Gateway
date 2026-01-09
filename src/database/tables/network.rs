@@ -18,20 +18,6 @@ use crate::network::domain::{Network, NetworkRow};
 ///
 /// - `id_network`: Identificador único (Primary Key, ejemplo: "sala7").
 /// - `name_network`: Nombre descriptivo de la red.
-/// - `topic_data`: Tópico para recepción de datos de sensores.
-/// - `topic_data_qos`: Calidad de servicio para data.
-/// - `topic_alert_air`: Tópico para alertas de calidad de aire.
-/// - `topic_alert_air_qos`: QoS para alertas de aire.
-/// - `topic_alert_temp`: Tópico para alertas de temperatura.
-/// - `topic_alert_temp_qos`: QoS para alertas de temperatura.
-/// - `topic_monitor`: Tópico para datos de monitoreo de estado.
-/// - `topic_monitor_qos`: QoS para monitoreo.
-/// - `topic_settings_hub`: Tópico de configuración proveniente del Hub.
-/// - `topic_settings_qos_hub`: QoS para settings del Hub.
-/// - `topic_settings_ser`: Tópico de configuración proveniente del Servidor.
-/// - `topic_settings_qos_ser`: QoS para settings del Servidor.
-/// - `topic_active`: Tópico para emitir el "latido" o estado activo.
-/// - `topic_active_qos`: QoS para active.
 /// - `active`: Flag booleano para habilitar/deshabilitar la red lógicamente.
 ///
 /// # Errores
@@ -51,20 +37,6 @@ pub async fn create_table_network(pool: &SqlitePool) -> Result<(), sqlx::Error> 
         CREATE TABLE IF NOT EXISTS network (
             id_network               TEXT PRIMARY KEY,
             name_network             TEXT NOT NULL,
-            topic_data               TEXT NOT NULL,
-            topic_data_qos           INTEGER NOT NULL,
-            topic_alert_air          TEXT NOT NULL,
-            topic_alert_air_qos      INTEGER NOT NULL,
-            topic_alert_temp         TEXT NOT NULL,
-            topic_alert_temp_qos     INTEGER NOT NULL,
-            topic_monitor            TEXT NOT NULL,
-            topic_monitor_qos        INTEGER NOT NULL,
-            topic_settings_hub       TEXT NOT NULL,
-            topic_settings_qos_hub   INTEGER NOT NULL,
-            topic_settings_ser       TEXT NOT NULL,
-            topic_settings_qos_ser   INTEGER NOT NULL,
-            topic_active             TEXT NOT NULL,
-            topic_active_qos         INTEGER NOT NULL,
             active                   BOOLEAN NOT NULL DEFAULT TRUE
         );
         "#
@@ -96,7 +68,7 @@ pub async fn create_table_network(pool: &SqlitePool) -> Result<(), sqlx::Error> 
 ///
 /// - Los campos booleanos se convierten automáticamente a enteros (0/1) por SQLite.
 /// - Los campos de tipo struct interno (`Topic`) se aplanan en columnas individuales.
-pub async fn insert_network(
+pub async fn insert_network_database(
     pool: &SqlitePool,
     data: Network
 ) -> Result<(), sqlx::Error> {
@@ -104,32 +76,15 @@ pub async fn insert_network(
     sqlx::query(
         r#"
         INSERT INTO network (
-            id_network, name_network, topic_data, topic_data_qos,
-            topic_alert_air, topic_alert_air_qos, topic_alert_temp, topic_alert_temp_qos,
-            topic_monitor, topic_monitor_qos,
-            topic_settings_hub, topic_settings_qos_hub,
-            topic_settings_ser, topic_settings_qos_ser,
-            topic_active, topic_active_qos, active
+            id_network, 
+            name_network, 
+            active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?)
         "#
     )
         .bind(data.id_network)
         .bind(data.name_network)
-        .bind(data.topic_data.topic)
-        .bind(data.topic_data.qos)
-        .bind(data.topic_alert_air.topic)
-        .bind(data.topic_alert_air.qos)
-        .bind(data.topic_alert_temp.topic)
-        .bind(data.topic_alert_temp.qos)
-        .bind(data.topic_monitor.topic)
-        .bind(data.topic_monitor.qos)
-        .bind(data.topic_settings_from_hub.topic)
-        .bind(data.topic_settings_from_hub.qos)
-        .bind(data.topic_settings_from_ser.topic)
-        .bind(data.topic_settings_from_ser.qos)
-        .bind(data.topic_active.topic)
-        .bind(data.topic_active.qos)
         .bind(data.active)
         .execute(pool)
         .await?;
@@ -156,7 +111,7 @@ pub async fn insert_network(
 ///
 /// Si el ID no existe, la operación es exitosa pero no borra nada
 /// (rows affected = 0). No retorna error en ese caso.
-pub async fn delete_network(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+pub async fn delete_network_database(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         DELETE FROM network

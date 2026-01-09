@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::config::sqlite::{BATCH_SIZE, FLUSH_INTERVAL};
 use crate::message::domain::{DataRequest, MessageFromHub, MessageFromHubTypes, MessageToServer, NetworkChanged, ServerStatus};
-use super::domain::{route_message, Route, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
+use super::domain::{StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
 use crate::network::domain::{NetworkManager};
 
@@ -45,8 +45,7 @@ async fn send_ignore<T>(tx: &mpsc::Sender<T>, msg: T) {
 /// - Los errores de envío se ignoran deliberadamente, ya que el sistema
 ///   está diseñado para ejecutarse como un servicio `systemd`.
 
-pub async fn dba_task(tx_to_server: mpsc::Sender<MessageToServer>,
-                      tx_to_server_batch: mpsc::Sender<TableDataVector>,
+pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
                       tx_to_insert: mpsc::Sender<MessageFromHub>,
                       tx_to_db: watch::Sender<DataRequest>,
                       mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
@@ -76,9 +75,8 @@ pub async fn dba_task(tx_to_server: mpsc::Sender<MessageToServer>,
 
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 let is_connected = matches!(state, ServerStatus::Connected);
-                match route_message(msg_from_hub, is_connected) {
-                    Route::ToServer(m)   => send_ignore(&tx_to_server, m).await,
-                    Route::ToDatabase(m) => send_ignore(&tx_to_insert, m).await,
+                if is_connected {
+                    send_ignore(&tx_to_insert, msg_from_hub).await;
                 }
             }
 

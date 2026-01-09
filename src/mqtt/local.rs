@@ -5,9 +5,11 @@ use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConf
 use std::time::Duration;
 use crate::message::domain::SerializedMessage;
 use crate::network::domain::NetworkManager;
-use crate::system::check_config::ErrorType;
+use crate::system::check::ErrorType;
 use crate::fsm::domain::{EventSystem, InternalEvent};
 use crate::mqtt::domain::PayloadTopic;
+use crate::system::domain::System;
+
 
 #[derive(Debug)]
 enum StateClient {
@@ -17,11 +19,10 @@ enum StateClient {
 }
 
 
-
-pub fn create_local_mqtt() -> Result<(AsyncClient, EventLoop), ErrorType> {
+pub fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), ErrorType> {
     let mut opts = MqttOptions::new(
-        "edge0",
-        "localhost",
+        system.id_edge.clone(),
+        system.host_local.clone(), 
         8883
     );
 
@@ -48,7 +49,8 @@ pub fn create_local_mqtt() -> Result<(AsyncClient, EventLoop), ErrorType> {
 pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>, 
                             mut rx_system: BroadcastReceiver<EventSystem>, 
                             mut rx_msg: Receiver<SerializedMessage>,
-                            net_man: &NetworkManager) {
+                            net_man: &NetworkManager,
+                            system: &System) {
 
     loop {
         match rx_system.recv().await {   
@@ -65,7 +67,7 @@ pub async fn run_local_mqtt(event_tx: Sender<InternalEvent>,
     loop {
         match state {
             StateClient::Init => {
-                match create_local_mqtt() {
+                match create_local_mqtt(system) {
                     Ok((c, el)) => {
                         client = Some(c.clone());
                         eventloop = Some(el);

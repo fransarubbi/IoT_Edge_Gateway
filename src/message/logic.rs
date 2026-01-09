@@ -1,22 +1,25 @@
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
-use crate::message::domain::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus, MessageFromHubTypes};
+use crate::message::domain::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus, MessageFromHubTypes, MessageFromServerTypes, MessageToHubTypes};
 use crate::message::domain::MessageToServer::HubToServer;
 use crate::fsm::domain::{InternalEvent};
-use crate::database::domain::TableDataVector;
+use crate::database::domain::{TableDataVector, TableDataVectorTypes};
 use crate::network::domain::NetworkManager;
 use crate::system::domain::System;
 
 pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                         mut rx_from_fsm: mpsc::Receiver<MessageToHub>,
                         mut rx_from_server: mpsc::Receiver<MessageToHub>,
-                        mut rx_broker_status: watch::Receiver<BrokerStatus>
+                        mut rx_broker_status: watch::Receiver<BrokerStatus>,
+                        network_manager: &NetworkManager,
+                        system: &System
                         ) {
 
     let mut broker_is_connected = false;
     loop {
         tokio::select! {
+            // 1. Gestión de estado del Broker
             status_result = rx_broker_status.changed() => {
                 if status_result.is_ok() {
                     let nuevo_estado = rx_broker_status.borrow();
@@ -33,54 +36,48 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                 }
             }
 
-            msg_to_hub = rx_from_server.recv() => {
+            // 2. Mensajes del Servidor hacia el Hub
+            Some(msg_container) = rx_from_server.recv() => {
                 if broker_is_connected {
-                    match msg_to_hub {
-                        Some(msg_to_hub) => {
-                            match msg_to_hub {
-                                MessageToHub::ServerToHub(server_to_hub) => {
-                                    match server_to_hub {
-                                        MessageFromServer::Settings(settings) => {
-                                            send_to_hub(&tx_to_hub, "/topico/topico", 1, &settings).await;
-                                        },
-                                        _ => {},
-                                    }
-                                },
-                                _ => {},
-                            }
+                    if let MessageToHubTypes::ServerToHub(server_to_hub) = msg_container.msg {
+                        if let MessageFromServerTypes::Settings(_) = server_to_hub.msg {
+                             process_and_send_hub(&tx_to_hub, &msg_container.topic_to, system, network_manager, &server_to_hub.msg).await;
                         }
-                        _ => {},
                     }
+                } else {
+                    log::warn!("Mensaje de Servidor descartado por desconexión del Broker: {:?}", msg_container.topic_to);
                 }
             }
 
-            msg_from_fsm = rx_from_fsm.recv() => {
+            // 3. Mensajes de la FSM hacia el Hub
+            Some(msg_container) = rx_from_fsm.recv() => {
                 if broker_is_connected {
-                    match msg_from_fsm {
-                        Some(msg_from_fsm) => {
-                            match msg_from_fsm {
-                                MessageToHub::Handshake(handshake) => {
-                                    send_to_hub(&tx_to_hub, "/topico/topico", 1, &handshake).await;
-                                },
-                                MessageToHub::StateBalanceMode(state_bm) => {
-                                    send_to_hub(&tx_to_hub, "/topico/topico", 1, &state_bm).await;
-                                },
-                                MessageToHub::StateNormal(state_nm) => {
-                                    send_to_hub(&tx_to_hub, "/topico/topico", 1, &state_nm).await;
-                                },
-                                MessageToHub::StateSafeMode(state_sm) => {
-                                    send_to_hub(&tx_to_hub, "/topico/topico", 1, &state_sm).await;
-                                },
-                                _ => {},
-                            }
-                        }
-                        _ => {},
-                    }
+                    process_and_send_hub(&tx_to_hub, &msg_container.topic_to, system, network_manager, &msg_container.msg).await;
+                } else {
+                    log::warn!("Mensaje FSM descartado por desconexión del Broker: {:?}", msg_container.topic_to);
                 }
             }
         }
     }
 }
+
+
+/// Helper para msg_to_hub: Reduce la repetición de código
+async fn process_and_send_hub<T: Serialize>(tx: &mpsc::Sender<SerializedMessage>,
+                                            topic_in: &str,
+                                            system: &System,
+                                            net_man: &NetworkManager,
+                                            payload: &T
+                                            ) {
+    let mut qos: u8 = 0;
+    if let Some(topic_out) = net_man.topic_to_send_msg(topic_in, system, &mut qos) {
+        // Ignoramos el resultado del send aquí porque msg_to_hub no es tan crítico si falla el canal interno
+        let _ = send(tx, &topic_out, qos, payload, true).await;
+    }
+}
+
+
+// -------------------------------------------------------------------------------------------------
 
 
 pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
@@ -105,12 +102,14 @@ pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
             }
 
             Some(msg) = rx_mqtt.recv() => {
-                handle_message(&tx_to_server, &tx_to_dba, &tx_internal, &msg, &state).await;
+                handle_message(&tx_to_server, &tx_to_dba, &tx_internal, msg, &state).await;
             }
         }
     }
 }
 
+
+// -------------------------------------------------------------------------------------------------
 
 pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
                            mut rx_from_fsm: mpsc::Receiver<MessageToServer>,
@@ -118,93 +117,103 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
                            mut rx_from_dba_batch: mpsc::Receiver<TableDataVector>,
                            network_manager: &NetworkManager,
                            system: &System,
-                           ) {
-
+                          ) {
     loop {
-        tokio::select! {
-            Some(msg_from_fsm) = rx_from_fsm.recv() => {
-                match msg_from_fsm {
-                    _ => {},
-                }
-            }
-            
+        let result: Result<(), ()> = tokio::select! {
+            Some(_) = rx_from_fsm.recv() => { Ok(()) },
+
             Some(msg_from_hub) = rx_from_hub.recv() => {
-                match msg_from_hub {
-                    HubToServer(hub_to_server) => {
-                        let topic = hub_to_server.topic_where_arrive;
-                        match hub_to_server.msg {
-                            MessageFromHubTypes::Report(report) => {
-                                handle_message_to_hub(&topic, system, &network_manager, MessageFromHubTypes::Report(report), &tx_to_server).await;
-                            },
-                            MessageFromHubTypes::Settings(settings) => {
-                                handle_message_to_hub(&topic, system, &network_manager, MessageFromHubTypes::Settings(settings), &tx_to_server).await;
-                            },
-                            MessageFromHubTypes::AlertAir(alert_air) => {
-                                handle_message_to_hub(&topic, system, &network_manager, MessageFromHubTypes::AlertAir(alert_air), &tx_to_server).await;
-                            },
-                            MessageFromHubTypes::AlertTem(alert_temp) => {
-                                handle_message_to_hub(&topic, system, &network_manager, MessageFromHubTypes::AlertTem(alert_temp), &tx_to_server).await;
-                            },
-                            MessageFromHubTypes::Monitor(monitor) => {
-                                handle_message_to_hub(&topic, system, &network_manager, MessageFromHubTypes::Monitor(monitor), &tx_to_server).await;
-                            },
-                            _ => {},
-                        }
-                    }
+                if let HubToServer(hub_to_server) = msg_from_hub {
+                    handle_message_to_send(
+                        &hub_to_server.topic_where_arrive,
+                        system,
+                        network_manager,
+                        &hub_to_server.msg,
+                        false,
+                        &tx_to_server
+                    ).await
+                } else {
+                    Ok(())
                 }
             }
-            
+
             Some(msg_from_dba_batch) = rx_from_dba_batch.recv() => {
-                match msg_from_dba_batch {
-                    TableDataVector::Measurement(measurement) => {
-                        for vec in measurement {
-                            let topic = &vec.metadata.topic_where_arrive;
-                            let msg = MessageFromHub::new(&vec.metadata.topic_where_arrive, MessageFromHubTypes::Report(vec.clone()));
-                            handle_message_to_hub(&topic, system, &network_manager, msg.msg, &tx_to_server).await;
-                            send(&tx_to_server, "a/a", 0, &vec).await;
-                        }
-                        /*
-                        send<T: Serialize>(tx: &mpsc::Sender<SerializedMessage>,
-                            topic: &str,
-                            qos: u8,
-                            msg: &T,
-                            )
-                         */
-                    },
-                    TableDataVector::Monitor(monitor) => {
-
-                    },
-                    TableDataVector::AlertAir(alert_air) => {
-
-                    },
-                    TableDataVector::AlertTemp(alert_temp) => {
-
-                    },
-                }
+                process_batch(msg_from_dba_batch, system, &tx_to_server, network_manager).await
             }
+        };
+
+        // Si alguna rama devolvió Err(()), rompemos el loop
+        if result.is_err() {
+            log::error!("🛑 Tarea msg_to_server detenida por cierre del canal de salida.");
+            break;
         }
     }
 }
 
 
+// Helper para procesar el batch y mantener el select limpio
+async fn process_batch(batch: TableDataVector,
+                       system: &System,
+                       tx: &mpsc::Sender<SerializedMessage>,
+                       network_manager: &NetworkManager
+                      ) -> Result<(), ()> {
+    match batch.vec {
+        TableDataVectorTypes::Measurement(vec) => {
+            for row in vec {
+                let topic = row.metadata.topic_where_arrive.clone();
+                let payload = MessageFromHubTypes::Report(row.cast_measurement());
+                handle_message_to_send(&topic, system, network_manager, &payload, false, tx).await?;
+            }
+        },
+        TableDataVectorTypes::Monitor(monitor_vec) => {
+            for row in monitor_vec {
+                let topic = row.metadata.topic_where_arrive.clone();
+                let payload = MessageFromHubTypes::Monitor(row.cast_monitor());
+                handle_message_to_send(&topic, system, network_manager, &payload, false, &tx).await?;
+            }
+        },
+        TableDataVectorTypes::AlertAir(alert_air_vec) => {
+            for row in alert_air_vec {
+                let topic = row.metadata.topic_where_arrive.clone();
+                let payload = MessageFromHubTypes::AlertAir(row.cast_alert_air());
+                handle_message_to_send(&topic, system, network_manager, &payload, false, &tx).await?;
+            }
+        },
+        TableDataVectorTypes::AlertTemp(alert_temp_vec) => {
+            for row in alert_temp_vec {
+                let topic = row.metadata.topic_where_arrive.clone();
+                let payload = MessageFromHubTypes::AlertTem(row.cast_alert_th());
+                handle_message_to_send(&topic, system, network_manager, &payload, false, &tx).await?;
+            }
+        },
+    }
+    Ok(())
+}
+
+
+// -------------------------------------------------------------------------------------------------
+
+
 pub async fn msg_from_server(tx_to_fsm: mpsc::Sender<MessageFromServer>,
-                            tx_to_hub: mpsc::Sender<MessageFromServer>,
-                            mut rx_from_server: mpsc::Receiver<InternalEvent>
-                            ) {
+                             tx_to_hub: mpsc::Sender<MessageFromServer>,
+                             mut rx_from_server: mpsc::Receiver<InternalEvent>
+                             ) {
     loop {
         tokio::select! {
             Some(msg_from_server) = rx_from_server.recv() => {
                 match msg_from_server {
                     InternalEvent::IncomingMessage(packet) => {
-                        let decoded: Result<MessageFromServer, _> = from_slice(&packet);
+                        let decoded: Result<MessageFromServerTypes, _> = from_slice(&packet.payload);
                         match decoded {
-                            Ok(MessageFromServer::Settings(settings)) => {
-                                if tx_to_hub.send(MessageFromServer::Settings(settings)).await.is_err() {
+                            Ok(MessageFromServerTypes::Settings(settings)) => {
+                                let msg = MessageFromServer::new(packet.topic, MessageFromServerTypes::Settings(settings));
+                                if tx_to_hub.send(msg).await.is_err() {
                                     log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
                                 }
                             },
-                            Ok(MessageFromServer::Network(network)) => {
-                                if tx_to_fsm.send(MessageFromServer::Network(network)).await.is_err() {
+                            Ok(MessageFromServerTypes::Network(network)) => {
+                                let msg = MessageFromServer::new(packet.topic, MessageFromServerTypes::Network(network));
+                                if tx_to_fsm.send(msg).await.is_err() {
                                     log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
                                 }
                             },
@@ -219,31 +228,20 @@ pub async fn msg_from_server(tx_to_fsm: mpsc::Sender<MessageFromServer>,
 }
 
 
-async fn handle_message_to_hub(topic: &str,
-                               system: &System,
-                               network_manager: &NetworkManager,
-                               msg: MessageFromHubTypes,
-                               tx_to_server: &mpsc::Sender<SerializedMessage>
-                              ) {
+async fn handle_message_to_send(topic_in: &str,
+                                system: &System,
+                                network_manager: &NetworkManager,
+                                msg: &MessageFromHubTypes,
+                                retain: bool,
+                                tx: &mpsc::Sender<SerializedMessage>
+) -> Result<(), ()> {
 
-    let mut qos : u8 = 0;
-    if let Some(topic_out) = network_manager.topic_to_send_msg(&topic, system, &mut qos) {
-        send(&tx_to_server, &topic_out, qos, &msg).await;
+    let mut qos: u8 = 0;
+    if let Some(topic_out) = network_manager.topic_to_send_msg(topic_in, system, &mut qos) {
+        return send(tx, &topic_out, qos, msg, retain).await;
     }
-}
 
-
-async fn handle_message_to_ser(topic: &str,
-                               system: &System,
-                               network_manager: &NetworkManager,
-                               msg: MessageFromHubTypes,
-                               tx_to_server: &mpsc::Sender<SerializedMessage>
-) {
-
-    let mut qos : u8 = 0;
-    if let Some(topic_out) = network_manager.topic_to_send_msg(&topic, system, &mut qos) {
-        send(&tx_to_server, &topic_out, qos, &msg).await;
-    }
+    Ok(()) // Si no se encuentra el tópico, retornamos Ok para seguir vivos
 }
 
 
@@ -251,60 +249,55 @@ async fn send<T: Serialize>(tx: &mpsc::Sender<SerializedMessage>,
                             topic: &str,
                             qos: u8,
                             msg: &T,
-                            ) {
-    
+                            retain: bool
+                           ) -> Result<(), ()> {
     match to_vec(msg) {
         Ok(payload) => {
-            let serialized = SerializedMessage::new(
-                topic.to_string(),
-                payload,
-                qos,
-                false,
-            );
-            let _ = tx.send(serialized).await;
+            let serialized = SerializedMessage::new(topic.to_string(), payload, qos, retain);
+            if tx.send(serialized).await.is_err() {
+                return Err(());
+            }
         }
-        Err(e) => {
-            log::error!("Error serializando mensaje: {:?}", e);
-        }
+        Err(e) => log::error!("Error serializando: {:?}", e),
     }
+    Ok(())
 }
-
 
 
 async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
                         tx_to_dba: &mpsc::Sender<MessageFromHub>,
                         tx_internal: &mpsc::Sender<MessageFromHub>,
-                        msg: &InternalEvent,
-                        state: &ServerStatus,) {
+                        msg: InternalEvent,
+                        state: &ServerStatus) {
 
     match msg {
         InternalEvent::IncomingMessage(packet) => {
             let decoded: Result<MessageFromHubTypes, _> = from_slice(&packet.payload);
             match decoded {
                 Ok(MessageFromHubTypes::Handshake(handshake)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::Handshake(handshake));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::Handshake(handshake));
                     if tx_internal.send(msg).await.is_err() {
                         log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
                     }
                 },
                 Ok(MessageFromHubTypes::Settings(settings)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::Settings(settings));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::Settings(settings));
                     route_message(state, tx_to_server, tx_to_dba, msg).await;
                 },
                 Ok(MessageFromHubTypes::Monitor(monitor)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::Monitor(monitor));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::Monitor(monitor));
                     route_message(state, tx_to_server, tx_to_dba, msg).await;
                 },
                 Ok(MessageFromHubTypes::AlertAir(alert_air)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::AlertAir(alert_air));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::AlertAir(alert_air));
                     route_message(state, tx_to_server, tx_to_dba, msg).await;
                 },
                 Ok(MessageFromHubTypes::AlertTem(alert_temp)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::AlertTem(alert_temp));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::AlertTem(alert_temp));
                     route_message(state, tx_to_server, tx_to_dba, msg).await;
                 },
                 Ok(MessageFromHubTypes::Report(report)) => {
-                    let msg = MessageFromHub::new(&packet.topic, MessageFromHubTypes::Report(report));
+                    let msg = MessageFromHub::new(packet.topic, MessageFromHubTypes::Report(report));
                     route_message(state, tx_to_server, tx_to_dba, msg).await;
                 },
                 _ => {},
@@ -313,7 +306,6 @@ async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
         _ => {},
     }
 }
-
 
 
 async fn route_message(state: &ServerStatus,

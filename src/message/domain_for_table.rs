@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use crate::message::domain::{DestinationType};
+use crate::message::domain::{AlertAir, AlertTh, DestinationType, Measurement, Monitor};
 
 
 /// Metadatos comunes a todos los eventos y mediciones del sistema.
@@ -45,6 +45,25 @@ pub struct MeasurementRow {
 }
 
 
+impl MeasurementRow {
+    pub fn cast_measurement(self) -> Measurement {
+        let mut m = Measurement::default();
+        m.metadata.sender_user_id = self.metadata.sender_user_id;
+        m.metadata.destination_type = self.metadata.destination_type;
+        m.metadata.destination_id = self.metadata.destination_id;
+        m.metadata.timestamp = self.metadata.timestamp;
+        m.wifi_ssid = self.wifi_ssid;
+        m.pulse_counter = self.pulse_counter;
+        m.pulse_max_duration = self.pulse_max_duration;
+        m.temperature = self.temperature;
+        m.humidity = self.humidity;
+        m.co2_ppm = self.co2_ppm;
+        m.sample = self.sample;
+        m
+    }
+}
+
+
 /// Representación de una fila de la tabla de alertas de aire (`alert_air`).
 ///
 /// Se utiliza cuando los niveles de CO2 superan los umbrales configurados.
@@ -57,6 +76,20 @@ pub struct AlertAirRow {
 }
 
 
+impl AlertAirRow {
+    pub fn cast_alert_air(self) -> AlertAir {
+        let mut aa = AlertAir::default();
+        aa.metadata.sender_user_id = self.metadata.sender_user_id;
+        aa.metadata.destination_type = self.metadata.destination_type;
+        aa.metadata.destination_id = self.metadata.destination_id;
+        aa.metadata.timestamp = self.metadata.timestamp;
+        aa.co2_initial_ppm = self.co2_initial_ppm;
+        aa.co2_actual_ppm = self.co2_actual_ppm;
+        aa
+    }
+}
+
+
 /// Representación de una fila de la tabla de alertas térmicas (`alert_temp`).
 ///
 /// Se utiliza para eventos de temperatura fuera de rango (congelación/sobrecalentamiento).
@@ -66,6 +99,20 @@ pub struct AlertThRow {
     pub metadata: MetadataRow,
     pub initial_temp: f32,
     pub actual_temp: f32,
+}
+
+
+impl AlertThRow {
+    pub fn cast_alert_th(self) -> AlertTh {
+        let mut ath = AlertTh::default();
+        ath.metadata.sender_user_id = self.metadata.sender_user_id;
+        ath.metadata.destination_type = self.metadata.destination_type;
+        ath.metadata.destination_id = self.metadata.destination_id;
+        ath.metadata.timestamp = self.metadata.timestamp;
+        ath.initial_temp = self.initial_temp;
+        ath.actual_temp = self.actual_temp;
+        ath
+    }
 }
 
 
@@ -90,4 +137,28 @@ pub struct MonitorRow {
     pub wifi_ssid: String,
     pub wifi_rssi: i8,
     pub active_time: String,
+}
+
+
+impl MonitorRow {
+    pub fn cast_monitor(self) -> Monitor {
+        let mut mon = Monitor::default();
+        mon.metadata.sender_user_id = self.metadata.sender_user_id;
+        mon.metadata.destination_type = self.metadata.destination_type;
+        mon.metadata.destination_id = self.metadata.destination_id;
+        mon.metadata.timestamp = self.metadata.timestamp;
+        mon.mem_free_hm = self.mem_free;
+        mon.mem_free_block = self.mem_free_block;
+        mon.mem_free_internal = self.mem_free_internal;
+        mon.stack_free_min_coll = self.stack_free_min_coll;
+        mon.stack_free_min_pub = self.stack_free_min_pub;
+        mon.stack_free_min_mic = self.stack_free_min_mic;
+        mon.stack_free_min_th = self.stack_free_min_th;
+        mon.stack_free_min_air = self.stack_free_min_air;
+        mon.stack_free_min_mon = self.stack_free_min_mon;
+        mon.wifi_ssid = self.wifi_ssid;
+        mon.wifi_rssi = self.wifi_rssi;
+        mon.active_time = self.active_time;
+        mon
+    }
 }
