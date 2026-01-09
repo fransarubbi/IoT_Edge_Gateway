@@ -113,7 +113,6 @@ impl NetworkManager {
                 (&n.topic_new_firmware.topic, n.topic_new_firmware.qos),
                 (&n.topic_hub_firmware_ok.topic, n.topic_hub_firmware_ok.qos),
                 (&n.topic_balance_mode_handshake.topic, n.topic_balance_mode_handshake.qos),
-                (&n.topic_active.topic, n.topic_active.qos),
             ];
 
             if let Some((_, qos)) = pairs.iter().find(|(pattern, _)| topic_matches(pattern, topic_in)) {
@@ -225,7 +224,6 @@ impl Topic {
 /// - `topic_hub_firmware_ok`: tópico donde se suscribe el Edge para recibir el handshake del hub de nuevo firmware listo.
 /// - `topic_balance_mode_handshake`: tópico donde se suscribe el Edge para recibir mensaje de handshake de los nodos (en balance mode).
 /// - `topic_hello_world`: tópico donde publica el Edge que está configurado y listo cuando inicia (al servidor).
-/// - `topic_active`: tópico donde se suscribe el Edge para recibir el mensaje de red activa/inactiva del servidor.
 /// - `active`: variable que indica si la red actualmente está activa o inactiva.
 #[derive(Debug, Clone)]
 pub struct Network {
@@ -243,7 +241,6 @@ pub struct Network {
     pub topic_hub_firmware_ok: Topic,
     pub topic_balance_mode_handshake: Topic,
     pub topic_hello_world: Topic,
-    pub topic_active: Topic,
     pub active: bool,
 }
 
@@ -263,7 +260,6 @@ impl Network {
         let t_hub_firmware_ok = format!("iot/{id_network}/+/hub_firmware_ok");
         let t_balance_mode_handshake = format!("iot/{id_network}/+/balance_mode_handshake");
         let t_hello_world = format!("iot/{id_network}/{id_system}/hello_world");
-        let t_active = format!("iot/{id_network}/active");
 
         Self {
             id_network,
@@ -280,7 +276,6 @@ impl Network {
             topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 0),
             topic_balance_mode_handshake: Topic::new(t_balance_mode_handshake, 0),
             topic_hello_world: Topic::new(t_hello_world, 0),
-            topic_active: Topic::new(t_active, 0),
             active
         }
     }

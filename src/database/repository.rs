@@ -68,7 +68,7 @@ use crate::network::domain::{Network, NetworkRow};
 /// - Es seguro para uso concurrente.
 /// - No expone detalles SQL a capas superiores.
 ///
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Repository {
     pool: SqlitePool,
 }

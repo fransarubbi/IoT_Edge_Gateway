@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::mqtt::domain::PayloadTopic;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum InternalEvent {
     ServerConnected,
     ServerDisconnected,

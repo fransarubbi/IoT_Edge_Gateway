@@ -1,6 +1,7 @@
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
+use crate::context::domain::AppContext;
 use crate::message::domain::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, BrokerStatus, ServerStatus, MessageFromHubTypes, MessageFromServerTypes, MessageToHubTypes};
 use crate::message::domain::MessageToServer::HubToServer;
 use crate::fsm::domain::{InternalEvent};
@@ -12,8 +13,7 @@ pub async fn msg_to_hub(tx_to_hub: mpsc::Sender<SerializedMessage>,
                         mut rx_from_fsm: mpsc::Receiver<MessageToHub>,
                         mut rx_from_server: mpsc::Receiver<MessageToHub>,
                         mut rx_broker_status: watch::Receiver<BrokerStatus>,
-                        network_manager: &NetworkManager,
-                        system: &System
+                        app_context: AppContext
                         ) {
 
     let mut broker_is_connected = false;
@@ -83,8 +83,7 @@ async fn process_and_send_hub<T: Serialize>(tx: &mpsc::Sender<SerializedMessage>
 pub async fn msg_from_hub(tx_internal: mpsc::Sender<MessageFromHub>,
                           tx_to_server: mpsc::Sender<MessageToServer>,
                           tx_to_dba: mpsc::Sender<MessageFromHub>,
-                          mut rx_mqtt: mpsc::Receiver<InternalEvent>,
-                          mut rx_server_status: watch::Receiver<ServerStatus>,
+                          app_context: AppContext,
                          ) {
 
     let mut state: ServerStatus = ServerStatus::Connected;
@@ -115,8 +114,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
                            mut rx_from_fsm: mpsc::Receiver<MessageToServer>,
                            mut rx_from_hub: mpsc::Receiver<MessageToServer>,
                            mut rx_from_dba_batch: mpsc::Receiver<TableDataVector>,
-                           network_manager: &NetworkManager,
-                           system: &System,
+                           app_context: AppContext,
                           ) {
     loop {
         let result: Result<(), ()> = tokio::select! {

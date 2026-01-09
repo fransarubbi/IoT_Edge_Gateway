@@ -9,3 +9,11 @@ impl PayloadTopic {
         Self { payload, topic }
     }
 }
+
+
+#[derive(Debug)]
+pub enum StateClient {
+    Init,
+    Work,
+    Error,
+}

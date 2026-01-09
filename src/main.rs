@@ -6,12 +6,10 @@ use mqtt::local::run_local_mqtt;
 use mqtt::remote::run_remote_mqtt;
 use crate::database::domain::{TableDataVector};
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
-use crate::database::repository::Repository;
-use crate::fsm::domain::{EventSystem, InternalEvent};
-use crate::message::domain::{BrokerStatus, DataRequest, MessageFromHub, MessageFromServer, MessageToHub, MessageToServer, NetworkChanged, SerializedMessage, ServerStatus};
-use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
-use crate::network::domain::NetworkManager;
-use crate::system::domain::{init_tracing, System};
+use crate::fsm::domain::{InternalEvent};
+use crate::message::domain::{DataRequest, MessageFromHub, NetworkChanged, ServerStatus};
+use crate::network::logic::run_network_task;
+use crate::system::domain::{init_tracing};
 use crate::system::fsm::run_init_fsm;
 
 mod system;
@@ -27,6 +25,21 @@ mod context;
 async fn main() {
 
     init_tracing();
+
+    let (dba_task_tx_to_server, msg_to_server_rx_from_dba) = mpsc::channel::<MessageFromHub>(100);
+    let (dba_task_tx_to_server_batch, msg_to_server_rx_from_dba_batch) = mpsc::channel::<TableDataVector>(100);
+    let (dba_task_tx_to_insert, dba_insert_task_rx_from_dba) = mpsc::channel::<MessageFromHub>(100);
+    let (dba_task_tx_to_db, dba_get_rx_from_dba) = watch::channel(DataRequest::NotGet);
+    let (msg_from_hub_tx_to_dba, dba_task_rx_from_msg) = mpsc::channel::<MessageFromHub>(100);
+    let (tx_server_status, rx) = watch::channel(ServerStatus::Connected);
+    let (dba_get_tx_to_dba, dba_task_rx_from_db) = mpsc::channel::<TableDataVector>(100);
+    let (network_tx_to_dba_insert, dba_insert_rx_from_network) = watch::channel(NetworkChanged::NotChanged);
+    let (mqtt_server_tx, _rx_from_mqtt_server) = broadcast::channel::<InternalEvent>(100);
+    let (mqtt_local_tx, _rx_from_mqtt_hub) = broadcast::channel::<InternalEvent>(100);
+
+
+
+
     let app_context = match run_init_fsm().await {
         Ok(app_context) => app_context,
         Err(e) => {
@@ -35,64 +48,50 @@ async fn main() {
         }
     };
 
-    // para las tareas hacer app_context.clone()
-    
-    let (tx_to_server_batch, rx_from_dba_batch) = mpsc::channel::<TableDataVector>(100);
-    let (tx_to_insert, rx_to_insert) = mpsc::channel::<MessageFromHub>(100);
-    let (tx_to_dba_insert, rx_from_get) = mpsc::channel::<TableDataVector>(100);
-    let (tx_to_db, rx_to_db) = watch::channel::<DataRequest>;
-    let (tx_to_dba, rx_from_hub) = mpsc::channel::<MessageFromHub>(100);
-    let (tx_to_server, rx_from_server) = mpsc::channel::<MessageToServer>(100);
-    let (tx_internal, rx_internal) = mpsc::channel::<MessageFromHub>(100);
-    let (event_local_tx, event_local_rx) = mpsc::channel::<InternalEvent>(100);
-    let (event_server_tx, event_server_rx) = mpsc::channel::<InternalEvent>(100);
-    let (tx_fsm, mut rx_system) = broadcast::channel::<EventSystem>(10);
-    let (tx_msg_to_hub, rx_serialized_to_hub) = mpsc::channel::<SerializedMessage>(100);
-
-    let repo = Repository::create_repository("a/a/a");
-    let mut network_manager = NetworkManager::new("topic/handshake".to_string(), 1, "topic/state".to_string(), 1);
-    let system = System::new("edge0".to_string(), "host".to_string(), "host".to_string());
-
 
     /*
     tokio::spawn(run_fsm(
         
     ));*/
 
-    let rx_system_local = rx_system.resubscribe();
-    tokio::spawn(run_local_mqtt(event_local_tx,
+
+    tokio::spawn(run_local_mqtt(mqtt_local_tx,
                                 rx_system_local,
                                 rx_serialized_to_hub,
                                 &network_manager,
                                 &system
     ));
 
-    let rx_system_server = rx_system.resubscribe();
-    tokio::spawn(run_remote_mqtt(event_server_tx,
+    let rx_network = mqtt_server_tx.subscribe();
+    tokio::spawn(run_remote_mqtt(mqtt_server_tx,
                                  rx_system_server,
                                  &network_manager,
                                  &system
     ));
 
-    tokio::spawn(dba_task(tx_to_server_batch,
-                          tx_to_insert,
-                          tx_to_db,
-                          rx_from_hub,
-                          mut rx_server_status: watch::Receiver<ServerStatus>,
-                          rx_from_get,
-                          &repo
+    tokio::spawn(run_network_task(network_tx_to_dba_insert,
+                                  rx_network,
+                                  app_context.clone()
     ));
 
-    tokio::spawn(dba_insert_task(rx_to_insert,
-                                 mut rx_from_net_man: watch::Receiver<NetworkChanged>,
-                                 &repo,
-                                 &network_manager,  // esta bien?
+    tokio::spawn(dba_task(dba_task_tx_to_server,
+                          dba_task_tx_to_server_batch,
+                          dba_task_tx_to_insert,
+                          dba_task_tx_to_db,
+                          dba_task_rx_from_msg,
+                          tx_server_status.subscribe(),
+                          dba_task_rx_from_db,
+                          app_context.clone()
     ));
 
-    tokio::spawn(dba_get_task(tx_to_dba_insert,
-                              mut rx_server_status: watch::Receiver<DataRequest>,
-                              &repo,
-                              &network_manager
+    tokio::spawn(dba_insert_task(dba_insert_task_rx_from_dba,
+                                 dba_insert_rx_from_network,
+                                 app_context.clone()
+    ));
+
+    tokio::spawn(dba_get_task(dba_get_tx_to_dba,
+                              dba_get_rx_from_dba,
+                              app_context.clone()
     ));
 
     tokio::spawn(msg_from_hub(tx_internal,

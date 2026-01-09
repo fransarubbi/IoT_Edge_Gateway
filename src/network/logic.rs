@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use rmp_serde::from_slice;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tracing::error;
 use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
 use crate::fsm::domain::InternalEvent;
-use crate::message::domain::{MessageFromServerTypes};
+use crate::message::domain::{MessageFromServerTypes, NetworkChanged};
 use crate::network::domain::{Network, NetworkManager};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::System;
@@ -46,51 +46,68 @@ pub async fn load_networks(repo: &Repository,
 /// Si la red no existe:
 /// - Se ingresa al sistema si `delete_network` es false
 ///
-pub async fn run_network_task(mut rx_from_server: mpsc::Receiver<InternalEvent>,
-                              app_context: AppContext,
-                             ) {
+pub async fn run_network_task(tx_to_dba_insert: watch::Sender<NetworkChanged>,
+                              mut rx_from_server: broadcast::Receiver<InternalEvent>,
+                              app_context: AppContext) {
     loop {
         tokio::select! {
-            Some(msg_from_server) = rx_from_server.recv() => {
-                if let InternalEvent::IncomingMessage(msg) = msg_from_server {
-                    if let Ok(MessageFromServerTypes::Network(network)) = from_slice::<MessageFromServerTypes>(&msg.payload) {
-                        let action = {
-                            let manager = app_context.net_man.read().await;
-                            match (manager.networks.get(&network.id_network), network.delete_network) {
-                                (Some(_), true) => Delete,
-                                (Some(existing), false) if existing.active != network.active => {
-                                    Update
+            msg_from_server = rx_from_server.recv() => {
+                match msg_from_server {
+                    Ok(msg) => {
+                        match msg {
+                            InternalEvent::IncomingMessage(internal) => {
+                                if let Ok(MessageFromServerTypes::Network(network)) = from_slice::<MessageFromServerTypes>(&internal.payload) {
+                                    let action = {
+                                        let manager = app_context.net_man.read().await;
+                                        match (manager.networks.get(&network.id_network), network.delete_network) {
+                                            (Some(_), true) => Delete,
+                                            (Some(existing), false) if existing.active != network.active => {
+                                                Update
+                                            }
+                                            (None, false) => Insert,
+                                            _ => Ignore,
+                                        }
+                                    };
+
+                                    if let Delete = action {
+                                        if let Err(e) = app_context.repo.delete_network(&network.id_network).await {
+                                            error!("Error eliminando red {}: {}", network.id_network, e);
+                                            continue;
+                                        }
+                                    }
+
+                                    let mut manager = app_context.net_man.write().await;
+                                    let changed = match action {
+                                        Delete => {
+                                            manager.remove_network(&network.id_network);
+                                            true
+                                        }
+                                        Update => {
+                                            manager.change_active(network.active, &network.id_network);
+                                            true
+                                        }
+                                        Insert => {
+                                            manager.add_network(Network::new(
+                                                network.id_network,
+                                                network.name_network,
+                                                network.active,
+                                                &app_context.system,
+                                            ));
+                                            true
+                                        }
+                                        Ignore => false,
+                                    };
+                                    drop(manager);
+                                    if changed {
+                                        let _ = tx_to_dba_insert.send(NetworkChanged::Changed);
+                                    }
                                 }
-                                (None, false) => Insert,
-                                _ => Ignore,
-                            }
-                        };
-
-                        if let Delete = action {
-                            if let Err(e) = app_context.repo.delete_network(&network.id_network).await {
-                                error!("Error eliminando red {}: {}", network.id_network, e);
-                                continue;
-                            }
+                            },
+                            _ => {},
                         }
-
-                        let mut manager = app_context.net_man.write().await;
-                        match action {
-                            Delete => {
-                                manager.remove_network(&network.id_network);
-                            }
-                            Update => {
-                                manager.change_active(network.active, &network.id_network);
-                            }
-                            Insert => {
-                                manager.add_network(Network::new(
-                                    network.id_network,
-                                    network.name_network,
-                                    network.active,
-                                    &app_context.system,
-                                ));
-                            }
-                            Ignore => {}
-                        }
+                    }
+                    Err(e) => {
+                        error!("{}", e);
                     }
                 }
             }

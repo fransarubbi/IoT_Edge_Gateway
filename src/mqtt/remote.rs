@@ -1,21 +1,17 @@
 use std::fs;
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
-use tokio::sync::mpsc::{Sender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
+use tracing::error;
+use crate::context::domain::AppContext;
 use crate::fsm::domain::{EventSystem, InternalEvent};
-use crate::mqtt::domain::PayloadTopic;
+use crate::message::domain::SerializedMessage;
+use crate::mqtt::domain::{PayloadTopic, StateClient};
 use crate::network::domain::NetworkManager;
-use crate::system::check::ErrorType;
-use crate::system::domain::System;
+use crate::system::domain::{ErrorType, System};
 
 
-#[derive(Debug)]
-enum StateClient {
-    Init,
-    Work,
-    Error,
-}
 
 
 pub fn create_server_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), ErrorType> {
@@ -28,9 +24,9 @@ pub fn create_server_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), E
     opts.set_keep_alive(Duration::from_secs(30));
     opts.set_clean_session(false);
 
-    let ca = fs::read("/etc/edge/certs/ca_server.crt")?;
-    let cert = fs::read("/etc/edge/certs/edge.crt")?;
-    let key = fs::read("/etc/edge/certs/edge.key")?;
+    let ca = fs::read("/etc/mosquitto/certs_edge_remote/ca_edge_remote.crt")?;
+    let cert = fs::read("/etc/mosquitto/certs_edge_remote/edge_remote.crt")?;
+    let key = fs::read("/etc/mosquitto/certs_edge_remote/edge_remote.key")?;
 
     opts.set_transport(Transport::Tls(
         TlsConfiguration::Simple {
@@ -47,8 +43,8 @@ pub fn create_server_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), E
 
 pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
                              mut rx_system: BroadcastReceiver<EventSystem>,
-                             net_man: &NetworkManager,
-                             system: &System) {
+                             mut rx_msg: Receiver<SerializedMessage>,
+                             app_context: AppContext) {
 
     loop {
         match rx_system.recv().await {
@@ -65,11 +61,20 @@ pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
     loop {
         match state {
             StateClient::Init => {
-                match create_server_mqtt(system) {
+                match create_server_mqtt(&app_context.system) {
                     Ok((c, el)) => {
                         client = Some(c.clone());
                         eventloop = Some(el);
-                        subscribe_topics(&c, net_man).await;
+
+                        let subs = {
+                            let manager = app_context.net_man.read().await;
+                            collect_subscriptions(&manager)
+                        };
+
+                        for (topic, qos) in subs {
+                            c.subscribe(topic, qos).await.unwrap();
+                        }
+                        
                         state = StateClient::Work;
                     },
                     Err(e) => {
@@ -105,9 +110,8 @@ pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
                                 }
                             }
                         },
-
-                        /*
-                        msg = rx_msg.recv() => {   // Enviar mensajes
+                        
+                        msg = rx_msg.recv() => {  
                             match msg {
                                 Some(msg) => {
                                     if let Some(c) = client.as_ref() {
@@ -119,15 +123,15 @@ pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
                                         ).await;
 
                                     if let Err(e) = res {
-                                            eprintln!("Error publicando mensaje: {:?}", e);
+                                            error!("Error publicando mensaje: {:?}", e);
                                     }
                                     } else {
-                                        eprintln!("Error: Intentando publicar pero el cliente MQTT no está listo.");
+                                        error!("Error: Intentando publicar pero el cliente MQTT no está listo.");
                                     }
                                 },
                                 None => {},  // El canal se cerró
                             }
-                        },*/
+                        },
                     }
                 } else {   // Si por algún bug llegamos a Work sin eventloop, volvemos a Init
                     state = StateClient::Init;
@@ -142,17 +146,17 @@ pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
 }
 
 
+fn collect_subscriptions(manager: &NetworkManager) -> Vec<(String, QoS)> {
+    let mut subs = Vec::new();
 
-
-async fn subscribe_topics(client: &AsyncClient, net_man: &NetworkManager) {
-
-    for network in &net_man.networks {
-        client.subscribe(&network.1.topic_data.topic, cast_qos(&network.1.topic_data.qos)).await.unwrap();
-        client.subscribe(&network.1.topic_monitor.topic, cast_qos(&network.1.topic_monitor.qos)).await.unwrap();
-        client.subscribe(&network.1.topic_alert_air.topic, cast_qos(&network.1.topic_alert_air.qos)).await.unwrap();
-        client.subscribe(&network.1.topic_alert_temp.topic, cast_qos(&network.1.topic_alert_temp.qos)).await.unwrap();
-        client.subscribe(&network.1.topic_settings_from_hub.topic, cast_qos(&network.1.topic_settings_from_hub.qos)).await.unwrap();
+    for net in manager.networks.values() {
+        subs.push((net.topic_network.topic.clone(), cast_qos(&net.topic_network.qos)));
+        subs.push((net.topic_new_setting_to_edge.topic.clone(), cast_qos(&net.topic_new_setting_to_edge.qos)));
+        subs.push((net.topic_new_setting_to_hub.topic.clone(), cast_qos(&net.topic_new_setting_to_hub.qos)));
+        subs.push((net.topic_new_firmware.topic.clone(), cast_qos(&net.topic_new_firmware.qos)));
     }
+    
+    subs
 }
 
 

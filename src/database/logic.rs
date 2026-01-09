@@ -1,58 +1,76 @@
+//! Módulo de orquestación de base de datos y persistencia.
+//!
+//! Este módulo implementa el patrón **"Store and Forward"** (Almacenar y Reenviar)
+//! para garantizar la integridad de los datos cuando se pierde la conexión con el servidor.
+//!
+//! # Arquitectura
+//!
+//! El sistema se divide en tres tareas asíncronas principales que se comunican mediante canales:
+//!
+//! 1.  **[`dba_task`]:** El despachador central. Decide si los datos van al servidor (si hay red)
+//!     o al buffer de inserción (si no hay red). También coordina la extracción de datos guardados.
+//! 2.  **[`dba_insert_task`]:** El consumidor de escritura. Agrupa los datos en memoria (Buffers)
+//!     y realiza inserciones por lotes (*Batch Insert*) en SQLite para maximizar el rendimiento.
+//! 3.  **[`dba_get_task`]:** El productor de lectura. Extrae datos de la base de datos y los
+//!     inyecta de nuevo en el flujo de envío cuando se recupera la conexión.
+//!
+//! # Concurrencia
+//!
+//! Se utiliza [`AppContext`] para compartir el acceso seguro
+//! al repositorio y a la configuración de red (`NetworkManager`) mediante `Arc<RwLock<...>>`.
+
+
 use std::collections::HashMap;
 use std::mem;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, MissedTickBehavior};
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use tracing::{error, info, instrument};
 use crate::config::sqlite::{BATCH_SIZE, FLUSH_INTERVAL};
-use crate::message::domain::{DataRequest, MessageFromHub, MessageFromHubTypes, MessageToServer, NetworkChanged, ServerStatus};
-use super::domain::{StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
+use crate::context::domain::AppContext;
+use crate::message::domain::{DataRequest, MessageFromHub, MessageFromHubTypes, NetworkChanged, ServerStatus};
+use super::domain::{NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
 use crate::network::domain::{NetworkManager};
 
+
+/// Envío auxiliar "Fire-and-Forget".
+///
+/// Intenta enviar un mensaje por el canal sin bloquear y descartando errores.
+/// Se usa para no detener el flujo principal si un canal secundario está saturado o cerrado.
 async fn send_ignore<T>(tx: &mpsc::Sender<T>, msg: T) {
     let _ = tx.send(msg).await;
 }
 
 
-/// # Función principal de orquestación de la base de datos
+/// Orquestador principal del flujo de datos.
 ///
-/// Orquesta el flujo de mensajes entre el hub, el servidor y la base de datos,
-/// actuando como punto central de decisión según el estado de conectividad
-/// del servidor.
+/// Actúa como un **Router** inteligente que dirige el tráfico basándose en el
+/// estado de la conexión con el servidor (`ServerStatus`).
 ///
-/// ## Flujo de mensajes entrantes
+/// # Máquina de Estados Implícita
 ///
-/// Recibe mensajes provenientes del módulo [`crate::message::logic::msg_from_hub`] y:
+/// - **Connected:**
+///   - Los mensajes entrantes del Hub se envían directo al servidor.
+///   - Se activa la sincronización de datos pendientes (`sync_pending_data`).
+///   - Los datos recuperados de la DB se reenvían al servidor.
 ///
-/// - Reenvía los mensajes directamente al servidor cuando el estado es
-///   [`ServerStatus::Connected`].
-/// - Persiste los mensajes en la base de datos cuando el servidor se encuentra
-///   [`ServerStatus::Disconnected`].
+/// - **Disconnected:**
+///   - Los mensajes entrantes se desvían a [`dba_insert_task`] para ser guardados.
+///   - Se ordena a [`dba_get_task`] que detenga la lectura (`DataRequest::NotGet`).
 ///
-/// ## Sincronización de datos pendientes
+/// # Diseño
 ///
-/// Cuando el servidor recupera conectividad:
-///
-/// - Solicita datos pendientes a la tarea [`dba_get_task`].
-/// - Reenvía los lotes recuperados al servidor para su procesamiento.
-///
-/// ## Notas de diseño
-///
-/// - Esta tarea es *long-lived* y está pensada para ejecutarse durante
-///   todo el ciclo de vida del servicio.
-/// - No garantiza entrega confiable si los canales de comunicación se cierran.
-/// - Los errores de envío se ignoran deliberadamente, ya que el sistema
-///   está diseñado para ejecutarse como un servicio `systemd`.
+/// Utiliza `tokio::select!` para manejar concurrentemente cambios de estado y flujo de mensajes.
 
-pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
+#[instrument(name = "dba_task", skip(app_context))]
+pub async fn dba_task(tx_to_server: mpsc::Sender<MessageFromHub>,
+                      tx_to_server_batch: mpsc::Sender<TableDataVector>,
                       tx_to_insert: mpsc::Sender<MessageFromHub>,
                       tx_to_db: watch::Sender<DataRequest>,
                       mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
                       mut rx_server_status: watch::Receiver<ServerStatus>,
                       mut rx_from_db: mpsc::Receiver<TableDataVector>,
-                      repo: &Repository
-                      ) {
+                      app_context: AppContext) {
 
     let mut state = ServerStatus::Connected;
     let mut last_state = None;
@@ -68,7 +86,7 @@ pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
                     last_state = Some(state);
 
                     if state == ServerStatus::Connected {
-                        sync_pending_data(&repo, &mut state_flag, &tx_to_db).await;
+                        sync_pending_data(&app_context.repo, &mut state_flag, &tx_to_db).await;
                     }
                 }
             }
@@ -76,6 +94,8 @@ pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 let is_connected = matches!(state, ServerStatus::Connected);
                 if is_connected {
+                    send_ignore(&tx_to_server, msg_from_hub).await;
+                } else {
                     send_ignore(&tx_to_insert, msg_from_hub).await;
                 }
             }
@@ -87,7 +107,7 @@ pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
                     },
                     ServerStatus::Disconnected => {
                         if tx_to_db.send(DataRequest::NotGet).is_err() {
-                            log::debug!("❌ Error: Receptor no disponible, mensaje descartado");
+                            error!("Error: Receptor no disponible, mensaje descartado");
                         }
                     }
                 }
@@ -97,32 +117,40 @@ pub async fn dba_task(tx_to_server_batch: mpsc::Sender<TableDataVector>,
 }
 
 
-/// # Función de inserción de elementos en la base de datos
+/// Verifica si existen datos en la base de datos y actualiza la bandera de estado.
 ///
-/// Recibe mensajes de [`dba_task`] de tipo [`MessageFromHub`] y los agrupa
-/// en vectores según su tipo lógico.
-/// Cuando se alcanza la capacidad máxima [`BATCH_SIZE`] o expira el intervalo
-/// de tiempo [`FLUSH_INTERVAL`], los datos acumulados se empaquetan y se
-/// persisten en la base de datos mediante la API de [`Repository`].
-///
-/// ## Flujo de mensajes entrantes
-///
-/// Esta tarea solo recibe mensajes de [`dba_task`] cuando el servidor se
-/// encuentra en estado [`ServerStatus::Disconnected`].
-///
-/// ## Notas de diseño
-///
-/// - Esta tarea es *long-lived* y está pensada para ejecutarse durante
-///   todo el ciclo de vida del servicio.
-/// - No garantiza entrega confiable si los canales de comunicación se cierran.
-/// - Los errores de envío se ignoran deliberadamente, ya que el sistema
-///   está diseñado para ejecutarse como un servicio `systemd`.
+/// Esto permite que el sistema sepa si debe iniciar el proceso de recuperación (`dba_get_task`).
+async fn sync_pending_data(repo: &Repository, state_flag: &mut StateFlag, tx_to_db: &watch::Sender<DataRequest>) {
+    for &table in Table::all() {
+        let has_data = repo.has_data(table).await.unwrap_or(false);
+        state_flag.update_state(has_data, tx_to_db).await;
+    }
+}
 
+
+// -------------------------------------------------------------------------------------------------
+
+
+/// Tarea de persistencia y buffering.
+///
+/// Recibe mensajes individuales y los acumula en buffers de memoria ([`Vectors`]) organizados
+/// por red (`network_id`).
+///
+/// # Estrategia de Escritura
+///
+/// Los datos se escriben en disco (SQLite) cuando ocurre una de dos condiciones:
+/// 1.  **Capacidad:** Un buffer alcanza [`BATCH_SIZE`] elementos.
+/// 2.  **Tiempo:** El temporizador [`FLUSH_INTERVAL`] expira (evita datos estancados).
+///
+/// # Gestión de Configuración
+///
+/// Escucha cambios en `NetworkManager`. Si la configuración de redes cambia,
+/// sincroniza los buffers locales (crea nuevos para redes nuevas, elimina los de redes borradas).
+
+#[instrument(name = "dba_insert_task", skip(app_context))]
 pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
                              mut rx_from_net_man: watch::Receiver<NetworkChanged>,
-                             repo: &Repository,
-                             shared_network_manager: Arc<RwLock<NetworkManager>>,
-                            ) {
+                             app_context: AppContext) {
 
     let mut net_vec: HashMap<String, Vectors> = HashMap::new();
     let mut timer = interval(FLUSH_INTERVAL);
@@ -130,8 +158,8 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
     let mut last_state = *rx_from_net_man.borrow();
 
     {   // Inicialización: Bloquear para leer la config inicial
-        let manager = shared_network_manager.read().await;
-        for (id, _) in &manager.networks {
+        let manager = app_context.net_man.read().await;
+        for (id, _ ) in &manager.networks {
             net_vec.insert(id.clone(), Vectors::with_capacity(BATCH_SIZE));
         }
     }
@@ -139,13 +167,13 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
     loop {
         tokio::select! {
             Some(msg_from_dba) = rx_from_dba.recv() => {
-                let manager = shared_network_manager.read().await;
+                let manager = app_context.net_man.read().await;
                 sort_by_vectors(msg_from_dba, &mut net_vec, &manager);
 
                 for (_, vectors) in net_vec.iter_mut() {
                     if vectors.is_full(BATCH_SIZE) {
                         let package = flush_buffer(vectors);
-                        repo.insert(package).await.ok();
+                        app_context.repo.insert(package).await.ok();
                     }
                 }
             }
@@ -154,7 +182,7 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
                 for (_, vectors) in net_vec.iter_mut() {
                     if !vectors.is_empty() {
                         let package = flush_buffer(vectors);
-                        repo.insert(package).await.ok();
+                        app_context.repo.insert(package).await.ok();
                     }
                 }
             }
@@ -168,9 +196,8 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
                     last_state = current_state;
 
                     if current_state == NetworkChanged::Changed {
-                        log::info!("Actualizando configuración de redes en memoria...");
-                        // Obtenemos el lock de lectura para ver la NUEVA configuración
-                        let manager = shared_network_manager.read().await;
+                        info!("Actualizando configuración de redes en memoria...");
+                        let manager = app_context.net_man.read().await;
                         sync_local_with_global(&mut net_vec, &manager);
                     }
                 }
@@ -180,88 +207,9 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
 }
 
 
-/// # Función de obtención de elementos de la base de datos
+/// Clasifica un mensaje entrante y lo inserta en el vector correspondiente en memoria.
 ///
-/// Cuando el servidor pasa al estado [`ServerStatus::Connected`] luego de estar
-/// [`ServerStatus::Disconnected`], esta función recibe la notificación desde
-/// [`dba_task`] indicando que puede quitar elementos de la base de datos y
-/// enviarlos a [`dba_task`] que es la tarea administradora. Se envían varios
-/// batch de elementos, donde cada uno corresponde a un tipo de datos en particular.
-///
-/// ## Notas de diseño
-///
-/// - Esta tarea es *long-lived* y está pensada para ejecutarse durante
-///   todo el ciclo de vida del servicio.
-/// - No garantiza entrega confiable si los canales de comunicación se cierran.
-/// - Los errores de envío se ignoran deliberadamente, ya que el sistema
-///   está diseñado para ejecutarse como un servicio `systemd`.
-
-pub async fn dba_get_task(tx_to_dba: mpsc::Sender<TableDataVector>,
-                          mut rx_server_status: watch::Receiver<DataRequest>,
-                          repo: &Repository,
-                          net_man: &NetworkManager
-                         ) {
-    loop {
-        let current_state = *rx_server_status.borrow();
-
-        match current_state {
-            DataRequest::NotGet => {
-                if rx_server_status.changed().await.is_err() {
-                    break;
-                }
-            }
-            DataRequest::Get => {
-                tokio::select! {
-                    _ = rx_server_status.changed() => {
-                        continue;
-                    }
-
-                    _ = get_all_tables(repo, net_man, &tx_to_dba) => {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-async fn sync_pending_data(repo: &Repository, state_flag: &mut StateFlag, tx_to_db: &watch::Sender<DataRequest>) {
-    for &table in Table::all() {
-        let has_data = repo.has_data(table).await.unwrap_or(false);
-        state_flag.update_state(has_data, tx_to_db).await;
-    }
-}
-
-
-async fn get_all_tables(repo: &Repository, net_man: &NetworkManager, tx: &mpsc::Sender<TableDataVector>) {
-    for (_, network) in &net_man.networks {
-        get_for_table_and_send(repo, Table::Measurement, &network.topic_data.topic, tx).await;
-        get_for_table_and_send(repo, Table::Monitor, &network.topic_monitor.topic, tx).await;
-        get_for_table_and_send(repo, Table::AlertAir, &network.topic_alert_air.topic, tx).await;
-        get_for_table_and_send(repo, Table::AlertTemp, &network.topic_alert_temp.topic, tx).await;
-    }
-}
-
-
-async fn get_for_table_and_send(repo: &Repository, table: Table, topic: &str, tx: &mpsc::Sender<TableDataVector>) {
-    match repo.pop_batch(table, topic).await {
-        Ok(tdv) => {
-            if tdv.is_empty() {
-                return;
-            }
-            if let Err(_) = tx.send(tdv).await {
-                log::warn!("❌ Receptor cerrado, deteniendo ciclo de lectura");
-                return;
-            }
-        },
-        Err(e) => {
-            log::error!("❌ Error leyendo tabla {:?}: {}", table, e);
-        }
-    }
-}
-
-
+/// Identifica la red y el tipo de tabla basándose en el tópico MQTT.
 fn sort_by_vectors(msg: MessageFromHub, net_vec: &mut HashMap<String, Vectors>, net_manager: &NetworkManager) {
 
     let id = match net_manager.extract_net_id(&msg.topic_where_arrive) {
@@ -284,6 +232,7 @@ fn sort_by_vectors(msg: MessageFromHub, net_vec: &mut HashMap<String, Vectors>, 
 }
 
 
+/// Convierte el mensaje genérico a una fila de base de datos específica y lo empuja al vector.
 fn match_message_with_row(msg: MessageFromHubTypes, topic: String, id: &str, net_vec: &mut HashMap<String, Vectors>) {
     match msg {
         MessageFromHubTypes::Report(report) => {
@@ -307,6 +256,10 @@ fn match_message_with_row(msg: MessageFromHubTypes, topic: String, id: &str, net
 }
 
 
+/// Vacía los vectores de memoria y retorna un paquete listo para insertar.
+///
+/// Utiliza `mem::replace` para una operación eficiente de "swap", dejando
+/// vectores nuevos vacíos en su lugar con la capacidad pre-reservada.
 fn flush_buffer(vec: &mut Vectors) -> Vec<TableDataVectorTypes> {
     let mut batch = Vec::new();
 
@@ -334,6 +287,10 @@ fn flush_buffer(vec: &mut Vectors) -> Vec<TableDataVectorTypes> {
 }
 
 
+/// Sincroniza el mapa local de buffers con la configuración global de redes.
+///
+/// - Elimina buffers de redes que ya no existen (Pruning).
+/// - Crea buffers para redes nuevas (Populating).
 pub fn sync_local_with_global(local_buffers: &mut HashMap<String, Vectors>,
                               network_manager: &NetworkManager
                              ) {
@@ -354,4 +311,105 @@ pub fn sync_local_with_global(local_buffers: &mut HashMap<String, Vectors>,
                 Vectors::with_capacity(BATCH_SIZE)
             });
     }
+}
+
+
+// -------------------------------------------------------------------------------------------------
+
+
+/// Tarea de recuperación de datos.
+///
+/// Extrae datos de la base de datos para ser enviados al servidor.
+/// Funciona bajo demanda controlada por el canal `rx_server_status`.
+///
+/// # Funcionamiento
+///
+/// 1. Espera la señal [`DataRequest::Get`].
+/// 2. Crea una **snapshot** de la lista de redes (`collect`) para no bloquear el `RwLock`
+///    durante las operaciones de I/O de base de datos.
+/// 3. Itera sobre cada red y tabla, extrayendo lotes (`pop_batch`) y enviándolos.
+/// 4. Incluye un mecanismo de pausa (`sleep`) para no saturar la CPU/DB en bucles vacíos.
+
+#[instrument(name = "dba_get_task")]
+pub async fn dba_get_task(tx_to_dba: mpsc::Sender<TableDataVector>,
+                          mut rx_from_dba: watch::Receiver<DataRequest>,
+                          app_context: AppContext,
+                         ) {
+
+    loop {
+        let state = *rx_from_dba.borrow();
+        match state {
+            DataRequest::NotGet => {
+                if rx_from_dba.changed().await.is_err() {
+                    break;
+                }
+            }
+
+            DataRequest::Get => {
+                let vec_networks = {
+                    let manager = app_context.net_man.read().await;
+                    collect(&manager)
+                };
+
+                tokio::select! {
+                    _ = rx_from_dba.changed() => {
+                        continue;
+                    }
+
+                    _ = get_all_tables(&app_context.repo, vec_networks, &tx_to_dba) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/// Itera sobre todas las redes configuradas y consulta todas las tablas relevantes.
+async fn get_all_tables(repo: &Repository, vec: Vec<NetworkAux>, tx: &mpsc::Sender<TableDataVector>) {
+    for net in vec {
+        get_for_table_and_send(repo, Table::Measurement, &net.topic_data.topic, tx).await;
+        get_for_table_and_send(repo, Table::Monitor, &net.topic_monitor.topic, tx).await;
+        get_for_table_and_send(repo, Table::AlertAir, &net.topic_alert_air.topic, tx).await;
+        get_for_table_and_send(repo, Table::AlertTemp, &net.topic_alert_temp.topic, tx).await;
+    }
+}
+
+
+/// Extrae un lote de una tabla específica y lo envía si no está vacío.
+async fn get_for_table_and_send(repo: &Repository, table: Table, topic: &str, tx: &mpsc::Sender<TableDataVector>) {
+    match repo.pop_batch(table, topic).await {
+        Ok(tdv) => {
+            if tdv.is_empty() {
+                return;
+            }
+            if let Err(_) = tx.send(tdv).await {
+                log::warn!("❌ Receptor cerrado, deteniendo ciclo de lectura");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("❌ Error leyendo tabla {:?}: {}", table, e);
+        }
+    }
+}
+
+
+/// Genera una copia ligera (Snapshot) de la configuración de redes actual.
+///
+/// Esto permite iterar sobre las redes para hacer consultas a BD sin mantener
+/// bloqueado el `RwLock` del `NetworkManager`.
+fn collect(manager: &NetworkManager) -> Vec<NetworkAux> {
+    let mut networks : Vec<NetworkAux> = Vec::new();
+    for net in manager.networks.values() {
+        let net_aux = NetworkAux::new(
+                                      net.id_network.clone(),
+                                      net.topic_data.clone(),
+                                      net.topic_alert_air.clone(),
+                                      net.topic_alert_temp.clone(),
+                                      net.topic_monitor.clone());
+        networks.push(net_aux);
+    }
+    networks
 }
