@@ -9,7 +9,6 @@
 
 use tokio::sync::{mpsc, watch};
 use tracing::error;
-use crate::message::domain::{DataRequest};
 use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
 use crate::network::domain::Topic;
 
@@ -267,3 +266,7 @@ impl NetworkAux {
         }
     }
 }
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataRequest { Get, NotGet }

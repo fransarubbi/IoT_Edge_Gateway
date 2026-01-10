@@ -391,7 +391,7 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
         }
         let repo = Repository::create_repository(&system.db_path).await;
         for net in &networks {
-            match repo.insert_network(net.1.clone()).await {
+            match repo.insert_network(NetworkRow::new(net.1.id_network.clone(), net.1.name_network.clone(), net.1.active)).await {
                 Ok(_) => {},
                 Err(e) => return Err(ErrorType::from(e)),
             }

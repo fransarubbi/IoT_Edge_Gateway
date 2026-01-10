@@ -4,25 +4,31 @@ use super::domain::{EventSystem, State, SubStateQuorum, SubStateBalanceMode, Sub
 
 
 
-pub async fn run_fsm(tx: broadcast::Sender<EventSystem>, mut rx: mpsc::Receiver<EventSystem>) {
+pub async fn run_fsm(tx: broadcast::Sender<EventSystem>,
+                     mut rx: mpsc::Receiver<EventSystem>) {
+
     let mut state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);
-    let mut flag = Flag::Null;
+
+    /*
+    Necesito balance_epoch en base de datos
+
+     */
 
     while let Some(event) = rx.recv().await {
 
-        match (&state, &flag) {
+        match &state {
             
-            (State::BalanceMode(SubStateBalanceMode::InitBalanceMode), _) => {
+            State::BalanceMode(SubStateBalanceMode::InitBalanceMode) => {
                 println!("entry: update_balance_epoch()");
                 state = State::BalanceMode(SubStateBalanceMode::InHandshake);
             }
 
-            (State::BalanceMode(SubStateBalanceMode::InHandshake), _) => {
+            State::BalanceMode(SubStateBalanceMode::InHandshake) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
             }
 
-            (State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum)), _) => {
+            State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum)) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake));
                 state = State::Normal;
@@ -30,36 +36,36 @@ pub async fn run_fsm(tx: broadcast::Sender<EventSystem>, mut rx: mpsc::Receiver<
                 state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert));
             }
 
-            (State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake)), _) => {
+            State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake)) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
             }
 
-            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert)), _) => {
+            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert)) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data));
             }
 
-            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data)), _) => {
+            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data)) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor));
             }
 
-            (State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor)), _) => {
+            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor)) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::OutHandshake);
             }
 
-            (State::BalanceMode(SubStateBalanceMode::OutHandshake), _) => {
+            State::BalanceMode(SubStateBalanceMode::OutHandshake) => {
                 println!("entry: update_state_msg(), ...");
                 state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
             }
 
-            (State::Normal, _) => {
+            State::Normal => {
                 println!("entry: normal");
             }
 
-            (State::SafeMode, _) => {
+            State::SafeMode => {
                 println!("entry: safe");
                 state = State::Normal;
             }
@@ -68,8 +74,6 @@ pub async fn run_fsm(tx: broadcast::Sender<EventSystem>, mut rx: mpsc::Receiver<
 }
 
 
+async fn in_handshake() {
 
-
-
-
-
+}

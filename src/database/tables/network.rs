@@ -1,5 +1,5 @@
 use sqlx::{Executor, SqlitePool};
-use crate::network::domain::{Network, NetworkRow};
+use crate::network::domain::{NetworkRow};
 
 
 /// Crea la tabla `network` en la base de datos si aún no existe.
@@ -68,10 +68,9 @@ pub async fn create_table_network(pool: &SqlitePool) -> Result<(), sqlx::Error> 
 ///
 /// - Los campos booleanos se convierten automáticamente a enteros (0/1) por SQLite.
 /// - Los campos de tipo struct interno (`Topic`) se aplanan en columnas individuales.
-pub async fn insert_network_database(
-    pool: &SqlitePool,
-    data: Network
-) -> Result<(), sqlx::Error> {
+pub async fn insert_network_database(pool: &SqlitePool,
+                                     data: NetworkRow
+                                    ) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
@@ -153,4 +152,30 @@ pub async fn get_all_network_data(pool: &SqlitePool) -> Result<Vec<NetworkRow>, 
         .await?;
 
     Ok(result)
+}
+
+
+pub async fn upsert_network(pool: &SqlitePool,
+                            data: NetworkRow
+                            ) -> Result<(), sqlx::Error> {
+
+    sqlx::query(
+        r#"
+        INSERT INTO network (
+            id_network,
+            name_network,
+            active
+        ) VALUES (?, ?, ?)
+        ON CONFLICT(id_network) DO UPDATE SET
+            name_network = excluded.name_network,
+            active       = excluded.active
+        "#
+    )
+        .bind(data.id_network)
+        .bind(&data.name_network)
+        .bind(data.active)
+        .execute(pool)
+        .await?;
+
+    Ok(())
 }

@@ -296,14 +296,6 @@ pub enum BrokerStatus { Connected, Disconnected }
 pub enum ServerStatus { Connected, Disconnected }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkChanged { Changed, NotChanged }
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataRequest { Get, NotGet }
-
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedMessage {
     pub topic: String,

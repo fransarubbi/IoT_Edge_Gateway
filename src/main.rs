@@ -7,8 +7,9 @@ use mqtt::remote::run_remote_mqtt;
 use crate::database::domain::{TableDataVector};
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
 use crate::fsm::domain::{InternalEvent};
-use crate::message::domain::{DataRequest, MessageFromHub, NetworkChanged, ServerStatus};
-use crate::network::logic::run_network_task;
+use crate::message::domain::{DataRequest, MessageFromHub, ServerStatus};
+use crate::network::domain::{NetworkChanged, UpdateNetwork};
+use crate::network::logic::{network_dba_task, run_network_task};
 use crate::system::domain::{init_tracing};
 use crate::system::fsm::run_init_fsm;
 
@@ -33,7 +34,7 @@ async fn main() {
     let (msg_from_hub_tx_to_dba, dba_task_rx_from_msg) = mpsc::channel::<MessageFromHub>(100);
     let (tx_server_status, rx) = watch::channel(ServerStatus::Connected);
     let (dba_get_tx_to_dba, dba_task_rx_from_db) = mpsc::channel::<TableDataVector>(100);
-    let (network_tx_to_dba_insert, dba_insert_rx_from_network) = watch::channel(NetworkChanged::NotChanged);
+    let (network_tx_to_dba_insert, dba_insert_rx_from_network) = mpsc::channel::<UpdateNetwork>(100);
     let (mqtt_server_tx, _rx_from_mqtt_server) = broadcast::channel::<InternalEvent>(100);
     let (mqtt_local_tx, _rx_from_mqtt_hub) = broadcast::channel::<InternalEvent>(100);
 
@@ -72,6 +73,10 @@ async fn main() {
     tokio::spawn(run_network_task(network_tx_to_dba_insert,
                                   rx_network,
                                   app_context.clone()
+    ));
+    
+    tokio::spawn(network_dba_task(
+        
     ));
 
     tokio::spawn(dba_task(dba_task_tx_to_server,

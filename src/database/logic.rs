@@ -27,10 +27,10 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{error, info, instrument};
 use crate::config::sqlite::{BATCH_SIZE, FLUSH_INTERVAL};
 use crate::context::domain::AppContext;
-use crate::message::domain::{DataRequest, MessageFromHub, MessageFromHubTypes, NetworkChanged, ServerStatus};
-use super::domain::{NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
+use crate::message::domain::{MessageFromHub, MessageFromHubTypes, ServerStatus};
+use super::domain::{DataRequest, NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
-use crate::network::domain::{NetworkManager};
+use crate::network::domain::{NetworkManager, UpdateNetwork};
 
 
 /// Envío auxiliar "Fire-and-Forget".
@@ -149,13 +149,12 @@ async fn sync_pending_data(repo: &Repository, state_flag: &mut StateFlag, tx_to_
 
 #[instrument(name = "dba_insert_task", skip(app_context))]
 pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
-                             mut rx_from_net_man: watch::Receiver<NetworkChanged>,
+                             mut rx_from_net_man: mpsc::Receiver<UpdateNetwork>,
                              app_context: AppContext) {
 
     let mut net_vec: HashMap<String, Vectors> = HashMap::new();
     let mut timer = interval(FLUSH_INTERVAL);
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut last_state = *rx_from_net_man.borrow();
 
     {   // Inicialización: Bloquear para leer la config inicial
         let manager = app_context.net_man.read().await;
@@ -187,19 +186,14 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
                 }
             }
 
-            status_result = rx_from_net_man.changed() => {
-                if status_result.is_err() { break; }
-
-                let current_state = *rx_from_net_man.borrow();
-
-                if last_state != current_state {
-                    last_state = current_state;
-
-                    if current_state == NetworkChanged::Changed {
+            Some(status_result) = rx_from_net_man.recv() => {
+                match status_result {
+                    UpdateNetwork::Changed => {
                         info!("Actualizando configuración de redes en memoria...");
                         let manager = app_context.net_man.read().await;
                         sync_local_with_global(&mut net_vec, &manager);
-                    }
+                    },
+                    UpdateNetwork::NotChanged => {},
                 }
             }
         }
@@ -333,8 +327,7 @@ pub fn sync_local_with_global(local_buffers: &mut HashMap<String, Vectors>,
 #[instrument(name = "dba_get_task")]
 pub async fn dba_get_task(tx_to_dba: mpsc::Sender<TableDataVector>,
                           mut rx_from_dba: watch::Receiver<DataRequest>,
-                          app_context: AppContext,
-                         ) {
+                          app_context: AppContext) {
 
     loop {
         let state = *rx_from_dba.borrow();

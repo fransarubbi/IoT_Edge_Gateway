@@ -45,8 +45,8 @@ use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_ai
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
-use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database};
-use crate::network::domain::{Network, NetworkRow};
+use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
+use crate::network::domain::{NetworkRow};
 
 
 /// Repositorio central de acceso a la base de datos.
@@ -217,7 +217,7 @@ impl Repository {
     /// Inserta una nueva configuración de red en la base de datos.
     ///
     /// Utilizado al recibir nuevas configuraciones desde el Servidor.
-    pub async fn insert_network(&self, data: Network) -> Result<(), sqlx::Error> {
+    pub async fn insert_network(&self, data: NetworkRow) -> Result<(), sqlx::Error> {
         insert_network_database(&self.pool, data).await?;
         Ok(())
     }
@@ -229,6 +229,11 @@ impl Repository {
     /// * `id` - El identificador único de la red (ej. "sala7").
     pub async fn delete_network(&self, id: &str) -> Result<(), sqlx::Error> {
         delete_network_database(&self.pool, id).await?;
+        Ok(())
+    }
+
+    pub async fn update_network(&self, net: NetworkRow) -> Result<(), sqlx::Error> {
+        upsert_network(&self.pool, net).await?;
         Ok(())
     }
 

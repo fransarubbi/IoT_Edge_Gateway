@@ -284,7 +284,7 @@ impl Network {
 
 
 /// Modelo de datos plano para mapeo directo con SQLx (SQLite).
-#[derive(Debug, FromRow, Deserialize)]
+#[derive(Debug, FromRow, Deserialize, PartialEq)]
 pub struct NetworkRow {
     pub id_network: String,
     pub name_network: String,
@@ -297,12 +297,29 @@ impl NetworkRow {
     pub fn cast_to_network(self, system: &System) -> Network {
         Network::new(self.id_network, self.name_network, self.active, &system)
     }
+
+    pub fn new(id_network: String, name_network: String, active: bool) -> Self {
+        Self { id_network, name_network, active }
+    }
 }
 
 
+#[derive(Debug, PartialEq)]
 pub enum NetworkAction {
     Delete,
     Update,
     Insert,
     Ignore,
 }
+
+
+#[derive(Debug, PartialEq)]
+pub enum NetworkChanged {
+    Insert(NetworkRow),
+    Update(NetworkRow),
+    Delete { id: String },
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateNetwork { Changed, NotChanged }
