@@ -8,7 +8,6 @@ pub enum InternalEvent {
     LocalConnected,
     LocalDisconnected,
     IncomingMessage(PayloadTopic),
-    NetManagerChanged,
 }
 
 

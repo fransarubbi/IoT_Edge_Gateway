@@ -17,3 +17,4 @@ pub enum StateClient {
     Work,
     Error,
 }
+

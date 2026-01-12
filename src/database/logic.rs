@@ -30,6 +30,7 @@ use crate::context::domain::AppContext;
 use crate::message::domain::{MessageFromHub, MessageFromHubTypes, ServerStatus};
 use super::domain::{DataRequest, NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
+use crate::fsm::domain::InternalEvent;
 use crate::network::domain::{NetworkManager, UpdateNetwork};
 
 
@@ -68,26 +69,28 @@ pub async fn dba_task(tx_to_server: mpsc::Sender<MessageFromHub>,
                       tx_to_insert: mpsc::Sender<MessageFromHub>,
                       tx_to_db: watch::Sender<DataRequest>,
                       mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
-                      mut rx_server_status: watch::Receiver<ServerStatus>,
+                      mut rx_server_status: mpsc::Receiver<InternalEvent>,
                       mut rx_from_db: mpsc::Receiver<TableDataVector>,
                       app_context: AppContext) {
 
     let mut state = ServerStatus::Connected;
-    let mut last_state = None;
     let mut state_flag = StateFlag::Init;
 
     loop {
         tokio::select! {
-            status_result = rx_server_status.changed() => {
-                if status_result.is_err() { break; }
-                state = *rx_server_status.borrow();
 
-                if last_state != Some(state) {
-                    last_state = Some(state);
-
-                    if state == ServerStatus::Connected {
-                        sync_pending_data(&app_context.repo, &mut state_flag, &tx_to_db).await;
-                    }
+            Some(msg) = rx_server_status.recv() => {
+                match msg {
+                    InternalEvent::ServerConnected => {
+                        state = ServerStatus::Connected;
+                    },
+                    InternalEvent::ServerDisconnected => {
+                        state = ServerStatus::Disconnected;
+                    },
+                    _ => {},
+                }
+                if state == ServerStatus::Connected {
+                    sync_pending_data(&app_context.repo, &mut state_flag, &tx_to_db).await;
                 }
             }
 
@@ -285,7 +288,7 @@ fn flush_buffer(vec: &mut Vectors) -> Vec<TableDataVectorTypes> {
 ///
 /// - Elimina buffers de redes que ya no existen (Pruning).
 /// - Crea buffers para redes nuevas (Populating).
-pub fn sync_local_with_global(local_buffers: &mut HashMap<String, Vectors>,
+fn sync_local_with_global(local_buffers: &mut HashMap<String, Vectors>,
                               network_manager: &NetworkManager
                              ) {
 

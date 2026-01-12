@@ -5,7 +5,7 @@ use crate::system::domain::{ErrorType, StateInit};
 use crate::context::domain::AppContext;
 
 
-pub async fn run_init_fsm() -> Result<AppContext, ErrorType> {
+pub async fn init_fsm() -> Result<AppContext, ErrorType> {
     let mut state = StateInit::CheckSystem;
     let mut flag = Flag::Null;
 

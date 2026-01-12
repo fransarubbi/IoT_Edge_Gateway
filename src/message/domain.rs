@@ -1,15 +1,17 @@
 use serde::{Serialize, Deserialize};
-use sqlx::{Type};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use sqlx::Type;
 use crate::fsm::domain::{State};
 use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
 
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
+#[repr(u8)]
 pub enum DestinationType {
     #[default]
-    Node,
-    Edge,
-    Server,
+    Node  = 0,
+    Edge  = 1,
+    Server = 2,
 }
 
 
@@ -212,6 +214,23 @@ pub struct StateSafeMode {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Heartbeat {
+    pub metadata: Metadata,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Active {
+    pub active_network: bool,
+}
+
+
+impl Active {
+    pub fn new(active_network: bool) -> Self { Self { active_network } }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageFromHub {
     pub topic_where_arrive: String,
@@ -227,7 +246,7 @@ impl MessageFromHub {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "data")]
+#[serde(untagged)]
 pub enum MessageFromHubTypes {
     Report(Measurement),
     Monitor(Monitor),
@@ -239,25 +258,20 @@ pub enum MessageFromHubTypes {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MessageToHub {
-    pub topic_to: String,
-    pub msg: MessageToHubTypes,
-}
-
-
-impl MessageToHub {
-    pub fn new(topic_to: String, msg: MessageToHubTypes) -> Self {
-        Self { topic_to, msg }
-    }
+#[serde(untagged)]
+pub enum MessageToHub {
+    ToHub(MessageToHubTypes),
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
 pub enum MessageToHubTypes {
     Handshake(HandshakeToHub),
     StateBalanceMode(StateBalanceMode),
     StateNormal(StateNormal),
     StateSafeMode(StateSafeMode),
+    Heartbeat(Heartbeat),
     ServerToHub(MessageFromServer),
 }
 
@@ -277,23 +291,27 @@ impl MessageFromServer {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
 pub enum MessageFromServerTypes {
     Network(Network),
     Settings(Settings),
+    Active(Active),
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
 pub enum MessageToServer {
-    HubToServer(MessageFromHub),
+    ToServer(MessageFromHub),
 }
-
-
-pub enum BrokerStatus { Connected, Disconnected }
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus { Connected, Disconnected }
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalStatus { Connected, Disconnected }
 
 
 #[derive(Debug, Serialize, Deserialize)]

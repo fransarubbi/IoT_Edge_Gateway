@@ -1,13 +1,12 @@
 use std::fs;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
+use tokio::sync::mpsc;
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tracing::error;
 use crate::context::domain::AppContext;
 use crate::message::domain::SerializedMessage;
 use crate::network::domain::NetworkManager;
-use crate::fsm::domain::{EventSystem, InternalEvent};
+use crate::fsm::domain::{InternalEvent};
 use crate::mqtt::domain::{PayloadTopic, StateClient};
 use crate::system::domain::{ErrorType, System};
 
@@ -43,19 +42,10 @@ pub fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), Er
 
 
 
-pub async fn run_local_mqtt(tx: broadcast::Sender<InternalEvent>, 
-                            mut rx_system: BroadcastReceiver<EventSystem>, 
-                            mut rx_msg: Receiver<SerializedMessage>,
-                            app_context: AppContext) {
-
-    loop {
-        match rx_system.recv().await {   
-            Ok(EventSystem::EventSystemOk) => break,
-            Err(_) => return,
-            _ => {},
-        }
-    }
-
+pub async fn local_mqtt(tx: mpsc::Sender<InternalEvent>,
+                        mut rx_msg: mpsc::Receiver<SerializedMessage>,
+                        app_context: AppContext) {
+    
     let mut state = StateClient::Init;
     let mut client: Option<AsyncClient> = None;
     let mut eventloop: Option<EventLoop> = None;
@@ -101,10 +91,13 @@ pub async fn run_local_mqtt(tx: broadcast::Sender<InternalEvent>,
                                     Event::Incoming(Incoming::ConnAck(_)) => {
                                         let _ = tx.send(InternalEvent::LocalConnected);
                                     },
+                                    Event::Incoming(Incoming::Disconnect) => {
+                                        let _ = tx.send(InternalEvent::LocalDisconnected);
+                                    },
                                     _ => {}, // KeepAlive, Pings, etc.
                                 },
                                 Err(e) => {
-                                    log::error!("{}", e);
+                                    error!("{}", e);
                                     let _ = tx.send(InternalEvent::LocalDisconnected);
                                     state = StateClient::Error;  // Vamos a error para reconectar
                                 }
@@ -154,7 +147,6 @@ fn collect_subscriptions(manager: &NetworkManager) -> Vec<(String, QoS)> {
         subs.push((net.topic_monitor.topic.clone(), cast_qos(&net.topic_monitor.qos)));
         subs.push((net.topic_alert_air.topic.clone(), cast_qos(&net.topic_alert_air.qos)));
         subs.push((net.topic_alert_temp.topic.clone(), cast_qos(&net.topic_alert_temp.qos)));
-        subs.push((net.topic_hub_settings_ok.topic.clone(), cast_qos(&net.topic_hub_settings_ok.qos)));
         subs.push((net.topic_hub_firmware_ok.topic.clone(), cast_qos(&net.topic_hub_firmware_ok.qos)));
         subs.push((net.topic_balance_mode_handshake.topic.clone(), cast_qos(&net.topic_balance_mode_handshake.qos)));
     }

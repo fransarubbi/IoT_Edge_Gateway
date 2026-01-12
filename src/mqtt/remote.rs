@@ -1,11 +1,10 @@
 use std::fs;
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::broadcast::{Receiver as BroadcastReceiver};
+use tokio::sync::mpsc;
 use tracing::error;
 use crate::context::domain::AppContext;
-use crate::fsm::domain::{EventSystem, InternalEvent};
+use crate::fsm::domain::{InternalEvent};
 use crate::message::domain::SerializedMessage;
 use crate::mqtt::domain::{PayloadTopic, StateClient};
 use crate::network::domain::NetworkManager;
@@ -41,18 +40,9 @@ pub fn create_server_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), E
 
 
 
-pub async fn run_remote_mqtt(event_tx: Sender<InternalEvent>,
-                             mut rx_system: BroadcastReceiver<EventSystem>,
-                             mut rx_msg: Receiver<SerializedMessage>,
-                             app_context: AppContext) {
-
-    loop {
-        match rx_system.recv().await {
-            Ok(EventSystem::EventSystemOk) => break,
-            Err(_) => return,
-            _ => {},
-        }
-    }
+pub async fn remote_mqtt(event_tx: mpsc::Sender<InternalEvent>,
+                         mut rx_msg: mpsc::Receiver<SerializedMessage>,
+                         app_context: AppContext) {
 
     let mut state = StateClient::Init;
     let mut client: Option<AsyncClient> = None;
@@ -151,7 +141,6 @@ fn collect_subscriptions(manager: &NetworkManager) -> Vec<(String, QoS)> {
 
     for net in manager.networks.values() {
         subs.push((net.topic_network.topic.clone(), cast_qos(&net.topic_network.qos)));
-        subs.push((net.topic_new_setting_to_edge.topic.clone(), cast_qos(&net.topic_new_setting_to_edge.qos)));
         subs.push((net.topic_new_setting_to_hub.topic.clone(), cast_qos(&net.topic_new_setting_to_hub.qos)));
         subs.push((net.topic_new_firmware.topic.clone(), cast_qos(&net.topic_new_firmware.qos)));
     }

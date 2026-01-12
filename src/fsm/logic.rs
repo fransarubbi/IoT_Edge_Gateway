@@ -4,7 +4,7 @@ use super::domain::{EventSystem, State, SubStateQuorum, SubStateBalanceMode, Sub
 
 
 
-pub async fn run_fsm(tx: broadcast::Sender<EventSystem>,
+pub async fn fsm(tx: broadcast::Sender<EventSystem>,
                      mut rx: mpsc::Receiver<EventSystem>) {
 
     let mut state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);

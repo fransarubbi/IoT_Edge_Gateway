@@ -12,13 +12,12 @@
 
 
 use std::sync::Arc;
-use rmp_serde::from_slice;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, instrument};
 use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
-use crate::fsm::domain::InternalEvent;
-use crate::message::domain::{MessageFromServerTypes};
+use crate::message::domain::{Active, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes};
+use crate::message::domain::MessageToHub::ToHub;
 use crate::network::domain::{Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::System;
@@ -72,68 +71,60 @@ pub async fn load_networks(repo: &Repository,
 /// - Notificar a la tarea de base de datos (`network_dba_task`).
 /// - Notificar a la tarea de inserción de datos (`dba_insert_task`) para refrescar buffers.
 
-#[instrument(name = "run_network_task", skip(app_context))]
-pub async fn run_network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
-                              tx_to_dba_insert: mpsc::Sender<UpdateNetwork>,
-                              mut rx_from_server: broadcast::Receiver<InternalEvent>,
-                              app_context: AppContext) {
+#[instrument(name = "network_task", skip(app_context))]
+pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
+                          tx_to_dba_insert: mpsc::Sender<UpdateNetwork>,
+                          tx_to_hub: mpsc::Sender<MessageToHub>,
+                          mut rx_from_server: mpsc::Receiver<MessageFromServer>,
+                          app_context: AppContext) {
     loop {
         tokio::select! {
-            msg_from_server = rx_from_server.recv() => {
-                match msg_from_server {
-                    Ok(msg) => {
-                        match msg {
-                            InternalEvent::IncomingMessage(internal) => {
-                                if let Ok(MessageFromServerTypes::Network(network)) = from_slice::<MessageFromServerTypes>(&internal.payload) {
-                                    let action = {
-                                        let manager = app_context.net_man.read().await;
-                                        match (manager.networks.get(&network.id_network), network.delete_network) {
-                                            (Some(_), true) => Delete,
-                                            (Some(existing), false) if existing.active != network.active => {
-                                                Update
-                                            }
-                                            (None, false) => Insert,
-                                            _ => Ignore,
-                                        }
-                                    };
-
-                                    if action == Ignore {
-                                        continue;
-                                    }
-
-                                    let mut manager = app_context.net_man.write().await;
-                                    let net_chan : NetworkChanged = match action {
-                                        Delete => {
-                                            manager.remove_network(&network.id_network);
-                                            NetworkChanged::Delete { id: network.id_network }
-                                        }
-                                        Update => {
-                                            manager.change_active(network.active, &network.id_network);
-                                            let net = NetworkRow::new(network.id_network, network.name_network, network.active);
-                                            NetworkChanged::Update(net)
-                                        }
-                                        Insert => {
-                                            manager.add_network(Network::new(
-                                                network.id_network.clone(),
-                                                network.name_network.clone(),
-                                                network.active,
-                                                &app_context.system,
-                                            ));
-                                            let net = NetworkRow::new(network.id_network, network.name_network, network.active);
-                                            NetworkChanged::Insert(net)
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                    drop(manager);
-                                    handle_event(&tx_to_insert_network, &tx_to_dba_insert, net_chan).await;
+            Some(msg_from_server) = rx_from_server.recv() => {
+                match msg_from_server.msg {
+                    MessageFromServerTypes::Network(network) => {
+                        let action = {
+                            let manager = app_context.net_man.read().await;
+                            match (manager.networks.get(&network.id_network), network.delete_network) {
+                                (Some(_), true) => Delete,
+                                (Some(existing), false) if existing.active != network.active => {
+                                    Update
                                 }
-                            },
-                            _ => {},
+                                (None, false) => Insert,
+                                _ => Ignore,
+                            }
+                        };
+
+                        if action == Ignore {
+                            continue;
                         }
-                    }
-                    Err(e) => {
-                        error!("{}", e);
-                    }
+
+                        let mut manager = app_context.net_man.write().await;
+                        let net_chan : NetworkChanged = match action {
+                            Delete => {
+                                manager.remove_network(&network.id_network);
+                                NetworkChanged::Delete { id: network.id_network }
+                            }
+                            Update => {
+                                manager.change_active(network.active, &network.id_network);
+                                let net = NetworkRow::new(network.id_network, network.name_network, network.active);
+                                NetworkChanged::Update(net)
+                            }
+                            Insert => {
+                                manager.add_network(Network::new(
+                                    network.id_network.clone(),
+                                    network.name_network.clone(),
+                                    network.active,
+                                    &app_context.system,
+                                ));
+                                let net = NetworkRow::new(network.id_network, network.name_network, network.active);
+                                NetworkChanged::Insert(net)
+                            }
+                            _ => unreachable!(),
+                        };
+                        drop(manager);
+                        handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, &msg_from_server.topic_where_arrive).await;
+                    },
+                    _ => {},
                 }
             }
         }
@@ -186,19 +177,43 @@ pub async fn network_dba_task(mut rx_from_network: mpsc::Receiver<NetworkChanged
 
 /// Función auxiliar para distribuir la notificación de cambio de red.
 ///
-/// Envía el evento a dos destinos:
+/// Envía el evento a tres destinos:
 /// 1. `tx_to_insert_network`: Canal hacia [`network_dba_task`] para persistencia en DB.
 /// 2. `tx_to_dba_insert`: Canal hacia la tarea de buffers (`dba_insert_task`) para
 ///    que actualice sus vectores en memoria.
+/// 3. `tx_to_hub`: Canal hacia la tarea (`msg_to_hub`) para que envíe el mensaje
+/// de cambio de actividad de red a los Hubs.
 
 #[instrument(name = "handle_event")]
 async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
                       tx_to_dba_insert: &mpsc::Sender<UpdateNetwork>,
-                      net_chan: NetworkChanged) {
+                      tx_to_hub: &mpsc::Sender<MessageToHub>,
+                      net_chan: NetworkChanged,
+                      topic: &str) {
+
+    match net_chan.clone() {
+        NetworkChanged::Delete { id } => {
+            let active = Active::new(false);
+            let msg = MessageFromServer::new(topic.to_string(), MessageFromServerTypes::Active(active));
+            if tx_to_hub.send(ToHub(MessageToHubTypes::ServerToHub(msg))).await.is_err() {
+                error!("No se pudo enviar mensaje de desactivación de red");
+            }
+        },
+        NetworkChanged::Update(network) => {
+            let active = Active::new(network.active);
+            let msg = MessageFromServer::new(topic.to_string(), MessageFromServerTypes::Active(active));
+            if tx_to_hub.send(ToHub(MessageToHubTypes::ServerToHub(msg))).await.is_err() {
+                error!("No se pudo enviar mensaje de actualización de red");
+            }
+        },
+        _ => {},
+    }
 
     if tx_to_insert_network.send(net_chan).await.is_err() {
         error!("No se pudo enviar NetworkChanged");
     }
 
-    let _ = tx_to_dba_insert.send(UpdateNetwork::Changed).await;
+    if tx_to_dba_insert.send(UpdateNetwork::Changed).await.is_err() {
+        error!("No se pudo enviar UpdateNetwork::Changed");
+    }
 }
