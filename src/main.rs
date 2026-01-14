@@ -5,7 +5,6 @@ use tracing::error;
 use crate::database::domain::{DataRequest, TableDataVector};
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
 use crate::fsm::domain::{InternalEvent};
-use crate::fsm::logic::fsm;
 use crate::message::domain::{MessageFromHub, MessageFromServer, MessageToHub, MessageToServer, SerializedMessage, ServerStatus};
 use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
 use crate::mqtt::local::local_mqtt;

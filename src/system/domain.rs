@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing_subscriber::{fmt, EnvFilter};
-use crate::network::domain::NetworkRow;
+use crate::network::domain::{NetworkRow};
 
 
 /// Representación inmutable de la identidad y configuración base del dispositivo Edge.

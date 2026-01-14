@@ -1,79 +1,27 @@
 use tokio::sync::mpsc;
-use tokio::sync::broadcast;
-use super::domain::{EventSystem, State, SubStateQuorum, SubStateBalanceMode, SubStatePhase, Flag};
+use tracing::error;
+use crate::fsm::domain::{ActionVector, Event, FsmState, Transition};
 
 
 
-pub async fn fsm(tx: broadcast::Sender<EventSystem>,
-                     mut rx: mpsc::Receiver<EventSystem>) {
+pub async fn run_fsm(tx_actions: mpsc::Sender<ActionVector>,
+                     mut rx_event: mpsc::Receiver<Event>) {
 
-    let mut state = State::BalanceMode(SubStateBalanceMode::InitBalanceMode);
+    let mut state = FsmState::new();
 
-    /*
-    Necesito balance_epoch en base de datos
+    while let Some(event) = rx_event.recv().await {
+        let transition = state.step(event);
 
-     */
-
-    while let Some(event) = rx.recv().await {
-
-        match &state {
-            
-            State::BalanceMode(SubStateBalanceMode::InitBalanceMode) => {
-                println!("entry: update_balance_epoch()");
-                state = State::BalanceMode(SubStateBalanceMode::InHandshake);
-            }
-
-            State::BalanceMode(SubStateBalanceMode::InHandshake) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
-            }
-
-            State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum)) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake));
-                state = State::Normal;
-                state = State::SafeMode;
-                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert));
-            }
-
-            State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::RepeatHandshake)) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
-            }
-
-            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Alert)) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data));
-            }
-
-            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Data)) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor));
-            }
-
-            State::BalanceMode(SubStateBalanceMode::Phase(SubStatePhase::Monitor)) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::OutHandshake);
-            }
-
-            State::BalanceMode(SubStateBalanceMode::OutHandshake) => {
-                println!("entry: update_state_msg(), ...");
-                state = State::BalanceMode(SubStateBalanceMode::Quorum(SubStateQuorum::CheckQuorum));
-            }
-
-            State::Normal => {
-                println!("entry: normal");
-            }
-
-            State::SafeMode => {
-                println!("entry: safe");
-                state = State::Normal;
+        match transition {
+            Transition::Valid(t) => {
+                state = t.change_state;
+                if tx_actions.send(ActionVector::Vector(t.actions)).await.is_err() {
+                    error!("Error: No se pudo enviar el vector de acciones");
+                }
+            },
+            Transition::Invalid(t) => {
+                error!("FSM transición inválida: {}", t.invalid);
             }
         }
     }
-}
-
-
-async fn in_handshake() {
-
 }

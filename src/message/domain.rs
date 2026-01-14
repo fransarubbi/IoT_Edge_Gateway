@@ -1,7 +1,5 @@
 use serde::{Serialize, Deserialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
 use sqlx::Type;
-use crate::fsm::domain::{State};
 use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
 
 
@@ -176,23 +174,30 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
     pub metadata: Metadata,
-    pub state: State,
+    pub flag: String,
     pub balance_epoch: u32,
     pub duration: u32,
+}
+
+
+impl HandshakeToHub {
+    pub fn new(metadata: Metadata, flag: String, balance_epoch: u32, duration: u32) -> Self {
+        Self { metadata, flag, balance_epoch, duration }
+    }
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
     pub metadata: Metadata,
-    pub state: State,
+    pub state: String,
     pub balance_epoch: u32,
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StateBalanceMode {
-    pub state: State,
+pub struct MessageStateBalanceMode {
+    pub state: String,
     pub balance_epoch: u32,
     pub phase: String,
     pub duration: u32,
@@ -200,15 +205,26 @@ pub struct StateBalanceMode {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StateNormal {
-    pub state: State,
+pub struct MessageStateNormal {
+    pub state: String,
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StateSafeMode {
-    pub state: State,
+pub struct MessageStateSafeMode {
+    pub state: String,
     pub duration: u32,
+    pub frequency: u32,
+    pub jitter: u32,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PhaseNotification {
+    pub metadata: Metadata,
+    pub state: String,
+    pub epoch: u32,
+    pub phase: String,
     pub frequency: u32,
     pub jitter: u32,
 }
@@ -268,10 +284,11 @@ pub enum MessageToHub {
 #[serde(untagged)]
 pub enum MessageToHubTypes {
     Handshake(HandshakeToHub),
-    StateBalanceMode(StateBalanceMode),
-    StateNormal(StateNormal),
-    StateSafeMode(StateSafeMode),
+    StateBalanceMode(MessageStateBalanceMode),
+    StateNormal(MessageStateNormal),
+    StateSafeMode(MessageStateSafeMode),
     Heartbeat(Heartbeat),
+    PhaseNotification(PhaseNotification),
     ServerToHub(MessageFromServer),
 }
 

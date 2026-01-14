@@ -43,6 +43,7 @@ use crate::config::sqlite::{LIMIT, WAIT_FOR};
 use crate::database::domain::{Table, TableDataVector, TableDataVectorTypes};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
+use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_balance_epoch, insert_balance_epoch};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
 use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
@@ -212,6 +213,7 @@ impl Repository {
         }
     }
 
+    
     // --- Métodos de Gestión de Redes (Network) ---
 
     /// Inserta una nueva configuración de red en la base de datos.
@@ -246,6 +248,27 @@ impl Repository {
     pub async fn get_all_network(&self) -> Result<Vec<NetworkRow>, sqlx::Error> {
         let rows = get_all_network_data(&self.pool).await?;
         Ok(rows)
+    }
+
+    
+    // --- Métodos de Gestión de Balance Epoch ---
+    
+    /// Inserta un nuevo valor de época en la base de datos.
+    ///
+    /// Utilizado al entrar en un nuevo Balance Mode.
+    pub async fn update_epoch(&self, epoch: u32) -> Result<(), sqlx::Error> {
+        insert_balance_epoch(&self.pool, epoch).await?;
+        Ok(())
+    }
+    
+    /// Obtiene el último valor de época del sistema.
+    ///
+    /// # Retorno
+    ///
+    /// Devuelve un valor u32.
+    pub async fn get_epoch(&self) -> Result<u32, sqlx::Error> {
+        let row = get_balance_epoch(&self.pool).await?;
+        Ok(row)
     }
 }
 
@@ -295,6 +318,7 @@ async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     create_table_alert_temp(pool).await?;
     create_table_alert_air(pool).await?;
     create_table_network(pool).await?;
+    create_table_balance_epoch(pool).await?;
     Ok(())
 }
 
