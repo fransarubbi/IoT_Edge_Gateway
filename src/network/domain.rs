@@ -1,9 +1,9 @@
 use sqlx::{FromRow};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tracing::{info, warn};
 use crate::database::domain::Table;
-use crate::message::domain::{MessageFromServer, MessageToHub};
+use crate::message::domain_for_table::HubRow;
 use crate::system::domain::System;
 
 
@@ -26,6 +26,7 @@ use crate::system::domain::System;
 #[derive(Debug, Clone)]
 pub struct NetworkManager {
     pub networks: HashMap<String, Network>,
+    pub hubs: HashMap<String, HashSet<Hub>>,
     pub topic_handshake: Topic,
     pub topic_state: Topic,
     pub topic_heartbeat: Topic,
@@ -44,6 +45,7 @@ impl NetworkManager {
         let t_heartbeat = format!("iot/{id_system}/heartbeat");
         Self {
             networks,
+            hubs: HashMap::new(),
             topic_handshake: Topic::new(t_handshake, 1),
             topic_state: Topic::new(t_state, 1),
             topic_heartbeat: Topic::new(t_heartbeat, 0),
@@ -57,6 +59,7 @@ impl NetworkManager {
         let t_heartbeat = format!("iot/{id_system}/heartbeat");
         Self {
             networks: HashMap::new(),
+            hubs: HashMap::new(),
             topic_handshake: Topic::new(t_handshake, 1),
             topic_state: Topic::new(t_state, 1),
             topic_heartbeat: Topic::new(t_heartbeat, 0),
@@ -77,6 +80,52 @@ impl NetworkManager {
     /// Elimina una red de la memoria.
     pub fn remove_network(&mut self, id: &str) {
         self.networks.remove(id);
+    }
+
+    /// Agrega o actualiza un hub en memoria.
+    pub fn add_hub(&mut self, id: String, hub: Hub) {
+        // 1. Busca la entrada por id.
+        // 2. Si no existe, crea un HashSet vacío (or_default).
+        // 3. Intenta insertar el hub.
+        let is_new = self.hubs
+            .entry(id)
+            .or_default()
+            .insert(hub);
+
+        if is_new {
+            info!("Hub agregado.");
+        } else {
+            warn!("El Hub ya existía en esta red, fue ignorado.");
+        }
+    }
+
+    /// Eliminar todos los Hubs asociados a una red.
+    pub fn remove_hub_network(&mut self, id: &str) {
+        self.hubs.remove(id);
+    }
+
+    /// Eliminar un Hub específico de una red.
+    pub fn remove_hub(&mut self, id_network: &str, id_hub: &str) {
+        if let Some(hubs_set) = self.hubs.get_mut(id_network) {
+            let len_before = hubs_set.len();
+            hubs_set.retain(|hub| hub.id != id_hub);
+
+            if hubs_set.len() < len_before {
+                info!("Hub '{}' eliminado de la red '{}'.", id_hub, id_network);
+            } else {
+                warn!("El Hub '{}' no existía en la red '{}'.", id_hub, id_network);
+            }
+        } else {
+            warn!("Intento de borrar hub en red inexistente: '{}'.", id_network);
+        }
+    }
+
+    /// Preguntar si existe un determinado Hub por ID.
+    pub fn search_hub(&self, id_net: &str, id_hub: &str) -> bool {
+        if let Some(hubs_set) = self.hubs.get(id_net) {
+            return hubs_set.iter().any(|hub| hub.id == id_hub);
+        }
+        true  // si la red no existe, retorna true para no guardar datos en network_task
     }
 
     /// Transforma un tópico local (proveniente del Hub) en un tópico de destino para el Servidor.
@@ -167,7 +216,7 @@ impl NetworkManager {
     ///
     /// - `Some(Topic)`: Con el tópico traducido y el QoS configurado.
     /// - `None`: Si el mensaje no corresponde a un comando de control conocido.
-    pub fn get_topic_to_send_msg_from_server(&self, topic_in: &str, system: &System) -> Option<Topic> {
+    pub fn get_topic_to_send_msg_from_server(&self, topic_in: &str) -> Option<Topic> {
 
         let parts: Vec<&str> = topic_in.split('/').collect();
         if parts.len() < 4 {
@@ -193,7 +242,6 @@ impl NetworkManager {
             None
         }
     }
-
 
     /// Extrae el ID de la red de un tópico si esta existe en el gestor.
     ///
@@ -236,6 +284,7 @@ impl NetworkManager {
         }).unwrap_or(Table::Error)
     }
 }
+
 
 fn topic_matches(pattern: &str, topic: &str) -> bool {
     let mut p_iter = pattern.split('/');
@@ -380,5 +429,20 @@ pub enum NetworkChanged {
 }
 
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum HubChanged {
+    Insert(HubRow),
+    Delete { id: String },
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateNetwork { Changed, NotChanged }
+
+
+#[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
+pub struct Hub {
+    pub id: String,
+    pub device_name: String,
+    pub energy_mode: u8,
+}

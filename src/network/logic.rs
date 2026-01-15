@@ -13,40 +13,38 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
-use crate::message::domain::{Active, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes};
+use crate::message::domain::{Active, MessageFromHub, MessageFromHubTypes, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes};
 use crate::message::domain::MessageToHub::ToHub;
-use crate::network::domain::{Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
+use crate::network::domain::{HubChanged, Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
-use crate::system::domain::System;
+use crate::system::domain::{ErrorType, System};
 
 
-/// Carga las redes desde la base de datos, al Network Manager.
-///
-/// Como de la base de datos obtiene un vector de NetworkRow, se crea
-/// el Hash Map y se inserta cada elemento del vector, casteado a Network.
-///
-
+/// Carga las redes y los hubs desde la base de datos, al Network Manager.
 pub async fn load_networks(repo: &Repository,
                            net_man: &Arc<RwLock<NetworkManager>>,
-                           system: &System,
-                           ) {
+                           system: &System) -> Result<(), ErrorType> {
 
-    match repo.get_all_network().await {
-        Ok(networks_row_vec) => {
-            let mut manager = net_man.write().await;
+    let hubs_row_vec = repo.get_all_hubs().await?;
+    let networks_row_vec = repo.get_all_network().await?;
+    let mut manager = net_man.write().await;
 
-            for networks_row in networks_row_vec {
-                let network = networks_row.cast_to_network(system);
-                manager.add_network(network);
-            }
-        }
-        Err(e) => {
-            error!("{}", e);
-        }
+    for networks_row in networks_row_vec {
+        let network = networks_row.cast_to_network(system);
+        manager.add_network(network);
     }
+
+    for hubs_row in hubs_row_vec {
+        let net_id = hubs_row.network_id.clone();
+        let hub = hubs_row.cast_to_hub();
+        manager.add_hub(net_id, hub);
+    }
+
+    info!("Estado cargado: {} redes procesadas.", manager.networks.len());
+    Ok(())
 }
 
 
@@ -75,7 +73,9 @@ pub async fn load_networks(repo: &Repository,
 pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                           tx_to_dba_insert: mpsc::Sender<UpdateNetwork>,
                           tx_to_hub: mpsc::Sender<MessageToHub>,
+                          tx_to_insert_hub: mpsc::Sender<HubChanged>,
                           mut rx_from_server: mpsc::Receiver<MessageFromServer>,
+                          mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
                           app_context: AppContext) {
     loop {
         tokio::select! {
@@ -124,6 +124,31 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         drop(manager);
                         handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, &msg_from_server.topic_where_arrive).await;
                     },
+                    MessageFromServerTypes::DeleteHub(hub) => {
+                        // eliminar de memoria
+                        // eliminar de DB
+                        // notificar al hub que entre en sueño profundo
+                    }
+                    _ => {},
+                }
+            }
+
+            // Si viene del hub, es insert en memoria y en db (solo si no existe ya en memoria)
+            Some(msg_from_hub) = rx_from_hub.recv() => {
+                match msg_from_hub.msg {
+                    MessageFromHubTypes::Settings(settings) => {
+                        let mut manager = app_context.net_man.write().await;
+                        if let Some(id) = manager.extract_net_id(&msg_from_hub.topic_where_arrive) {
+                            if !manager.search_hub(&id, &settings.metadata.sender_user_id) {
+                                let hub_row = settings.cast_settings_to_hub_row(id.clone(), msg_from_hub.topic_where_arrive.clone());
+                                manager.add_hub(id, hub_row.clone().cast_to_hub());
+                                drop(manager);
+                                if tx_to_insert_hub.send(HubChanged::Insert(hub_row)).await.is_err() {
+                                    error!("Error: No se pudo notificar a network_dba_task que un nuevo Hub debe insertarse");
+                                }
+                            }
+                        }
+                    },
                     _ => {},
                 }
             }
@@ -139,12 +164,13 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
 ///
 /// # Acciones
 ///
-/// - **Delete:** Elimina la fila correspondiente en la tabla `network`.
+/// - **Delete:** Elimina la fila correspondiente en la tabla `network` y los `hubs` asociados.
 /// - **Update:** Actualiza el campo `active` en la tabla `network`.
 /// - **Insert:** Crea un nuevo registro en la tabla `network`.
 
 #[instrument(name = "network_dba_task", skip(app_context))]
 pub async fn network_dba_task(mut rx_from_network: mpsc::Receiver<NetworkChanged>,
+                              mut rx_from_network_hub: mpsc::Receiver<HubChanged>,
                               app_context: AppContext) {
     loop {
         tokio::select! {
@@ -153,21 +179,42 @@ pub async fn network_dba_task(mut rx_from_network: mpsc::Receiver<NetworkChanged
                     NetworkChanged::Delete { id} => {
                         match app_context.repo.delete_network(&id).await {
                             Ok(_) => {},
-                            Err(e) => { error!("Error eliminando red en base de datos {}", e); }
+                            Err(e) => error!("Error eliminando red en base de datos {}", e)
+                        }
+                        match app_context.repo.delete_hub_network(&id).await {
+                            Ok(_) => {},
+                            Err(e) => error!("Error eliminando hubs de la base de datos asociadas a la red: {}. {}", id, e)
                         }
                     },
                     NetworkChanged::Update(network) => {
                         match app_context.repo.update_network(network).await {
                             Ok(_) => {},
-                            Err(e) => { error!("Error actualizando red en base de datos {}", e); }
+                            Err(e) => error!("Error actualizando red en base de datos {}", e)
                         }
                     },
                     NetworkChanged::Insert(network) => {
                         match app_context.repo.insert_network(network).await {
                             Ok(_) => {},
-                            Err(e) => { error!("Error eliminando red en base insert {}", e); }
+                            Err(e) => error!("Error eliminando red en base insert {}", e)
                         }
                     },
+                }
+            }
+
+            Some(msg_hub_changed) = rx_from_network_hub.recv() => {
+                match msg_hub_changed {
+                    HubChanged::Insert(hub_row) => {
+                        match app_context.repo.insert_hub(hub_row).await {
+                            Ok(_) => {},
+                            Err(e) => { error!("Error insertando hub en la base de datos {}", e); }
+                        }
+                    },
+                    HubChanged::Delete { id } => {
+                        match app_context.repo.delete_hub(&id).await {
+                            Ok(_) => {},
+                            Err(e) => error!("Error eliminando hub la base de datos {}", e),
+                        }
+                    }
                 }
             }
         }

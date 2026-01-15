@@ -44,9 +44,11 @@ use crate::database::domain::{Table, TableDataVector, TableDataVectorTypes};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_balance_epoch, insert_balance_epoch};
+use crate::database::tables::hub::{create_table_hub, delete_hub_according_to_id, delete_hub_according_to_network, get_all_hubs, insert_hub_table};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
 use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
+use crate::message::domain_for_table::HubRow;
 use crate::network::domain::{NetworkRow};
 
 
@@ -270,6 +272,35 @@ impl Repository {
         let row = get_balance_epoch(&self.pool).await?;
         Ok(row)
     }
+
+
+    // --- Métodos de Gestión de Hubs ---
+
+    /// Inserta un nuevo Hub en la base de datos con su configuración incluida.
+    pub async fn insert_hub(&self, data: HubRow) -> Result<(), sqlx::Error> {
+        insert_hub_table(&self.pool, data).await?;
+        Ok(())
+    }
+
+    /// Elimina un Hub de la base de datos según id de la red.
+    /// Usada cuando se elimina la red y se deben eliminar los nodos asociados.
+    pub async fn delete_hub_network(&self, id: &str) -> Result<(), sqlx::Error> {
+        delete_hub_according_to_network(&self.pool, id).await?;
+        Ok(())
+    }
+
+    /// Elimina un Hub de la base de datos según id del Hub.
+    /// Usada cuando se desea eliminar un nodo de una red, por ejemplo por estar dañado.
+    pub async fn delete_hub(&self, id: &str) -> Result<(), sqlx::Error> {
+        delete_hub_according_to_id(&self.pool, id).await?;
+        Ok(())
+    }
+
+    /// Carga en memoria todos los Hubs registrados en la base de datos.
+    pub async fn get_all_hubs(&self) -> Result<Vec<HubRow>, sqlx::Error> {
+        let rows = get_all_hubs(&self.pool).await?;
+        Ok(rows)
+    }
 }
 
 
@@ -319,6 +350,7 @@ async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     create_table_alert_air(pool).await?;
     create_table_network(pool).await?;
     create_table_balance_epoch(pool).await?;
+    create_table_hub(pool).await?;
     Ok(())
 }
 

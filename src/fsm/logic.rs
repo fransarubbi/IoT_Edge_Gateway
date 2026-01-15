@@ -1,7 +1,33 @@
 use tokio::sync::mpsc;
 use tracing::error;
 use crate::fsm::domain::{ActionVector, Event, FsmState, Transition};
+use crate::message::domain::{MessageFromHub, MessageFromHubTypes, MessageFromServer};
 
+
+pub async fn converter_message_to_event(mut rx_from_server: mpsc::Receiver<MessageFromServer>) {
+    loop {
+        tokio::select! {
+            Some(msg_from_server) = rx_from_server.recv() => {
+                match msg_from_server {
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+
+pub async fn quorum(mut rx_from_hub: mpsc::Receiver<MessageFromHub>) {
+
+    while let Some(msg_from_hub) = rx_from_hub.recv().await {
+        match msg_from_hub.msg {
+            MessageFromHubTypes::Handshake(handshake) => {
+
+            },
+            _ => {}
+        }
+    }
+}
 
 
 pub async fn run_fsm(tx_actions: mpsc::Sender<ActionVector>,

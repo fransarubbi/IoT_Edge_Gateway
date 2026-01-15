@@ -8,9 +8,9 @@
 
 
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow};
 use crate::message::domain::{AlertAir, AlertTh, DestinationType, Measurement, Monitor};
-
+use crate::network::domain::Hub;
 
 /// Metadatos comunes a todos los eventos y mediciones del sistema.
 ///
@@ -160,5 +160,30 @@ impl MonitorRow {
         mon.wifi_rssi = self.wifi_rssi;
         mon.active_time = self.active_time;
         mon
+    }
+}
+
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
+pub struct HubRow {
+    #[sqlx(flatten)]
+    pub metadata: MetadataRow,
+    pub network_id: String,
+    pub wifi_ssid: String,
+    pub wifi_password: String,
+    pub mqtt_uri: String,
+    pub device_name: String,
+    pub sample: u16,
+    pub energy_mode: u8,
+}
+
+
+impl HubRow {
+    pub fn cast_to_hub(self) -> Hub {
+        let mut hub = Hub::default();
+        hub.id = self.metadata.sender_user_id;
+        hub.device_name = self.device_name;
+        hub.energy_mode = self.energy_mode;
+        hub
     }
 }

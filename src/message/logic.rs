@@ -81,7 +81,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                 if let MessageFromServerTypes::Settings(settings) = wrapper.msg {
                     let topic_opt = {
                         let manager = app_context.net_man.read().await;
-                        manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive, &app_context.system)
+                        manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
                     };
 
                     if let Some(t) = topic_opt {
@@ -110,7 +110,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                 if let MessageFromServerTypes::Active(active) = wrapper.msg {
                     let topic_opt = {
                         let manager = app_context.net_man.read().await;
-                        manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive, &app_context.system)
+                        manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
                     };
 
                     if let Some(t) = topic_opt {
@@ -170,6 +170,7 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
                           tx_to_server: mpsc::Sender<MessageToServer>,
                           tx_to_dba: mpsc::Sender<MessageFromHub>,
                           tx_to_fsm: mpsc::Sender<MessageFromHub>,
+                          tx_to_network: mpsc::Sender<MessageFromHub>,
                           mut rx_from_local_mqtt: mpsc::Receiver<InternalEvent>,
                           mut rx_from_server: mpsc::Receiver<InternalEvent>) {
 
@@ -189,7 +190,7 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
                         }
                     },
                     InternalEvent::IncomingMessage(message) => {
-                        handle_message(&tx_to_server, &tx_to_dba, &tx_to_fsm, message, &state).await;
+                        handle_message(&tx_to_server, &tx_to_dba, &tx_to_fsm, &tx_to_network, message, &state).await;
                     },
                     _ => {},
                 }
@@ -211,6 +212,7 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
 async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
                         tx_to_dba: &mpsc::Sender<MessageFromHub>,
                         tx_to_fsm: &mpsc::Sender<MessageFromHub>,
+                        tx_to_network: &mpsc::Sender<MessageFromHub>,
                         message: PayloadTopic,
                         state: &ServerStatus) {
 
@@ -224,6 +226,9 @@ async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
         },
         Ok(MessageFromHubTypes::Settings(settings)) => {
             let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::Settings(settings));
+            if tx_to_network.send(msg.clone()).await.is_err() {
+                error!("Error: No se pudo enviar el mensaje Settings a network_task");
+            }
             if matches!(state, ServerStatus::Connected) {
                 if tx_to_server.send(ToServer(msg)).await.is_err() {
                     error!("Error: No se pudo enviar el mensaje Settings a msg_to_server");
@@ -459,6 +464,7 @@ async fn handle_incoming_message(message: PayloadTopic,
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }
                 }
+                _ => {},
             }
         },
         Err(e) => error!("Error deserializando mensaje del servidor: {}", e),

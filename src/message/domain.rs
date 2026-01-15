@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 use sqlx::Type;
-use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
+use crate::message::domain_for_table::{AlertAirRow, AlertThRow, HubRow, MeasurementRow, MonitorRow};
 
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
@@ -164,10 +164,27 @@ pub struct Settings {
     pub mqtt_uri: String,
     pub device_name: String,
     pub sample: u16,
-    pub topic_data: String,
-    pub topic_alert: String,
-    pub topic_monitor: String,
     pub energy_mode: u8,
+}
+
+
+impl Settings {
+    pub fn cast_settings_to_hub_row(self, network: String, topic: String) -> HubRow {
+        let mut hr = HubRow::default();
+        hr.metadata.sender_user_id = self.metadata.sender_user_id;
+        hr.metadata.destination_type = self.metadata.destination_type;
+        hr.metadata.destination_id = self.metadata.destination_id;
+        hr.metadata.timestamp = self.metadata.timestamp;
+        hr.metadata.topic_where_arrive = topic;
+        hr.network_id = network;
+        hr.wifi_ssid = self.wifi_ssid;
+        hr.wifi_password = self.wifi_password;
+        hr.mqtt_uri = self.mqtt_uri;
+        hr.device_name = self.device_name;
+        hr.sample = self.sample;
+        hr.energy_mode = self.energy_mode;
+        hr
+    }
 }
 
 
@@ -247,6 +264,13 @@ impl Active {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteHub {
+    pub metadata: Metadata,
+    pub id_hub: String,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageFromHub {
     pub topic_where_arrive: String,
@@ -313,6 +337,7 @@ pub enum MessageFromServerTypes {
     Network(Network),
     Settings(Settings),
     Active(Active),
+    DeleteHub(DeleteHub),
 }
 
 
