@@ -11,7 +11,7 @@
 
 use sqlx::{Executor, SqlitePool};
 use crate::message::domain_for_table::{HubRow};
-
+use crate::network::domain::NetworkRow;
 
 /// Inicializa la tabla `hub` en la base de datos.
 ///
@@ -26,7 +26,7 @@ pub async fn create_table_hub(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
         r#"
         CREATE TABLE IF NOT EXISTS hub (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender_user_id       TEXT NOT NULL,
+            sender_user_id       TEXT NOT NULL UNIQUE,
             destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
             timestamp            TEXT NOT NULL,
@@ -130,6 +130,58 @@ pub async fn delete_hub_according_to_id(pool: &SqlitePool, id: &str) -> Result<(
         "#
     )
         .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+
+/// Función que inserta o actualiza un Hub si ya existe.
+pub async fn upsert_hub(pool: &SqlitePool, data: HubRow) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO hub (
+            sender_user_id,
+            destination_type,
+            destination_id,
+            timestamp,
+            topic_where_arrive,
+            network_id,
+            wifi_ssid,
+            wifi_password,
+            mqtt_uri,
+            device_name,
+            sample,
+            energy_mode
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sender_user_id) DO UPDATE SET
+            destination_type   = excluded.destination_type,
+            destination_id     = excluded.destination_id,
+            timestamp          = excluded.timestamp,
+            topic_where_arrive = excluded.topic_where_arrive,
+            network_id         = excluded.network_id,
+            wifi_ssid          = excluded.wifi_ssid,
+            wifi_password      = excluded.wifi_password,
+            mqtt_uri           = excluded.mqtt_uri,
+            device_name        = excluded.device_name,
+            sample             = excluded.sample,
+            energy_mode        = excluded.energy_mode
+        "#
+    )
+        .bind(&data.metadata.sender_user_id)
+        .bind(&data.metadata.destination_type)
+        .bind(&data.metadata.destination_id)
+        .bind(&data.metadata.timestamp)
+        .bind(&data.metadata.topic_where_arrive)
+        .bind(&data.network_id)
+        .bind(&data.wifi_ssid)
+        .bind(&data.wifi_password)
+        .bind(&data.mqtt_uri)
+        .bind(&data.device_name)
+        .bind(data.sample)
+        .bind(data.energy_mode)
         .execute(pool)
         .await?;
 

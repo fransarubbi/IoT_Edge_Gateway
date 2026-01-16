@@ -78,18 +78,34 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                     continue;
                 }
 
-                if let MessageFromServerTypes::Settings(settings) = wrapper.msg {
-                    let topic_opt = {
-                        let manager = app_context.net_man.read().await;
-                        manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
-                    };
+                match wrapper.msg {
+                    MessageFromServerTypes::Settings(settings) => {
+                        let topic_opt = {
+                            let manager = app_context.net_man.read().await;
+                            manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
+                        };
 
-                    if let Some(t) = topic_opt {
-                        match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::Settings(settings), false).await {
-                            Ok(_) => {}
-                            Err(_) => error!("Error: No se pudo serializar el mensaje de Setting al Broker"),
+                        if let Some(t) = topic_opt {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::Settings(settings), false).await {
+                                Ok(_) => {}
+                                Err(_) => error!("Error: No se pudo serializar el mensaje de Setting al Broker"),
+                            }
                         }
-                    }
+                    },
+                    MessageFromServerTypes::SettingOk(setting_ok) => {
+                        let topic_opt = {
+                            let manager = app_context.net_man.read().await;
+                            manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
+                        };
+
+                        if let Some(t) = topic_opt {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::SettingOk(setting_ok), false).await {
+                                Ok(_) => {}
+                                Err(_) => error!("Error: No se pudo serializar el mensaje de SettingOk al Broker"),
+                            }
+                        }
+                    },
+                    _ => {},
                 }
             }
 
@@ -232,6 +248,17 @@ async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
             if matches!(state, ServerStatus::Connected) {
                 if tx_to_server.send(ToServer(msg)).await.is_err() {
                     error!("Error: No se pudo enviar el mensaje Settings a msg_to_server");
+                }
+            }
+        },
+        Ok(MessageFromHubTypes::SettingsOk(settings_ok)) => {
+            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::SettingsOk(settings_ok));
+            if tx_to_network.send(msg.clone()).await.is_err() {
+                error!("Error: No se pudo enviar el mensaje SettingsOk a network_task");
+            }
+            if matches!(state, ServerStatus::Connected) {
+                if tx_to_server.send(ToServer(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar el mensaje SettingsOk a msg_to_server");
                 }
             }
         },
@@ -451,15 +478,14 @@ async fn handle_incoming_message(message: PayloadTopic,
         Ok(payload) => {
             let msg_wrapper = MessageFromServer::new(message.topic, payload.clone());
 
-            match payload {  // Settings y Active van al Hub
-                MessageFromServerTypes::Settings(_) | MessageFromServerTypes::Active(_) => {
+            match payload {
+                MessageFromServerTypes::Active(_) | MessageFromServerTypes::SettingOk(_) => {
                     let to_hub_msg = ToHub(MessageToHubTypes::ServerToHub(msg_wrapper));
                     if tx_to_hub.send(to_hub_msg).await.is_err() {
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }
-                }
-
-                MessageFromServerTypes::Network(_) => {  // Network va al gestor de redes
+                },
+                MessageFromServerTypes::Network(_) | MessageFromServerTypes::Settings(_)=> {
                     if tx_to_network.send(msg_wrapper).await.is_err() {
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }

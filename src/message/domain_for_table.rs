@@ -17,7 +17,7 @@ use crate::network::domain::Hub;
 /// Esta estructura no suele tener una tabla propia, sino que se "aplana"
 /// inside de otras tablas usando `#[sqlx(flatten)]`. Contiene la información
 /// de enrutamiento y trazabilidad del mensaje.
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
 pub struct MetadataRow {
     pub sender_user_id: String,
     pub destination_type: DestinationType,
@@ -164,7 +164,7 @@ impl MonitorRow {
 }
 
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
 pub struct HubRow {
     #[sqlx(flatten)]
     pub metadata: MetadataRow,

@@ -10,7 +10,7 @@
 //! 3. **Aplicación:** Actualiza la memoria (Thread-Safe) y notifica los cambios.
 //! 4. **Persistencia:** Una tarea dedicada escribe los cambios en SQLite asíncronamente.
 
-
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, instrument};
@@ -18,7 +18,8 @@ use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
 use crate::message::domain::{Active, MessageFromHub, MessageFromHubTypes, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes};
 use crate::message::domain::MessageToHub::ToHub;
-use crate::network::domain::{HubChanged, Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
+use crate::message::domain_for_table::HubRow;
+use crate::network::domain::{Hub, HubChanged, Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::{ErrorType, System};
 
@@ -77,6 +78,9 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                           mut rx_from_server: mpsc::Receiver<MessageFromServer>,
                           mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
                           app_context: AppContext) {
+
+    let mut hub_hash_aux : HashMap<String, HashSet<HubRow>> = HashMap::new();
+
     loop {
         tokio::select! {
             Some(msg_from_server) = rx_from_server.recv() => {
@@ -124,6 +128,17 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         drop(manager);
                         handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, &msg_from_server.topic_where_arrive).await;
                     },
+                    MessageFromServerTypes::Settings(settings) => {
+                        let manager = app_context.net_man.read().await;
+                        if let Some(network_id) = manager.extract_net_id(&msg_from_server.topic_where_arrive) {
+                            hub_hash_aux.entry(settings.metadata.sender_user_id.clone())
+                            .or_default()
+                            .insert(settings.clone().cast_settings_to_hub_row(network_id, msg_from_server.topic_where_arrive));
+                        }
+                        if tx_to_hub.send(ToHub(MessageToHubTypes::Settings(settings))).await.is_err() {
+                            error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
+                        }
+                    },
                     MessageFromServerTypes::DeleteHub(hub) => {
                         // eliminar de memoria
                         // eliminar de DB
@@ -132,8 +147,7 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                     _ => {},
                 }
             }
-
-            // Si viene del hub, es insert en memoria y en db (solo si no existe ya en memoria)
+            
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 match msg_from_hub.msg {
                     MessageFromHubTypes::Settings(settings) => {
@@ -145,6 +159,23 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                                 drop(manager);
                                 if tx_to_insert_hub.send(HubChanged::Insert(hub_row)).await.is_err() {
                                     error!("Error: No se pudo notificar a network_dba_task que un nuevo Hub debe insertarse");
+                                }
+                            }
+                        }
+                    },
+                    MessageFromHubTypes::SettingsOk(settings_ok) => {
+                        let manager = app_context.net_man.read().await;
+                        if let Some(id) = manager.extract_net_id(&msg_from_hub.topic_where_arrive) {
+                            drop(manager);
+                            if let Some(hub_row) = hub_hash_aux.get_mut(&id) {
+                                if let Some(row) = hub_row.iter().find(|r| r.metadata.sender_user_id == settings_ok.metadata.sender_user_id) {
+                                    match app_context.repo.update_hub(row.clone()).await {
+                                        Ok(_) => (),
+                                        Err(e) => error!("Error: No se pudo actualizar hub en la base de datos: {}", e),
+                                    }
+                                    let mut manager = app_context.net_man.write().await;
+                                    manager.remove_hub(&id, &row.metadata.sender_user_id);
+                                    manager.add_hub(id, row.clone().cast_to_hub());
                                 }
                             }
                         }

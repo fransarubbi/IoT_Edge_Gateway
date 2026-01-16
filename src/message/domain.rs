@@ -3,7 +3,7 @@ use sqlx::Type;
 use crate::message::domain_for_table::{AlertAirRow, AlertThRow, HubRow, MeasurementRow, MonitorRow};
 
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type, Hash)]
 #[repr(u8)]
 pub enum DestinationType {
     #[default]
@@ -271,6 +271,13 @@ pub struct DeleteHub {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SettingOk {
+    pub metadata: Metadata,
+    pub handshake: bool,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageFromHub {
     pub topic_where_arrive: String,
@@ -293,6 +300,7 @@ pub enum MessageFromHubTypes {
     AlertAir(AlertAir),
     AlertTem(AlertTh),
     Settings(Settings),
+    SettingsOk(SettingOk),
     Handshake(HandshakeFromHub),
 }
 
@@ -314,6 +322,7 @@ pub enum MessageToHubTypes {
     Heartbeat(Heartbeat),
     PhaseNotification(PhaseNotification),
     ServerToHub(MessageFromServer),
+    Settings(Settings),
 }
 
 
@@ -337,6 +346,7 @@ pub enum MessageFromServerTypes {
     Network(Network),
     Settings(Settings),
     Active(Active),
+    SettingOk(SettingOk),
     DeleteHub(DeleteHub),
 }
 
