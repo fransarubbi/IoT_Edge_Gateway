@@ -1,0 +1,705 @@
+//! # Módulo de Dominio de Firmware (FSM)
+//!
+//! Este módulo implementa la lógica de negocio pura para el proceso de actualización
+//! OTA (Over-The-Air) utilizando una Máquina de Estados Finitos (FSM).
+//!
+//! ## Responsabilidades
+//! * Definir los estados válidos del proceso de actualización.
+//! * Calcular transiciones deterministas basadas en eventos.
+//! * Generar acciones (efectos secundarios) que el orquestador debe ejecutar.
+//! * Gestionar la sesión de actualización (métricas y progreso).
+
+
+use std::cmp::PartialEq;
+use std::collections::HashSet;
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
+use tracing::debug;
+use crate::message::domain::MessageFromServer;
+
+
+/// Envoltorio principal para el estado de la FSM.
+#[derive(Debug, Clone)]
+pub struct FsmStateFirmware {
+    /// Estado actual del proceso.
+    pub state: StateFirmwareUpdate,
+}
+
+
+/// Enumeración de todos los estados posibles en el ciclo de vida de la actualización OTA.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateFirmwareUpdate {
+    /// Estado inicial/reposo. Esperando mensaje del servidor.
+    WaitingForFirmware,
+    /// Fase Canario: Se ha notificado a un Hub piloto y se espera su respuesta.
+    NotifyHub,
+    /// Fase Broadcast: Se ha notificado a toda la red y se recolectan resultados.
+    WaitingNetworkAnswer,
+    /// Estado terminal de Éxito (100% actualizado).
+    NotifyServer,
+    /// Estado terminal de Fallo (Timeout, error en canario, o <100% éxito).
+    NotifyServerFailure,
+}
+
+
+/// Resultado de intentar aplicar un evento a la FSM.
+pub enum Transition {
+    /// La transición es lógica y permitida.
+    Valid(TransitionValid),
+    /// El evento no aplica al estado actual.
+    Invalid(TransitionInvalid),
+}
+
+
+/// Representa un cambio de estado exitoso y las acciones resultantes.
+#[derive(Debug)]
+pub struct TransitionValid {
+    /// El nuevo estado de la máquina.
+    pub change_state: FsmStateFirmware,
+    /// Lista ordenada de acciones que el ejecutor debe realizar.
+    pub actions: Vec<Action>,
+}
+
+
+/// Representa un intento fallido de transición.
+#[derive(Debug)]
+pub struct TransitionInvalid {
+    /// Razón del fallo.
+    pub invalid: String,
+}
+
+
+/// Eventos de entrada (Inputs) que estimulan la FSM.
+pub enum Event {
+    /// El servidor envió una orden de actualización.
+    MessageFromServer,
+    /// Un Hub respondió exitosamente ("OK").
+    MessageFromHub,
+    /// El Watchdog Timer expiró.
+    Timeout,
+    /// Se recibieron todas las respuestas esperadas en la fase Broadcast.
+    AllMessageReceived,
+    /// Ocurrió un error (fallo de hub, error de red, etc.).
+    Error,
+    /// Comando interno para iniciar el timer.
+    InitTimer(Duration),
+    /// Comando interno para detener el timer.
+    StopTimer,
+}
+
+
+/// Acciones de salida (Outputs) o instrucciones para el ejecutor.
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    /// Acción interna: inicializar recursos al entrar a un estado (ej. Timers).
+    OnEntry(StateFirmwareUpdate),
+    /// Instrucción: Enviar reporte de ÉXITO al servidor.
+    SendMessageOkToServer,
+    /// Instrucción: Enviar reporte de FALLO al servidor.
+    SendMessageFailToServer,
+    /// Instrucción: Detener el Watchdog Timer.
+    StopTimer,
+    /// Instrucción: Buscar un hub aleatorio y enviarle el firmware (Canario).
+    SelectRandomHub,
+    /// Instrucción: Enviar firmware a toda la red (Broadcast).
+    SendMessageToNetwork,
+    /// No hacer nada.
+    Nothing,
+}
+
+
+/// Define la estrategia de despliegue actual dentro de una sesión.
+#[derive(Debug, PartialEq)]
+pub enum Phase {
+    /// Prueba piloto en un solo dispositivo.
+    Canary,
+    /// Despliegue masivo al resto de la red.
+    Broadcast,
+}
+
+
+/// Mantiene el contexto volátil y las métricas de una actualización en curso.
+pub struct UpdateSession {
+    /// Mensaje original del servidor.
+    pub message: MessageFromServer,
+    /// Cantidad total de hubs esperados en la red.
+    pub total_hubs: usize,
+    /// Set de IDs que ya han respondido (para garantizar idempotencia).
+    pub responses: HashSet<String>,
+    /// Contador de éxitos.
+    pub successes: usize,
+    /// Contador de fallos.
+    pub failures: usize,
+    /// Versión del firmware reportada por los hubs.
+    pub version: String,
+    /// Porcentaje de éxito calculado.
+    pub percentage: f32,
+    /// Fase actual del despliegue.
+    pub phase: Phase,
+}
+
+
+impl UpdateSession {
+    /// Crea una nueva sesión de actualización en fase Canario.
+    pub fn new(message: MessageFromServer, total_hubs: usize) -> Self {
+        Self {
+            message,
+            total_hubs,
+            responses: HashSet::new(),
+            successes: 0,
+            failures: 0,
+            version: String::new(),
+            percentage: 0.0,
+            phase: Phase::Canary,
+        }
+    }
+
+    /// Verifica si ya se recibieron respuestas de todos los hubs esperados.
+    pub fn is_complete(&self) -> bool {
+        self.successes + self.failures == self.total_hubs
+    }
+
+    /// Retorna true si estamos en fase de prueba piloto.
+    pub fn is_canary(&self) -> bool {
+        self.phase == Phase::Canary
+    }
+
+    /// Retorna true si estamos en fase de despliegue masivo.
+    pub fn is_broadcast(&self) -> bool {
+        self.phase == Phase::Broadcast
+    }
+
+    /// Calcula el porcentaje de éxito (0.00 a 100.00).
+    pub fn success_rate(&self) -> f32 {
+        if self.total_hubs == 0 {
+            return 0.0;
+        }
+        (self.successes as f32 / self.total_hubs as f32) * 100.00
+    }
+}
+
+
+impl FsmStateFirmware {
+    /// Inicializa la máquina en estado de espera.
+    pub fn new() -> Self {
+        Self {
+            state: StateFirmwareUpdate::WaitingForFirmware,
+        }
+    }
+
+    /// Lógica interna de transición paso a paso.
+    pub fn step_inner(&self, event: Event) -> Transition {
+        match (&self.state, event) {
+            (StateFirmwareUpdate::WaitingForFirmware, Event::MessageFromServer) => {
+                let next_fsm = self.clone();
+                state_waiting_for_firmware_event_message_update(next_fsm)
+            },
+            (StateFirmwareUpdate::NotifyHub, Event::MessageFromHub) => {
+                let next_fsm = self.clone();
+                state_notify_hub(next_fsm)
+            },
+            (StateFirmwareUpdate::NotifyHub, Event::Error) => {
+                let next_fsm = self.clone();
+                state_notify_hub_event_error(next_fsm)
+            },
+            (StateFirmwareUpdate::WaitingNetworkAnswer, Event::Timeout | Event::Error) => {
+                let next_fsm = self.clone();
+                state_waiting_network_answer_event_timeout_or_error(next_fsm)
+            },
+            (StateFirmwareUpdate::WaitingNetworkAnswer, Event::AllMessageReceived) => {
+                let next_fsm = self.clone();
+                state_waiting_network_answer_event_all_message_received(next_fsm)
+            },
+            (StateFirmwareUpdate::NotifyServer, _ ) => {
+                let next_fsm = self.clone();
+                state_notify_server(next_fsm)
+            },
+            (StateFirmwareUpdate::NotifyServerFailure, _ ) => {
+                let next_fsm = self.clone();
+                state_notify_server_failure(next_fsm)
+            },
+            _ => {
+                let invalid = TransitionInvalid {
+                    invalid: "Transición inválida".to_string(),
+                };
+                Transition::Invalid(invalid)
+            },
+        }
+    }
+
+    /// Función principal de transición.
+    ///
+    /// Calcula el siguiente estado e inyecta acciones automáticas (`OnEntry`)
+    /// si ocurre un cambio de estado.
+    pub fn step(&self, event: Event) -> Transition {
+        let transition = self.step_inner(event);
+
+        match transition {
+            Transition::Valid(mut t) => {
+                let entry_action = compute_on_entry(self, &t.change_state);
+                if entry_action != Action::Nothing {
+                    // Importante: Insertar al inicio para que timers se inicien antes de operaciones de red.
+                    t.actions.insert(0, entry_action);
+                }
+                Transition::Valid(t)
+            }
+            invalid => invalid,
+        }
+    }
+}
+
+
+// --- Funciones auxiliares de transición de estado ---
+
+fn state_waiting_for_firmware_event_message_update(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::NotifyHub;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::SelectRandomHub],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_notify_hub(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::SendMessageToNetwork],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_notify_hub_event_error(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::NotifyServerFailure;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_waiting_network_answer_event_timeout_or_error(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::NotifyServerFailure;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_waiting_network_answer_event_all_message_received(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::NotifyServer;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_notify_server(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::SendMessageOkToServer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_notify_server_failure(mut next_fsm: FsmStateFirmware) -> Transition {
+    next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::SendMessageFailToServer],
+    };
+    Transition::Valid(valid)
+}
+
+
+/// Calcula acciones automáticas al entrar en un nuevo estado.
+/// Usado principalmente para inicializar timers (Watchdog).
+fn compute_on_entry(old: &FsmStateFirmware, new: &FsmStateFirmware) -> Action {
+    if old.state != new.state {
+        let state = new.state.clone();
+        return Action::OnEntry(state);
+    }
+    Action::Nothing
+}
+
+
+/// Tarea asíncrona dedicada al temporizador de seguridad (Watchdog).
+///
+/// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
+/// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
+pub async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
+                                mut cmd_rx: mpsc::Receiver<Event>) {
+    loop {
+        // Estado IDLE: Esperar comando de inicio
+        let duration = match cmd_rx.recv().await {
+            Some(Event::InitTimer(d)) => d,
+            Some(Event::StopTimer) => continue, // Si ya estaba parado, ignorar
+            None => break, // Canal cerrado, terminar tarea
+            _ => continue,
+        };
+
+        // Estado ACTIVO: Corriendo temporizador
+        tokio::select! {
+            _ = sleep(duration) => {
+                // El tiempo se agotó
+                let _ = tx_to_fsm.send(Event::Timeout).await;
+            }
+            Some(Event::StopTimer) = cmd_rx.recv() => {
+                debug!("Debug: Watchdog timer de fsm firmware, cancelado");
+            }
+        }
+    }
+}
+
+
+
+//--------------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    //                   TRANSICIONES VÁLIDAS
+    // ============================================================
+
+    #[test]
+    fn test_fsm_initial_state() {
+        let fsm = FsmStateFirmware::new();
+        assert_eq!(fsm.state, StateFirmwareUpdate::WaitingForFirmware);
+    }
+
+    #[test]
+    fn test_waiting_to_notify_hub() {
+        let fsm = FsmStateFirmware::new();
+        let transition = fsm.step(Event::MessageFromServer);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyHub);
+                assert!(t.actions.contains(&Action::SelectRandomHub));
+                assert!(t.actions.contains(&Action::OnEntry(StateFirmwareUpdate::NotifyHub)));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_notify_hub_success_to_waiting_network() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::NotifyHub;
+
+        let transition = fsm.step(Event::MessageFromHub);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingNetworkAnswer);
+                assert!(t.actions.contains(&Action::SendMessageToNetwork));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_notify_hub_error_to_failure() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::NotifyHub;
+
+        let transition = fsm.step(Event::Error);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
+                assert!(t.actions.contains(&Action::StopTimer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_waiting_network_timeout_to_failure() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
+
+        let transition = fsm.step(Event::Timeout);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
+                assert!(t.actions.contains(&Action::StopTimer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_waiting_network_error_to_failure() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
+
+        let transition = fsm.step(Event::Error);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
+                assert!(t.actions.contains(&Action::StopTimer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_waiting_network_all_received_to_success() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
+
+        let transition = fsm.step(Event::AllMessageReceived);
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServer);
+                assert!(t.actions.contains(&Action::StopTimer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_notify_server_returns_to_waiting() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::NotifyServer;
+
+        let transition = fsm.step(Event::MessageFromServer); // Cualquier evento
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert!(t.actions.contains(&Action::SendMessageOkToServer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    #[test]
+    fn test_notify_server_failure_returns_to_waiting() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::NotifyServerFailure;
+
+        let transition = fsm.step(Event::Error); // Cualquier evento
+
+        match transition {
+            Transition::Valid(t) => {
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert!(t.actions.contains(&Action::SendMessageFailToServer));
+            }
+            Transition::Invalid(_) => panic!("Expected valid transition"),
+        }
+    }
+
+    // ============================================================
+    // TESTS DEL FSM - TRANSICIONES INVÁLIDAS
+    // ============================================================
+
+    #[test]
+    fn test_invalid_timeout_in_waiting_state() {
+        let fsm = FsmStateFirmware::new();
+        let transition = fsm.step(Event::Timeout);
+        assert!(matches!(transition, Transition::Invalid(_)));
+    }
+
+    #[test]
+    fn test_invalid_all_received_in_notify_hub() {
+        let mut fsm = FsmStateFirmware::new();
+        fsm.state = StateFirmwareUpdate::NotifyHub;
+
+        let transition = fsm.step(Event::AllMessageReceived);
+        assert!(matches!(transition, Transition::Invalid(_)));
+    }
+
+    // ============================================================
+    // TESTS DE ONENTRY
+    // ============================================================
+
+    #[test]
+    fn test_on_entry_action_when_state_changes() {
+        let old_fsm = FsmStateFirmware::new();
+        let mut new_fsm = old_fsm.clone();
+        new_fsm.state = StateFirmwareUpdate::NotifyHub;
+
+        let action = compute_on_entry(&old_fsm, &new_fsm);
+        assert_eq!(action, Action::OnEntry(StateFirmwareUpdate::NotifyHub));
+    }
+
+    #[test]
+    fn test_no_on_entry_when_state_unchanged() {
+        let old_fsm = FsmStateFirmware::new();
+        let new_fsm = old_fsm.clone();
+
+        let action = compute_on_entry(&old_fsm, &new_fsm);
+        assert_eq!(action, Action::Nothing);
+    }
+
+    #[test]
+    fn test_on_entry_inserted_at_beginning() {
+        let fsm = FsmStateFirmware::new();
+        let transition = fsm.step(Event::MessageFromServer);
+
+        match transition {
+            Transition::Valid(t) => {
+                // OnEntry debe estar al principio
+                assert_eq!(t.actions[0], Action::OnEntry(StateFirmwareUpdate::NotifyHub));
+            }
+            _ => panic!("Expected valid transition"),
+        }
+    }
+
+    // ============================================================
+    // TESTS DE UPDATESESSION
+    // ============================================================
+
+    // Helper para crear mensajes dummy
+    fn create_test_message() -> MessageFromServer {
+        use crate::message::domain::*;
+
+        let metadata = Metadata {
+            sender_user_id: "server".to_string(),
+            destination_type: DestinationType::Node,
+            destination_id: "hub1".to_string(),
+            timestamp: "01/01/2025 00:00:00".to_string(),
+        };
+
+        MessageFromServer {
+            topic_where_arrive: "network/test".to_string(),
+            msg: MessageFromServerTypes::UpdateFirmware(UpdateFirmware {
+                metadata,
+                version: "v1.0.0".to_string(),
+                url: "https://test.com/fw.bin".to_string(),
+                sha256: "abc123".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_session_starts_in_canary_phase() {
+        let msg = create_test_message();
+        let session = UpdateSession::new(msg, 10);
+
+        assert_eq!(session.phase, Phase::Canary);
+        assert!(session.is_canary());
+        assert!(!session.is_broadcast());
+    }
+
+    #[test]
+    fn test_session_initialized_with_zeros() {
+        let msg = create_test_message();
+        let session = UpdateSession::new(msg, 10);
+
+        assert_eq!(session.successes, 0);
+        assert_eq!(session.failures, 0);
+        assert_eq!(session.responses.len(), 0);
+        assert_eq!(session.percentage, 0.0);
+        assert_eq!(session.version, "");
+    }
+
+    #[test]
+    fn test_is_complete_false_initially() {
+        let msg = create_test_message();
+        let session = UpdateSession::new(msg, 10);
+        assert!(!session.is_complete());
+    }
+
+    #[test]
+    fn test_is_complete_true_when_all_responded() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 10);
+
+        session.successes = 7;
+        session.failures = 3;
+
+        assert!(session.is_complete());
+    }
+
+    #[test]
+    fn test_is_complete_false_with_partial_responses() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 10);
+
+        session.successes = 5;
+        session.failures = 2;
+
+        assert!(!session.is_complete());
+    }
+
+    #[test]
+    fn test_success_rate_calculation() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 10);
+
+        session.successes = 7;
+
+        assert_eq!(session.success_rate(), 70.0);
+    }
+
+    #[test]
+    fn test_success_rate_100_percent() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 5);
+
+        session.successes = 5;
+
+        assert_eq!(session.success_rate(), 100.0);
+    }
+
+    #[test]
+    fn test_success_rate_0_percent() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 5);
+
+        session.failures = 5;
+
+        assert_eq!(session.success_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_success_rate_with_zero_hubs_no_panic() {
+        let msg = create_test_message();
+        let session = UpdateSession::new(msg, 0);
+
+        // No debe hacer panic por división por cero
+        assert_eq!(session.success_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_responses_hashset_prevents_duplicates() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 3);
+
+        assert!(session.responses.insert("hub1".to_string()));
+        assert!(session.responses.insert("hub2".to_string()));
+        assert!(!session.responses.insert("hub1".to_string())); // Duplicado
+
+        assert_eq!(session.responses.len(), 2);
+    }
+
+    #[test]
+    fn test_phase_transitions() {
+        let msg = create_test_message();
+        let mut session = UpdateSession::new(msg, 10);
+
+        // Comienza en Canary
+        assert!(session.is_canary());
+
+        // Cambiar a Broadcast
+        session.phase = Phase::Broadcast;
+        assert!(session.is_broadcast());
+        assert!(!session.is_canary());
+    }
+}

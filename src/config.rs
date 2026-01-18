@@ -19,3 +19,8 @@ pub mod sqlite {
     pub const TABLE : usize = 4;
     pub const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 }
+
+pub mod firmware {
+    use tokio::time::{Duration};
+    pub const OTA_TIMEOUT: Duration = Duration::from_secs(300); // 5 min
+}

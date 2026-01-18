@@ -707,6 +707,7 @@ dependencies = [
  "chrono",
  "libc",
  "log",
+ "rand",
  "rmp-serde",
  "rumqttc",
  "serde",

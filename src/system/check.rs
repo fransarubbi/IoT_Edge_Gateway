@@ -126,38 +126,38 @@ use tracing::{info, error, instrument};
 /// La función está instrumentada con `tracing` para permitir
 /// auditoría completa desde `journalctl`.
 
-#[instrument(name = "system_config_check")]
+#[instrument(name = "check_system_config")]
 pub fn check_system_config() -> Result<(), ErrorType> {
 
     match which("mosquitto") {
         Ok(path) => info!(path = ?path, "Éxito: Mosquitto encontrado y ejecutable"),
-        Err(_) => {
-            error!(binary = "mosquitto", "Error: Binario requerido no encontrado");
+        Err(e) => {
+            error!(binary = "mosquitto", "Error: Binario requerido no encontrado. {}", e);
             return Err(ErrorType::MosquittoNotInstalled);
         },
     }
 
     match service_active("mosquitto") {
         Ok(_) => info!("Éxito: El servicio de sistema mosquitto está activo"),
-        Err(_) => {
-            error!("Error: El servicio de sistema mosquitto no está activo");
+        Err(e) => {
+            error!("Error: El servicio de sistema mosquitto no está activo. {}", e);
             return Err(ErrorType::MosquittoServiceInactive);
         },
     }
 
     match mosquitto_listening("127.0.0.1:8883") {
         Ok(_) => info!("Éxito: El servicio de sistema mosquitto está escuchando"),
-        Err(_) => {
-            error!("Error: El servicio de sistema mosquitto no está escuchando");
+        Err(e) => {
+            error!("Error: El servicio de sistema mosquitto no está escuchando. {}", e);
             return Err(ErrorType::MosquittoServiceInactive);
         },
     }
 
     match validate_mosquitto_conf(Path::new("/etc/mosquitto/mosquitto.conf")) {
         Ok(_) => info!("Éxito: El archivo mosquitto.conf es válido"),
-        Err(error) => {
-            error!("{}", error);
-            return Err(error);
+        Err(e) => {
+            error!("{}", e);
+            return Err(e);
         },
     }
 
@@ -166,15 +166,15 @@ pub fn check_system_config() -> Result<(), ErrorType> {
             info!("Éxito: Mosquitto configurado para mTLS");
             config
         },
-        Err(error) => {
-            error!("{}", error);
-            return Err(error);
+        Err(e) => {
+            error!("{}", e);
+            return Err(e);
         }
     };
 
     match validate_certificate_files(&cfg) {
         Ok(_) => info!("Éxito: Los certificados mTLS son correctos"),
-        Err(error) => error!("{}", error),
+        Err(e) => error!("{}", e),
     }
 
     Ok(())

@@ -1,8 +1,29 @@
+//! Dominio de Mensajería y Modelos de Datos.
+//!
+//! Este módulo define las estructuras de datos fundamentales que se intercambian
+//! entre los distintos componentes del sistema (Hub, Edge, Servidor).
+//! Actúa como el lenguaje común para la serialización (MessagePack) y
+//! la persistencia en base de datos.
+//!
+//! # Organización
+//!
+//! - **Modelos Base:** Estructuras atómicas como `Metadata`, `DestinationType`.
+//! - **Payloads de Negocio:** Estructuras como `Measurement`, `Monitor`, `Alert`.
+//! - **Wrappers de Transporte:** Enums y Structs contenedores (`MessageFromHub`, `MessageToHub`)
+//!   que agrupan los payloads para su enrutamiento.
+//! - **Utilidades:** Funciones de casting para transformar modelos de memoria en filas de base de datos (`..._row`).
+
+
 use serde::{Serialize, Deserialize};
 use sqlx::Type;
 use crate::message::domain_for_table::{AlertAirRow, AlertThRow, HubRow, MeasurementRow, MonitorRow};
 
 
+/// Tipo de destino.
+///
+/// - `Node`: Dispositivo final.
+/// - `Edge`: Este dispositivo intermediario.
+/// - `Server`: El backend central.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type, Hash)]
 #[repr(u8)]
 pub enum DestinationType {
@@ -13,7 +34,10 @@ pub enum DestinationType {
 }
 
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadatos estándar para todos los mensajes del sistema.
+///
+/// Proporciona contexto de trazabilidad, origen y destino para cada paquete de datos.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Metadata {
     pub sender_user_id: String,
     pub destination_type: DestinationType,
@@ -22,6 +46,9 @@ pub struct Metadata {
 }
 
 
+/// Mediciones de sensores ambientales y operativos.
+///
+/// Representa el paquete de datos principal generado por los nodos.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Measurement {
     pub metadata: Metadata,
@@ -37,6 +64,11 @@ pub struct Measurement {
 
 
 impl Measurement {
+
+    /// Convierte el modelo de memoria `Measurement` a su representación persistible `MeasurementRow`.
+    ///
+    /// # Parámetros
+    /// - `topic`: El tópico MQTT por donde llegó el mensaje (necesario para la traza en DB).
     pub fn cast_measurement_to_row(self, topic: String) -> MeasurementRow {
         let mut mr = MeasurementRow::default();
         mr.metadata.sender_user_id = self.metadata.sender_user_id;
@@ -56,6 +88,7 @@ impl Measurement {
 }
 
 
+/// Alerta de calidad de aire.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertAir {
     pub metadata: Metadata,
@@ -65,6 +98,8 @@ pub struct AlertAir {
 
 
 impl AlertAir {
+
+    /// Convierte la alerta de aire a su formato de fila para base de datos.
     pub fn cast_alert_air_to_row(self, topic: String) -> AlertAirRow {
         let mut aar = AlertAirRow::default();
         aar.metadata.sender_user_id = self.metadata.sender_user_id;
@@ -79,6 +114,7 @@ impl AlertAir {
 }
 
 
+/// Alerta de Temperatura y Humedad.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertTh {
     pub metadata: Metadata,
@@ -88,6 +124,8 @@ pub struct AlertTh {
 
 
 impl AlertTh {
+
+    /// Convierte la alerta térmica a su formato de fila para base de datos.
     pub fn cast_alert_th_to_row(self, topic: String) -> AlertThRow {
         let mut ath = AlertThRow::default();
         ath.metadata.sender_user_id = self.metadata.sender_user_id;
@@ -102,6 +140,9 @@ impl AlertTh {
 }
 
 
+/// Datos de telemetría y salud del Hub.
+///
+/// Incluye información sobre memoria, stack y conectividad para diagnóstico.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Monitor {
     pub metadata: Metadata,
@@ -122,6 +163,8 @@ pub struct Monitor {
 
 
 impl Monitor {
+
+    /// Convierte la telemetría a su formato de fila para base de datos.
     pub fn cast_monitor_to_row(self, topic: String) -> MonitorRow {
         let mut mr = MonitorRow::default();
         mr.metadata.sender_user_id = self.metadata.sender_user_id;
@@ -146,6 +189,9 @@ impl Monitor {
 }
 
 
+/// Definición de una Red lógica.
+///
+/// Utilizada para agrupar dispositivos bajo un mismo identificador de red.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Network {
     pub metadata: Metadata,
@@ -156,6 +202,9 @@ pub struct Network {
 }
 
 
+/// Configuración remota para un dispositivo (Hub/Nodo).
+///
+/// Contiene credenciales WiFi/MQTT y parámetros operativos.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
     pub metadata: Metadata,
@@ -169,6 +218,12 @@ pub struct Settings {
 
 
 impl Settings {
+
+    /// Convierte la configuración recibida en un registro de Hub (`HubRow`) para persistencia.
+    ///
+    /// # Parámetros
+    /// - `network`: ID de la red a la que se asocia este dispositivo.
+    /// - `topic`: Tópico de llegada.
     pub fn cast_settings_to_hub_row(self, network: String, topic: String) -> HubRow {
         let mut hr = HubRow::default();
         hr.metadata.sender_user_id = self.metadata.sender_user_id;
@@ -188,6 +243,7 @@ impl Settings {
 }
 
 
+/// Mensaje de Handshake enviado HACIA el Hub (Downlink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
     pub metadata: Metadata,
@@ -204,6 +260,7 @@ impl HandshakeToHub {
 }
 
 
+/// Mensaje de Handshake proveniente DEL Hub (Uplink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
     pub metadata: Metadata,
@@ -212,6 +269,7 @@ pub struct HandshakeFromHub {
 }
 
 
+/// Notificación de cambio a Modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateBalanceMode {
     pub state: String,
@@ -221,12 +279,14 @@ pub struct MessageStateBalanceMode {
 }
 
 
+/// Notificación de cambio a Modo Normal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateNormal {
     pub state: String,
 }
 
 
+/// Notificación de cambio a Modo Seguro (Safe Mode).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateSafeMode {
     pub state: String,
@@ -236,6 +296,7 @@ pub struct MessageStateSafeMode {
 }
 
 
+/// Notificación de cambio de Fase dentro del modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PhaseNotification {
     pub metadata: Metadata,
@@ -247,23 +308,14 @@ pub struct PhaseNotification {
 }
 
 
+/// Mensaje de latido (Heartbeat) para indicar a los Hubs que el Edge está vivo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Heartbeat {
     pub metadata: Metadata,
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Active {
-    pub active_network: bool,
-}
-
-
-impl Active {
-    pub fn new(active_network: bool) -> Self { Self { active_network } }
-}
-
-
+/// Comando para eliminar un Hub del registro.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteHub {
     pub metadata: Metadata,
@@ -271,6 +323,34 @@ pub struct DeleteHub {
 }
 
 
+impl DeleteHub {
+    pub fn new(metadata: Metadata, id_hub: String) -> Self {
+        Self {
+            metadata,
+            id_hub,
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveHub {
+    pub metadata: Metadata,
+    pub active: bool,
+}
+
+
+impl ActiveHub {
+    pub fn new(metadata: Metadata, active: bool) -> Self {
+        Self {
+            metadata,
+            active,
+        }
+    }
+}
+
+
+/// Confirmación de recepción de configuración (Handshake bidireccional).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingOk {
     pub metadata: Metadata,
@@ -278,6 +358,47 @@ pub struct SettingOk {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateFirmware {
+    pub metadata: Metadata,
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct FirmwareOk {
+    pub metadata: Metadata,
+    pub version: String,
+    pub is_ok: bool,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FirmwareOutcome {
+    pub metadata: Metadata,
+    pub version: String,
+    pub is_ok: bool,
+    pub percentage_ok: f32,
+}
+
+
+impl FirmwareOutcome {
+    pub fn new(metadata: Metadata, version: String, is_ok: bool, percentage_ok: f32) -> Self {
+        Self {
+            metadata,
+            version,
+            is_ok,
+            percentage_ok,
+        }
+    }
+}
+
+
+/// Wrapper principal para mensajes provenientes del Hub (Uplink).
+///
+/// Agrupa el tópico de llegada y el contenido polimórfico del mensaje.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageFromHub {
     pub topic_where_arrive: String,
@@ -292,6 +413,10 @@ impl MessageFromHub {
 }
 
 
+/// Enum polimórfico (`untagged`) para todos los tipos de mensajes Uplink.
+///
+/// Utiliza `#[serde(untagged)]` para que la deserialización se base en la estructura de los campos
+/// y no en una etiqueta externa, optimizando el payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum MessageFromHubTypes {
@@ -302,9 +427,12 @@ pub enum MessageFromHubTypes {
     Settings(Settings),
     SettingsOk(SettingOk),
     Handshake(HandshakeFromHub),
+    FirmwareOk(FirmwareOk),
+    FirmwareOutcome(FirmwareOutcome),
 }
 
 
+/// Wrapper superior para mensajes destinados al Hub (Downlink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum MessageToHub {
@@ -312,6 +440,9 @@ pub enum MessageToHub {
 }
 
 
+/// Enum polimórfico (`untagged`) para todos los tipos de mensajes Downlink.
+///
+/// Incluye comandos de control, cambios de estado y mensajes pasantes del servidor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum MessageToHubTypes {
@@ -326,6 +457,7 @@ pub enum MessageToHubTypes {
 }
 
 
+/// Wrapper para mensajes provenientes del Servidor Remoto.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageFromServer {
     pub topic_where_arrive: String,
@@ -340,17 +472,20 @@ impl MessageFromServer {
 }
 
 
+/// Enum polimórfico (`untagged`) para comandos remotos del servidor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum MessageFromServerTypes {
     Network(Network),
     Settings(Settings),
-    Active(Active),
     SettingOk(SettingOk),
     DeleteHub(DeleteHub),
+    ActiveHub(ActiveHub),
+    UpdateFirmware(UpdateFirmware),
 }
 
 
+/// Wrapper de salida hacia el Servidor (Uplink Remoto).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum MessageToServer {
@@ -358,14 +493,19 @@ pub enum MessageToServer {
 }
 
 
+/// Estado de conexión con el servidor remoto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus { Connected, Disconnected }
 
 
+/// Estado de conexión con el broker MQTT local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalStatus { Connected, Disconnected }
 
 
+/// Representación final de un mensaje listo para ser enviado por MQTT.
+///
+/// Contiene el payload binario (serializado) y los parámetros de transporte.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedMessage {
     pub topic: String,

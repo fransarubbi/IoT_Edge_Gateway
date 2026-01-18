@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use crate::database::domain::Table;
 use crate::message::domain_for_table::HubRow;
 use crate::system::domain::System;
+use rand::seq::IteratorRandom;
 
 
 /// Gestor en memoria de las configuraciones de redes y tópicos del sistema.
@@ -128,6 +129,20 @@ impl NetworkManager {
         true  // si la red no existe, retorna true para no guardar datos en network_task
     }
 
+    /// Obtener un id de un Hub aleatorio perteneciente a una determinada red.
+    pub fn get_random_hub_id_by_network(&self, id_net: &str) -> Option<String> {
+        
+        let hubs_set = self.hubs.get(id_net)?;
+        let random_hub = hubs_set.iter().choose(&mut rand::thread_rng())?;
+        Some(random_hub.id.clone())
+    }
+
+    /// Obtener la cantidad de Hubs asociados a una red en particular.
+    pub fn get_total_hubs_by_network(&self, id_net: &str) -> Option<usize> {
+        let hubs_set = self.hubs.get(id_net)?;
+        Some(hubs_set.len())
+    }
+
     /// Transforma un tópico local (proveniente del Hub) en un tópico de destino para el Servidor.
     ///
     /// Esta función actúa como un **Gateway de Salida** (Uplink). Toma mensajes generados
@@ -235,6 +250,51 @@ impl NetworkManager {
             } else if topic_matches(&n.topic_new_firmware.topic, topic_in) {
                 qos_topic = n.topic_new_firmware.qos;
                 Some(Topic::new(format!("iot/{net}/new_firmware_to_hub"), qos_topic))
+            } else if topic_matches(&n.topic_delete_hub.topic, topic_in) {
+                qos_topic = n.topic_delete_hub.qos;
+                Some(Topic::new(format!("iot/{net}/delete_hub"), qos_topic))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_topic_to_send_msg_active_hub(&self, topic_in: &str) -> Option<Topic> {
+
+        let parts: Vec<&str> = topic_in.split('/').collect();
+        if parts.len() < 4 {
+            return None;
+        }
+        let net = parts[1];
+        let qos_topic : u8;
+
+        if let Some(n) = self.networks.get(net) {
+            if topic_matches(&n.topic_network.topic, topic_in) {
+                qos_topic = n.topic_network.qos;
+                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_topic_to_send_msg_delete_hub(&self, topic_in: &str) -> Option<Topic> {
+
+        let parts: Vec<&str> = topic_in.split('/').collect();
+        if parts.len() < 4 {
+            return None;
+        }
+        let net = parts[1];
+        let qos_topic : u8;
+
+        if let Some(n) = self.networks.get(net) {
+            if topic_matches(&n.topic_network.topic, topic_in) {
+                qos_topic = n.topic_network.qos;
+                Some(Topic::new(format!("iot/{net}/delete_hub"), qos_topic))
             } else {
                 None
             }
@@ -350,6 +410,14 @@ pub struct Network {
     pub topic_hub_setting_ok: Topic,
     pub topic_hub_firmware_ok: Topic,
     pub topic_balance_mode_handshake: Topic,
+
+    pub topic_setting: Topic,
+    pub topic_delete_hub: Topic,
+    pub topic_setting_ok: Topic,
+    pub topic_active_hub: Topic,
+
+    pub topic_hello_world: Topic,
+
     pub topic_network: Topic,
     pub topic_new_setting_to_hub: Topic,
     pub topic_new_firmware: Topic,
@@ -370,6 +438,12 @@ impl Network {
         let t_new_firmware = format!("iot/{id_network}/edge/{id_system}/new_firmware");
         let t_hub_firmware_ok = format!("iot/{id_network}/hub/+/hub_firmware_ok");
         let t_balance_mode_handshake = format!("iot/{id_network}/hub/+/balance_mode_handshake");
+        let t_setting = format!("iot/{id_network}/hub/+/setting");
+        let t_delete_hub = format!("iot/{id_network}/edge/{id_system}/delete_hub");
+        let t_setting_ok = format!("iot/{id_network}/edge/{id_system}/setting_ok");
+        let t_hello_world = format!("iot/{id_network}/edge/{id_system}/hello_world");
+
+        let t_active_hub = format!("iot/{id_network}/active_hub");
 
         Self {
             id_network,
@@ -384,6 +458,12 @@ impl Network {
             topic_new_firmware: Topic::new(t_new_firmware, 0),
             topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 0),
             topic_balance_mode_handshake: Topic::new(t_balance_mode_handshake, 0),
+
+            topic_setting: Topic::new(t_setting, 0),
+            topic_delete_hub: Topic::new(t_delete_hub, 0),
+            topic_setting_ok: Topic::new(t_setting_ok, 0),
+            topic_active_hub: Topic::new(t_active_hub, 0),
+            topic_hello_world: Topic::new(t_hello_world, 0),
             active
         }
     }
@@ -432,7 +512,8 @@ pub enum NetworkChanged {
 #[derive(Debug, PartialEq, Clone)]
 pub enum HubChanged {
     Insert(HubRow),
-    Delete { id: String },
+    Update(HubRow),
+    Delete(String),
 }
 
 

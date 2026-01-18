@@ -34,9 +34,7 @@ pub async fn init_fsm() -> Result<AppContext, ErrorType> {
             (StateInit::ConfigSystem, _ ) => {
                 match configurate_system(&flag) {
                     Ok(_) => state = StateInit::InitSystem,
-                    Err(_) => {
-                        state = StateInit::CheckSystem;
-                    }
+                    Err(e) => return Err(e),
                 }
             },
             (StateInit::InitSystem, _ ) => {

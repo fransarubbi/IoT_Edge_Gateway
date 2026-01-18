@@ -12,14 +12,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use chrono::Local;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
-use crate::message::domain::{Active, MessageFromHub, MessageFromHubTypes, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes};
+use crate::message::domain::{ActiveHub, DeleteHub, DestinationType, MessageFromHub, MessageFromHubTypes, MessageFromServer, MessageFromServerTypes, MessageToHub, MessageToHubTypes, Metadata};
 use crate::message::domain::MessageToHub::ToHub;
+use crate::message::domain::MessageToHubTypes::ServerToHub;
 use crate::message::domain_for_table::HubRow;
-use crate::network::domain::{Hub, HubChanged, Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
+use crate::network::domain::{HubChanged, Network, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::{ErrorType, System};
 
@@ -126,7 +128,7 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             _ => unreachable!(),
                         };
                         drop(manager);
-                        handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, &msg_from_server.topic_where_arrive).await;
+                        handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, app_context.clone(), &msg_from_server.topic_where_arrive).await;
                     },
                     MessageFromServerTypes::Settings(settings) => {
                         let manager = app_context.net_man.read().await;
@@ -140,9 +142,17 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         }
                     },
                     MessageFromServerTypes::DeleteHub(hub) => {
-                        // eliminar de memoria
-                        // eliminar de DB
-                        // notificar al hub que entre en sueño profundo
+                        let mut manager = app_context.net_man.write().await;
+                        if let Some(id) = manager.extract_net_id(&msg_from_server.topic_where_arrive) {
+                            manager.remove_hub(&id, &hub.id_hub);
+                            if tx_to_insert_hub.send(HubChanged::Delete(id)).await.is_err() {
+                                error!("Error: No se pudo notificar a network_dba_task que debe eliminar un Hub");
+                            }
+                            let msg = MessageFromServer::new(msg_from_server.topic_where_arrive, MessageFromServerTypes::DeleteHub(hub));
+                            if tx_to_hub.send(ToHub(ServerToHub(msg))).await.is_err() {
+                                error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
+                            }
+                        }
                     }
                     _ => {},
                 }
@@ -169,9 +179,8 @@ pub async fn network_task(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             drop(manager);
                             if let Some(hub_row) = hub_hash_aux.get_mut(&id) {
                                 if let Some(row) = hub_row.iter().find(|r| r.metadata.sender_user_id == settings_ok.metadata.sender_user_id) {
-                                    match app_context.repo.update_hub(row.clone()).await {
-                                        Ok(_) => (),
-                                        Err(e) => error!("Error: No se pudo actualizar hub en la base de datos: {}", e),
+                                    if tx_to_insert_hub.send(HubChanged::Update(row.clone())).await.is_err() {
+                                        error!("Error: No se pudo notificar a network_dba_task que un Hub debe actualizarse");
                                     }
                                     let mut manager = app_context.net_man.write().await;
                                     manager.remove_hub(&id, &row.metadata.sender_user_id);
@@ -240,10 +249,16 @@ pub async fn network_dba_task(mut rx_from_network: mpsc::Receiver<NetworkChanged
                             Err(e) => { error!("Error insertando hub en la base de datos {}", e); }
                         }
                     },
-                    HubChanged::Delete { id } => {
+                    HubChanged::Delete(id) => {
                         match app_context.repo.delete_hub(&id).await {
                             Ok(_) => {},
                             Err(e) => error!("Error eliminando hub la base de datos {}", e),
+                        }
+                    },
+                    HubChanged::Update(hub_row) => {
+                        match app_context.repo.update_hub(hub_row).await {
+                            Ok(_) => (),
+                            Err(e) => error!("Error: No se pudo actualizar hub en la base de datos: {}", e),
                         }
                     }
                 }
@@ -267,21 +282,38 @@ async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
                       tx_to_dba_insert: &mpsc::Sender<UpdateNetwork>,
                       tx_to_hub: &mpsc::Sender<MessageToHub>,
                       net_chan: NetworkChanged,
+                      app_context: AppContext,
                       topic: &str) {
 
     match net_chan.clone() {
         NetworkChanged::Delete { id } => {
-            let active = Active::new(false);
-            let msg = MessageFromServer::new(topic.to_string(), MessageFromServerTypes::Active(active));
-            if tx_to_hub.send(ToHub(MessageToHubTypes::ServerToHub(msg))).await.is_err() {
+            let now = Local::now();
+            let timestamp = now.format("%d/%m/%Y %H:%M:%S").to_string();
+            let metadata = Metadata {
+                sender_user_id: app_context.system.id_edge.clone(),
+                destination_type: DestinationType::Node,
+                destination_id: "all".to_string(),
+                timestamp,
+            };
+            let msg_types = MessageFromServerTypes::DeleteHub(DeleteHub::new(metadata, id));
+            let msg = MessageFromServer::new(topic.to_string(), msg_types);
+            if tx_to_hub.send(ToHub(ServerToHub(msg))).await.is_err() {
                 error!("No se pudo enviar mensaje de desactivación de red");
             }
         },
         NetworkChanged::Update(network) => {
-            let active = Active::new(network.active);
-            let msg = MessageFromServer::new(topic.to_string(), MessageFromServerTypes::Active(active));
-            if tx_to_hub.send(ToHub(MessageToHubTypes::ServerToHub(msg))).await.is_err() {
-                error!("No se pudo enviar mensaje de actualización de red");
+            let now = Local::now();
+            let timestamp = now.format("%d/%m/%Y %H:%M:%S").to_string();
+            let metadata = Metadata {
+                sender_user_id: app_context.system.id_edge.clone(),
+                destination_type: DestinationType::Node,
+                destination_id: "all".to_string(),
+                timestamp,
+            };
+            let msg_types = MessageFromServerTypes::ActiveHub(ActiveHub::new(metadata, network.active));
+            let msg = MessageFromServer::new(topic.to_string(), msg_types);
+            if tx_to_hub.send(ToHub(ServerToHub(msg))).await.is_err() {
+                error!("No se pudo enviar mensaje de activación/desactivación de red");
             }
         },
         _ => {},
