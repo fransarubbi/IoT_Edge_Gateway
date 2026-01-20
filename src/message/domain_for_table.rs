@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow};
-use crate::message::domain::{AlertAir, AlertTh, DestinationType, Measurement, Monitor};
+use crate::message::domain::{AlertAir, AlertTh, DestinationType, Measurement, Metadata, Monitor};
 use crate::network::domain::Hub;
 
 /// Metadatos comunes a todos los eventos y mediciones del sistema.
@@ -47,19 +47,22 @@ pub struct MeasurementRow {
 
 impl MeasurementRow {
     pub fn cast_measurement(self) -> Measurement {
-        let mut m = Measurement::default();
-        m.metadata.sender_user_id = self.metadata.sender_user_id;
-        m.metadata.destination_type = self.metadata.destination_type;
-        m.metadata.destination_id = self.metadata.destination_id;
-        m.metadata.timestamp = self.metadata.timestamp;
-        m.wifi_ssid = self.wifi_ssid;
-        m.pulse_counter = self.pulse_counter;
-        m.pulse_max_duration = self.pulse_max_duration;
-        m.temperature = self.temperature;
-        m.humidity = self.humidity;
-        m.co2_ppm = self.co2_ppm;
-        m.sample = self.sample;
-        m
+        let mut measurement = Measurement::default();
+        let mut metadata = Metadata::default();
+        metadata.set_sender_user_id(self.metadata.sender_user_id);
+        metadata.set_destination_type(self.metadata.destination_type);
+        metadata.set_destination_id(self.metadata.destination_id);
+        metadata.set_timestamp(self.metadata.timestamp);
+        measurement.set_metadata(metadata);
+        measurement.set_wifi_ssid(self.wifi_ssid);
+        measurement.set_pulse_counter(self.pulse_counter);
+        measurement.set_pulse_max_duration(self.pulse_max_duration);
+        measurement.set_temperature(self.temperature);
+        measurement.set_humidity(self.humidity);
+        measurement.set_co2_ppm(self.co2_ppm);
+        measurement.set_sample(self.sample);
+
+        measurement
     }
 }
 
@@ -78,14 +81,17 @@ pub struct AlertAirRow {
 
 impl AlertAirRow {
     pub fn cast_alert_air(self) -> AlertAir {
-        let mut aa = AlertAir::default();
-        aa.metadata.sender_user_id = self.metadata.sender_user_id;
-        aa.metadata.destination_type = self.metadata.destination_type;
-        aa.metadata.destination_id = self.metadata.destination_id;
-        aa.metadata.timestamp = self.metadata.timestamp;
-        aa.co2_initial_ppm = self.co2_initial_ppm;
-        aa.co2_actual_ppm = self.co2_actual_ppm;
-        aa
+        let mut alert_air = AlertAir::default();
+        let mut metadata = Metadata::default();
+        metadata.set_sender_user_id(self.metadata.sender_user_id);
+        metadata.set_destination_type(self.metadata.destination_type);
+        metadata.set_destination_id(self.metadata.destination_id);
+        metadata.set_timestamp(self.metadata.timestamp);
+        alert_air.set_metadata(metadata);
+        alert_air.set_co2_ppm(self.co2_initial_ppm);
+        alert_air.set_co2_actual_ppm(self.co2_actual_ppm);
+
+        alert_air
     }
 }
 
@@ -104,14 +110,17 @@ pub struct AlertThRow {
 
 impl AlertThRow {
     pub fn cast_alert_th(self) -> AlertTh {
-        let mut ath = AlertTh::default();
-        ath.metadata.sender_user_id = self.metadata.sender_user_id;
-        ath.metadata.destination_type = self.metadata.destination_type;
-        ath.metadata.destination_id = self.metadata.destination_id;
-        ath.metadata.timestamp = self.metadata.timestamp;
-        ath.initial_temp = self.initial_temp;
-        ath.actual_temp = self.actual_temp;
-        ath
+        let mut alert_temp = AlertTh::default();
+        let mut metadata = Metadata::default();
+        metadata.set_sender_user_id(self.metadata.sender_user_id);
+        metadata.set_destination_type(self.metadata.destination_type);
+        metadata.set_destination_id(self.metadata.destination_id);
+        metadata.set_timestamp(self.metadata.timestamp);
+        alert_temp.set_metadata(metadata);
+        alert_temp.set_initial_temp(self.initial_temp);
+        alert_temp.set_actual_temp(self.actual_temp);
+
+        alert_temp
     }
 }
 
@@ -142,24 +151,27 @@ pub struct MonitorRow {
 
 impl MonitorRow {
     pub fn cast_monitor(self) -> Monitor {
-        let mut mon = Monitor::default();
-        mon.metadata.sender_user_id = self.metadata.sender_user_id;
-        mon.metadata.destination_type = self.metadata.destination_type;
-        mon.metadata.destination_id = self.metadata.destination_id;
-        mon.metadata.timestamp = self.metadata.timestamp;
-        mon.mem_free_hm = self.mem_free;
-        mon.mem_free_block = self.mem_free_block;
-        mon.mem_free_internal = self.mem_free_internal;
-        mon.stack_free_min_coll = self.stack_free_min_coll;
-        mon.stack_free_min_pub = self.stack_free_min_pub;
-        mon.stack_free_min_mic = self.stack_free_min_mic;
-        mon.stack_free_min_th = self.stack_free_min_th;
-        mon.stack_free_min_air = self.stack_free_min_air;
-        mon.stack_free_min_mon = self.stack_free_min_mon;
-        mon.wifi_ssid = self.wifi_ssid;
-        mon.wifi_rssi = self.wifi_rssi;
-        mon.active_time = self.active_time;
-        mon
+        let mut monitor = Monitor::default();
+        let mut metadata = Metadata::default();
+        metadata.set_sender_user_id(self.metadata.sender_user_id);
+        metadata.set_destination_type(self.metadata.destination_type);
+        metadata.set_destination_id(self.metadata.destination_id);
+        metadata.set_timestamp(self.metadata.timestamp);
+        monitor.set_mem_free(self.mem_free);
+        monitor.set_metadata(metadata);
+        monitor.set_mem_free_block(self.mem_free_block);
+        monitor.set_mem_free_internal(self.mem_free_internal);
+        monitor.set_stack_free_min_coll(self.stack_free_min_coll);
+        monitor.set_stack_free_min_pub(self.stack_free_min_pub);
+        monitor.set_stack_free_min_mic(self.stack_free_min_mic);
+        monitor.set_stack_free_min_th(self.stack_free_min_th);
+        monitor.set_stack_free_min_air(self.stack_free_min_air);
+        monitor.set_stack_free_min_mon(self.stack_free_min_mon);
+        monitor.set_wifi_ssid(self.wifi_ssid);
+        monitor.set_wifi_rssi(self.wifi_rssi);
+        monitor.set_active_time(self.active_time);
+
+        monitor
     }
 }
 

@@ -39,10 +39,50 @@ pub enum DestinationType {
 /// Proporciona contexto de trazabilidad, origen y destino para cada paquete de datos.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Metadata {
-    pub sender_user_id: String,
-    pub destination_type: DestinationType,
-    pub destination_id: String,
-    pub timestamp: String,
+    sender_user_id: String,
+    destination_type: DestinationType,
+    destination_id: String,
+    timestamp: String,
+}
+
+
+impl Metadata {
+    pub fn new(sender_user_id: String,
+               destination_type: DestinationType,
+               destination_id: String,
+               timestamp: String) -> Self {
+        Self {
+            sender_user_id,
+            destination_type,
+            destination_id,
+            timestamp,
+        }
+    }
+    
+    pub fn set_sender_user_id(&mut self, sender_user_id: String) {
+        self.sender_user_id = sender_user_id;
+    }
+    pub fn set_destination_type(&mut self, destination_type: DestinationType) {
+        self.destination_type = destination_type;
+    }
+    pub fn set_destination_id(&mut self, destination_id: String) {
+        self.destination_id = destination_id;
+    }
+    pub fn set_timestamp(&mut self, timestamp: String) {
+        self.timestamp = timestamp;
+    }
+    pub fn get_sender_user_id(&self) -> &str {
+        &self.sender_user_id
+    }
+    pub fn get_destination_type(&self) -> DestinationType {
+        self.destination_type.clone()
+    }
+    pub fn get_destination_id(&self) -> &str {
+        &self.destination_id
+    }
+    pub fn get_timestamp(&self) -> &str {
+        &self.timestamp
+    }
 }
 
 
@@ -51,15 +91,15 @@ pub struct Metadata {
 /// Representa el paquete de datos principal generado por los nodos.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Measurement {
-    pub metadata: Metadata,
-    pub ipv4addr: String,
-    pub wifi_ssid: String,
-    pub pulse_counter: i64,
-    pub pulse_max_duration: i64,
-    pub temperature: f32,
-    pub humidity: f32,
-    pub co2_ppm: f32,
-    pub sample: u16,
+    metadata: Metadata,
+    ipv4addr: String,
+    wifi_ssid: String,
+    pulse_counter: i64,
+    pulse_max_duration: i64,
+    temperature: f32,
+    humidity: f32,
+    co2_ppm: f32,
+    sample: u16,
 }
 
 
@@ -85,15 +125,40 @@ impl Measurement {
         mr.sample = self.sample;
         mr
     }
+    
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+    pub fn set_wifi_ssid(&mut self, wsif_ssid: String) {
+        self.wifi_ssid = wsif_ssid;
+    }
+    pub fn set_pulse_counter(&mut self, pulse_counter: i64) {
+        self.pulse_counter = pulse_counter;
+    }
+    pub fn set_pulse_max_duration(&mut self, pulse_max_duration: i64) {
+        self.pulse_max_duration = pulse_max_duration;
+    }
+    pub fn set_temperature(&mut self, temperature: f32) {
+        self.temperature = temperature;
+    }
+    pub fn set_humidity(&mut self, humidity: f32) {
+        self.humidity = humidity;
+    }
+    pub fn set_co2_ppm(&mut self, co2_ppm: f32) {
+        self.co2_ppm = co2_ppm;
+    }
+    pub fn set_sample(&mut self, sample: u16) {
+        self.sample = sample;
+    }
 }
 
 
 /// Alerta de calidad de aire.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertAir {
-    pub metadata: Metadata,
-    pub co2_initial_ppm: f32,
-    pub co2_actual_ppm: f32,
+    metadata: Metadata,
+    co2_initial_ppm: f32,
+    co2_actual_ppm: f32,
 }
 
 
@@ -111,15 +176,25 @@ impl AlertAir {
         aar.co2_actual_ppm = self.co2_actual_ppm;
         aar
     }
+    
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+    pub fn set_co2_ppm(&mut self, co2_ppm: f32) {
+        self.co2_initial_ppm = co2_ppm;
+    }
+    pub fn set_co2_actual_ppm(&mut self, co2_actual_ppm: f32) {
+        self.co2_actual_ppm = co2_actual_ppm;
+    }
 }
 
 
 /// Alerta de Temperatura y Humedad.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AlertTh {
-    pub metadata: Metadata,
-    pub initial_temp: f32,
-    pub actual_temp: f32,
+    metadata: Metadata,
+    initial_temp: f32,
+    actual_temp: f32,
 }
 
 
@@ -137,6 +212,16 @@ impl AlertTh {
         ath.actual_temp = self.actual_temp;
         ath
     }
+    
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+    pub fn set_initial_temp(&mut self, initial_temp: f32) {
+        self.initial_temp = initial_temp;
+    }
+    pub fn set_actual_temp(&mut self, actual_temp: f32) {
+        self.actual_temp = actual_temp;
+    }
 }
 
 
@@ -145,20 +230,20 @@ impl AlertTh {
 /// Incluye información sobre memoria, stack y conectividad para diagnóstico.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Monitor {
-    pub metadata: Metadata,
-    pub mem_free: i64,
-    pub mem_free_hm: i64,
-    pub mem_free_block: i64,
-    pub mem_free_internal: i64,
-    pub stack_free_min_coll: i64,
-    pub stack_free_min_pub: i64,
-    pub stack_free_min_mic: i64,
-    pub stack_free_min_th: i64,
-    pub stack_free_min_air: i64,
-    pub stack_free_min_mon: i64,
-    pub wifi_ssid: String,
-    pub wifi_rssi: i8,
-    pub active_time: String,
+    metadata: Metadata,
+    mem_free: i64,
+    mem_free_hm: i64,
+    mem_free_block: i64,
+    mem_free_internal: i64,
+    stack_free_min_coll: i64,
+    stack_free_min_pub: i64,
+    stack_free_min_mic: i64,
+    stack_free_min_th: i64,
+    stack_free_min_air: i64,
+    stack_free_min_mon: i64,
+    wifi_ssid: String,
+    wifi_rssi: i8,
+    active_time: String,
 }
 
 
@@ -171,6 +256,7 @@ impl Monitor {
         mr.metadata.destination_type = self.metadata.destination_type;
         mr.metadata.destination_id = self.metadata.destination_id;
         mr.metadata.timestamp = self.metadata.timestamp;
+        
         mr.metadata.topic_where_arrive = topic;
         mr.mem_free_hm = self.mem_free;
         mr.mem_free_block = self.mem_free_block;
@@ -186,6 +272,46 @@ impl Monitor {
         mr.active_time = self.active_time;
         mr
     }
+    
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
+    }
+    pub fn set_mem_free(&mut self, mem_free: i64) {
+        self.mem_free = mem_free;
+    }
+    pub fn set_mem_free_block(&mut self, mem_free_block: i64) {
+        self.mem_free_block = mem_free_block;
+    }
+    pub fn set_mem_free_internal(&mut self, mem_free_internal: i64) {
+        self.mem_free_internal = mem_free_internal;
+    }
+    pub fn set_stack_free_min_coll(&mut self, stack_free_min_coll: i64) {
+        self.stack_free_min_coll = stack_free_min_coll;
+    }
+    pub fn set_stack_free_min_pub(&mut self, stack_free_min_pub: i64) {
+        self.stack_free_min_pub = stack_free_min_pub;
+    }
+    pub fn set_stack_free_min_mic(&mut self, stack_free_min_mic: i64) {
+        self.stack_free_min_mic = stack_free_min_mic;
+    }
+    pub fn set_stack_free_min_th(&mut self, stack_free_min_th: i64) {
+        self.stack_free_min_th = stack_free_min_th;
+    }
+    pub fn set_stack_free_min_air(&mut self, stack_free_min_air: i64) {
+        self.stack_free_min_air = stack_free_min_air;
+    }
+    pub fn set_stack_free_min_mon(&mut self, stack_free_min_mon: i64) {
+        self.stack_free_min_mon = stack_free_min_mon;
+    }
+    pub fn set_wifi_ssid(&mut self, wifi_ssid: String) {
+        self.wifi_ssid = wifi_ssid;
+    }
+    pub fn set_wifi_rssi(&mut self, wifi_rssi: i8) {
+        self.wifi_rssi = wifi_rssi;
+    }
+    pub fn set_active_time(&mut self, active_time: String) {
+        self.active_time = active_time;
+    }
 }
 
 
@@ -194,11 +320,27 @@ impl Monitor {
 /// Utilizada para agrupar dispositivos bajo un mismo identificador de red.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Network {
-    pub metadata: Metadata,
-    pub id_network: String,
-    pub name_network: String,
-    pub active: bool,
-    pub delete_network: bool,
+    metadata: Metadata,
+    id_network: String,
+    name_network: String,
+    active: bool,
+    delete_network: bool,
+}
+
+
+impl Network {
+    pub fn get_id_network(&self) -> String {
+        self.id_network.clone()
+    }
+    pub fn get_name_network(&self) -> String {
+        self.name_network.clone()
+    }
+    pub fn get_active(&self) -> bool {
+        self.active
+    }
+    pub fn get_delete_network(&self) -> bool {
+        self.delete_network
+    }
 }
 
 
@@ -207,13 +349,13 @@ pub struct Network {
 /// Contiene credenciales WiFi/MQTT y parámetros operativos.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
-    pub metadata: Metadata,
-    pub wifi_ssid: String,
-    pub wifi_password: String,
-    pub mqtt_uri: String,
-    pub device_name: String,
-    pub sample: u16,
-    pub energy_mode: u8,
+    metadata: Metadata,
+    wifi_ssid: String,
+    wifi_password: String,
+    mqtt_uri: String,
+    device_name: String,
+    sample: u16,
+    energy_mode: u8,
 }
 
 
@@ -240,22 +382,24 @@ impl Settings {
         hr.energy_mode = self.energy_mode;
         hr
     }
+    pub fn get_metadata(&self) -> Metadata {
+        self.metadata.clone()
+    }
 }
 
 
 /// Mensaje de Handshake enviado HACIA el Hub (Downlink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
-    pub metadata: Metadata,
-    pub flag: String,
-    pub balance_epoch: u32,
-    pub duration: u32,
+    metadata: Metadata,
+    balance_epoch: u32,
+    duration: u32,
 }
 
 
 impl HandshakeToHub {
-    pub fn new(metadata: Metadata, flag: String, balance_epoch: u32, duration: u32) -> Self {
-        Self { metadata, flag, balance_epoch, duration }
+    pub fn new(metadata: Metadata, balance_epoch: u32, duration: u32) -> Self {
+        Self { metadata, balance_epoch, duration }
     }
 }
 
@@ -263,63 +407,70 @@ impl HandshakeToHub {
 /// Mensaje de Handshake proveniente DEL Hub (Uplink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
-    pub metadata: Metadata,
-    pub state: String,
-    pub balance_epoch: u32,
+    metadata: Metadata,
+    state: String,
+    balance_epoch: u32,
 }
 
 
 /// Notificación de cambio a Modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateBalanceMode {
-    pub state: String,
-    pub balance_epoch: u32,
-    pub phase: String,
-    pub duration: u32,
+    state: String,
+    balance_epoch: u32,
+    sub_state: String,
+    duration: u32,
+}
+
+
+impl MessageStateBalanceMode {
+    pub fn new(state: String, balance_epoch: u32, sub_state: String, duration: u32) -> Self {
+        Self { state, balance_epoch, sub_state, duration }
+    }
 }
 
 
 /// Notificación de cambio a Modo Normal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateNormal {
-    pub state: String,
+    state: String,
 }
 
 
 /// Notificación de cambio a Modo Seguro (Safe Mode).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateSafeMode {
-    pub state: String,
-    pub duration: u32,
-    pub frequency: u32,
-    pub jitter: u32,
+    state: String,
+    duration: u32,
+    frequency: u32,
+    jitter: u32,
 }
 
 
 /// Notificación de cambio de Fase dentro del modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PhaseNotification {
-    pub metadata: Metadata,
-    pub state: String,
-    pub epoch: u32,
-    pub phase: String,
-    pub frequency: u32,
-    pub jitter: u32,
+    metadata: Metadata,
+    state: String,
+    epoch: u32,
+    phase: String,
+    frequency: u32,
+    jitter: u32,
 }
 
 
 /// Mensaje de latido (Heartbeat) para indicar a los Hubs que el Edge está vivo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Heartbeat {
-    pub metadata: Metadata,
+    metadata: Metadata,
 }
 
 
 /// Comando para eliminar un Hub del registro.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteHub {
-    pub metadata: Metadata,
-    pub id_hub: String,
+    metadata: Metadata,
+    id_hub: String,
 }
 
 
@@ -330,13 +481,16 @@ impl DeleteHub {
             id_hub,
         }
     }
+    pub fn get_id_hub(&self) -> String {
+        self.id_hub.clone()
+    }
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveHub {
-    pub metadata: Metadata,
-    pub active: bool,
+    metadata: Metadata,
+    active: bool,
 }
 
 
@@ -353,8 +507,15 @@ impl ActiveHub {
 /// Confirmación de recepción de configuración (Handshake bidireccional).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingOk {
-    pub metadata: Metadata,
-    pub handshake: bool,
+    metadata: Metadata,
+    handshake: bool,
+}
+
+
+impl SettingOk {
+    pub fn get_metadata(&self) -> Metadata {
+        self.metadata.clone()
+    }
 }
 
 
@@ -369,18 +530,31 @@ pub struct UpdateFirmware {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FirmwareOk {
-    pub metadata: Metadata,
-    pub version: String,
-    pub is_ok: bool,
+    metadata: Metadata,
+    version: String,
+    is_ok: bool,
+}
+
+
+impl FirmwareOk {
+    pub fn get_metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+    pub fn get_is_ok(&self) -> bool {
+        self.is_ok
+    }
+    pub fn get_version(&self) -> &str {
+        &self.version
+    }
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FirmwareOutcome {
-    pub metadata: Metadata,
-    pub version: String,
-    pub is_ok: bool,
-    pub percentage_ok: f32,
+    metadata: Metadata,
+    version: String,
+    is_ok: bool,
+    percentage_ok: f32,
 }
 
 
@@ -396,100 +570,60 @@ impl FirmwareOutcome {
 }
 
 
-/// Wrapper principal para mensajes provenientes del Hub (Uplink).
-///
-/// Agrupa el tópico de llegada y el contenido polimórfico del mensaje.
+// -------------------------------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MessageFromHub {
-    pub topic_where_arrive: String,
-    pub msg: MessageFromHubTypes,
+pub struct Message {
+    topic_arrive: String,
+    message: MessageTypes,
 }
 
 
-impl MessageFromHub {
-    pub fn new(topic_where_arrive: String, msg: MessageFromHubTypes) -> Self {
-        Self { topic_where_arrive, msg }
+impl Message {
+    pub fn new(topic_arrive: String, message: MessageTypes) -> Self {
+        Self { topic_arrive, message }
+    }
+    pub fn get_topic_arrive(&self) -> &str {
+        &self.topic_arrive
+    }
+    pub fn get_message(&self) -> MessageTypes {
+        self.message.clone()
     }
 }
 
 
-/// Enum polimórfico (`untagged`) para todos los tipos de mensajes Uplink.
-///
-/// Utiliza `#[serde(untagged)]` para que la deserialización se base en la estructura de los campos
-/// y no en una etiqueta externa, optimizando el payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub enum MessageFromHubTypes {
+pub enum MessageTypes {
+    // Mensajes provenientes del Hub
     Report(Measurement),
     Monitor(Monitor),
     AlertAir(AlertAir),
     AlertTem(AlertTh),
-    Settings(Settings),
-    SettingsOk(SettingOk),
-    Handshake(HandshakeFromHub),
+    HandshakeFromHub(HandshakeFromHub),
     FirmwareOk(FirmwareOk),
+    FromHubSettings(Settings),
+    FromHubSettingsAck(SettingOk),
+
+    // Mensajes para el Hub
+    Heartbeat(Heartbeat),
+    HandshakeToHub(HandshakeToHub),
+    PhaseNotification(PhaseNotification),
+
+    // Mensajes provenientes del Server
+    UpdateFirmware(UpdateFirmware),
+    DeleteHub(DeleteHub),
+    ActiveHub(ActiveHub),
+    FromServerSettings(Settings),
+    FromServerSettingsAck(SettingOk),
+    Network(Network),
+
+    // Mensajes para el Server
     FirmwareOutcome(FirmwareOutcome),
-}
 
-
-/// Wrapper superior para mensajes destinados al Hub (Downlink).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum MessageToHub {
-    ToHub(MessageToHubTypes),
-}
-
-
-/// Enum polimórfico (`untagged`) para todos los tipos de mensajes Downlink.
-///
-/// Incluye comandos de control, cambios de estado y mensajes pasantes del servidor.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum MessageToHubTypes {
-    Handshake(HandshakeToHub),
+    // Mensajes para el Server y el Hub
     StateBalanceMode(MessageStateBalanceMode),
     StateNormal(MessageStateNormal),
     StateSafeMode(MessageStateSafeMode),
-    Heartbeat(Heartbeat),
-    PhaseNotification(PhaseNotification),
-    ServerToHub(MessageFromServer),
-    Settings(Settings),
-}
-
-
-/// Wrapper para mensajes provenientes del Servidor Remoto.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageFromServer {
-    pub topic_where_arrive: String,
-    pub msg: MessageFromServerTypes,
-}
-
-
-impl MessageFromServer {
-    pub fn new(topic_where_arrive: String, msg: MessageFromServerTypes) -> Self {
-        Self { topic_where_arrive, msg }
-    }
-}
-
-
-/// Enum polimórfico (`untagged`) para comandos remotos del servidor.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum MessageFromServerTypes {
-    Network(Network),
-    Settings(Settings),
-    SettingOk(SettingOk),
-    DeleteHub(DeleteHub),
-    ActiveHub(ActiveHub),
-    UpdateFirmware(UpdateFirmware),
-}
-
-
-/// Wrapper de salida hacia el Servidor (Uplink Remoto).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum MessageToServer {
-    ToServer(MessageFromHub),
 }
 
 
@@ -508,10 +642,10 @@ pub enum LocalStatus { Connected, Disconnected }
 /// Contiene el payload binario (serializado) y los parámetros de transporte.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedMessage {
-    pub topic: String,
-    pub payload: Vec<u8>,
-    pub qos: u8,
-    pub retain: bool,
+    topic: String,
+    payload: Vec<u8>,
+    qos: u8,
+    retain: bool,
 }
 
 
@@ -526,5 +660,17 @@ impl SerializedMessage {
             qos,
             retain,
         }
+    }
+    pub fn get_topic(&self) -> &str {
+        &self.topic
+    }
+    pub fn get_payload(&self) -> &[u8] {
+        &self.payload
+    }
+    pub fn get_qos(&self) -> u8 {
+        self.qos
+    }
+    pub fn get_retain(&self) -> bool {
+        self.retain
     }
 }

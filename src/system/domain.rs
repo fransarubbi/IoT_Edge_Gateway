@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing_subscriber::{fmt, EnvFilter};
+use crate::mqtt::domain::PayloadTopic;
 use crate::network::domain::{NetworkRow};
 
 
@@ -83,6 +84,29 @@ pub enum ErrorType {
 
     #[error("Error de SQLite")]
     SQLiteError(#[from] sqlx::Error),
+}
+
+
+/// Banderas de configuración o estado del sistema (Diagnóstico).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Flag {
+    MosquittoConf,
+    MtlsConf,
+    MosquittoServiceInactive,
+    Null,
+}
+
+
+/// Eventos internos de conectividad y red.
+///
+/// Se utilizan para notificar cambios en la conexión MQTT local o remota.
+#[derive(PartialEq, Clone)]
+pub enum InternalEvent {
+    ServerConnected,
+    ServerDisconnected,
+    LocalConnected,
+    LocalDisconnected,
+    IncomingMessage(PayloadTopic),
 }
 
 

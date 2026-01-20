@@ -1,7 +1,6 @@
-use crate::fsm::domain::Flag;
 use crate::system::check::check_system_config;
 use crate::system::configurate::{configurate_system, initializing_system};
-use crate::system::domain::{ErrorType, StateInit};
+use crate::system::domain::{ErrorType, Flag, StateInit};
 use crate::context::domain::AppContext;
 
 

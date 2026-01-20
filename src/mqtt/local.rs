@@ -6,9 +6,8 @@ use tracing::error;
 use crate::context::domain::AppContext;
 use crate::message::domain::SerializedMessage;
 use crate::network::domain::NetworkManager;
-use crate::fsm::domain::{InternalEvent};
 use crate::mqtt::domain::{PayloadTopic, StateClient};
-use crate::system::domain::{ErrorType, System};
+use crate::system::domain::{ErrorType, InternalEvent, System};
 
 
 
@@ -109,10 +108,10 @@ pub async fn local_mqtt(tx: mpsc::Sender<InternalEvent>,
                                 Some(msg) => {
                                     if let Some(c) = client.as_ref() {
                                         let res = c.publish(
-                                            msg.topic,
-                                            cast_qos(&msg.qos),
-                                            msg.retain,
-                                            msg.payload
+                                            msg.get_topic().to_string(),
+                                            cast_qos(&msg.get_qos()),
+                                            msg.get_retain(),
+                                            msg.get_payload()
                                         ).await;
                                         
                                     if let Err(e) = res {

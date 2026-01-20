@@ -5,14 +5,14 @@ use crate::database::domain::{DataRequest, TableDataVector};
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
 use crate::firmware::domain::{firmware_watchdog_timer, Action, Event};
 use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
-use crate::fsm::domain::{InternalEvent};
-use crate::message::domain::{MessageFromHub, MessageFromServer, MessageToHub, MessageToServer, SerializedMessage, ServerStatus};
+use crate::fsm::logic::run_fsm;
+use crate::message::domain::{Message, SerializedMessage};
 use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
 use crate::mqtt::local::local_mqtt;
 use crate::mqtt::remote::remote_mqtt;
 use crate::network::domain::{HubChanged, NetworkChanged, UpdateNetwork};
 use crate::network::logic::{network_dba_task, network_task};
-use crate::system::domain::{init_tracing};
+use crate::system::domain::{init_tracing, InternalEvent};
 use crate::system::fsm::init_fsm;
 
 mod system;
@@ -35,41 +35,41 @@ async fn main() {
     let (mqtt_server_tx, rx_from_mqtt_server) = mpsc::channel::<InternalEvent>(100);
     let (mqtt_local_tx, rx_from_mqtt_hub) = mpsc::channel::<InternalEvent>(100);
 
-    let (msg_from_server_tx_to_fsm, fsm_rx_from_server) = mpsc::channel::<MessageFromServer>(100);
-    let (msg_from_server_tx_to_hub, msg_to_hub_rx_from_server) = mpsc::channel::<MessageToHub>(100);
-    let (msg_from_server_tx_to_network, network_rx_from_server) = mpsc::channel::<MessageFromServer>(100);
+    let (msg_from_server_tx_to_fsm, fsm_rx_from_server) = mpsc::channel::<Message>(100);
+    let (msg_from_server_tx_to_hub, msg_to_hub_rx_from_server) = mpsc::channel::<Message>(100);
+    let (msg_from_server_tx_to_network, network_rx_from_server) = mpsc::channel::<Message>(100);
     let (msg_from_server_tx_to_dba, dba_rx_from_server) = mpsc::channel::<InternalEvent>(100);
     let (msg_from_server_tx_to_from_hub, msg_from_hub_rx_from_server) = mpsc::channel::<InternalEvent>(100);
     let (msg_from_server_tx_to_server, msg_to_server_rx_from_server) = mpsc::channel::<InternalEvent>(100);
-    let (msg_from_server_tx_to_firmware, update_firmware_rx_from_server) = mpsc::channel::<MessageFromServer>(100);
+    let (msg_from_server_tx_to_firmware, update_firmware_rx_from_server) = mpsc::channel::<Message>(100);
 
     let (msg_from_hub_tx_to_hub, msg_to_hub_rx_from_hub) = mpsc::channel::<InternalEvent>(100);
-    let (msg_from_hub_tx_to_server, msg_to_server_rx_from_hub) = mpsc::channel::<MessageToServer>(100);
-    let (msg_from_hub_tx_to_dba, dba_task_rx_from_msg) = mpsc::channel::<MessageFromHub>(100);
-    let (msg_from_hub_tx_to_fsm, fsm_rx_from_msg) = mpsc::channel::<MessageFromHub>(100);
-    let (msg_from_hub_tx_to_network, network_rx_form_hub) = mpsc::channel::<MessageFromHub>(100);
-    let (msg_from_hub_tx_to_firmware, update_firmware_rx_form_hub) = mpsc::channel::<MessageFromHub>(100);
+    let (msg_from_hub_tx_to_server, msg_to_server_rx_from_hub) = mpsc::channel::<Message>(100);
+    let (msg_from_hub_tx_to_dba, dba_task_rx_from_msg) = mpsc::channel::<Message>(100);
+    let (msg_from_hub_tx_to_fsm, fsm_rx_from_msg) = mpsc::channel::<Message>(100);
+    let (msg_from_hub_tx_to_network, network_rx_form_hub) = mpsc::channel::<Message>(100);
+    let (msg_from_hub_tx_to_firmware, update_firmware_rx_form_hub) = mpsc::channel::<Message>(100);
 
     let (network_tx_to_insert, network_insert_rx_from_network) = mpsc::channel::<NetworkChanged>(100);
     let (network_tx_to_dba_insert, dba_insert_rx_from_network) = mpsc::channel::<UpdateNetwork>(100);
-    let (network_tx_to_hub, msg_to_hub_rx_from_network) = mpsc::channel::<MessageToHub>(100);
+    let (network_tx_to_hub, msg_to_hub_rx_from_network) = mpsc::channel::<Message>(100);
     let (network_tx_to_insert_hub, network_dba_rx_from_network) = mpsc::channel::<HubChanged>(100);
 
-    let (fsm_tx_to_hub, msg_to_hub_rx_from_fsm) = mpsc::channel::<MessageToHub>(100);
-    let (fsm_tx_to_server, msg_to_server_rx_from_fsm) = mpsc::channel::<MessageToServer>(100);
+    let (fsm_tx_to_hub, msg_to_hub_rx_from_fsm) = mpsc::channel::<Message>(100);
+    let (fsm_tx_to_server, msg_to_server_rx_from_fsm) = mpsc::channel::<Message>(100);
 
 
     let (run_fsm_firmware_tx_actions, update_network_rx_from_fsm) = mpsc::channel::<Vec<Action>>(100);
 
-    let (update_firmware_tx_to_hub, msg_to_hub_rx_from_update_firmware) = mpsc::channel::<MessageToHub>(100);
-    let (update_firmware_tx_to_server, msg_to_server_rx_from_update_firmware) = mpsc::channel::<MessageToServer>(100);
+    let (update_firmware_tx_to_hub, msg_to_hub_rx_from_update_firmware) = mpsc::channel::<Message>(100);
+    let (update_firmware_tx_to_server, msg_to_server_rx_from_update_firmware) = mpsc::channel::<Message>(100);
     let (update_firmware_tx_to_timer, timer_rx_from_update_firmware) = mpsc::channel::<Event>(100);
 
     let (tx_to_fsm_firmware, run_fsm_firmware_rx_event) = mpsc::channel::<Event>(100);
 
-    let (dba_task_tx_to_server, msg_to_server_rx_from_dba) = mpsc::channel::<MessageFromHub>(100);
+    let (dba_task_tx_to_server, msg_to_server_rx_from_dba) = mpsc::channel::<Message>(100);
     let (dba_task_tx_to_server_batch, msg_to_server_rx_from_dba_batch) = mpsc::channel::<TableDataVector>(100);
-    let (dba_task_tx_to_insert, dba_insert_task_rx_from_dba) = mpsc::channel::<MessageFromHub>(100);
+    let (dba_task_tx_to_insert, dba_insert_task_rx_from_dba) = mpsc::channel::<Message>(100);
     let (dba_task_tx_to_db, dba_get_rx_from_dba) = watch::channel(DataRequest::NotGet);
     let (dba_get_tx_to_dba, dba_task_rx_from_db) = mpsc::channel::<TableDataVector>(100);
 
@@ -83,7 +83,7 @@ async fn main() {
 
 
     /*
-    tokio::spawn(fsm(
+    tokio::spawn(run_fsm(
         
     ));*/
 

@@ -15,14 +15,14 @@ use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use tracing::debug;
-use crate::message::domain::MessageFromServer;
+use crate::message::domain::{Message};
 
 
 /// Envoltorio principal para el estado de la FSM.
 #[derive(Debug, Clone)]
 pub struct FsmStateFirmware {
     /// Estado actual del proceso.
-    pub state: StateFirmwareUpdate,
+    state: StateFirmwareUpdate,
 }
 
 
@@ -55,9 +55,19 @@ pub enum Transition {
 #[derive(Debug)]
 pub struct TransitionValid {
     /// El nuevo estado de la máquina.
-    pub change_state: FsmStateFirmware,
+    change_state: FsmStateFirmware,
     /// Lista ordenada de acciones que el ejecutor debe realizar.
-    pub actions: Vec<Action>,
+    actions: Vec<Action>,
+}
+
+
+impl TransitionValid {
+    pub fn get_change_state(&self) -> FsmStateFirmware {
+        self.change_state.clone()
+    }
+    pub fn get_actions(&self) -> Vec<Action> {
+        self.actions.clone()
+    }
 }
 
 
@@ -65,7 +75,14 @@ pub struct TransitionValid {
 #[derive(Debug)]
 pub struct TransitionInvalid {
     /// Razón del fallo.
-    pub invalid: String,
+    invalid: String,
+}
+
+
+impl TransitionInvalid {
+    pub fn get_invalid(&self) -> &str {
+        &self.invalid
+    }
 }
 
 
@@ -89,7 +106,7 @@ pub enum Event {
 
 
 /// Acciones de salida (Outputs) o instrucciones para el ejecutor.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Action {
     /// Acción interna: inicializar recursos al entrar a un estado (ej. Timers).
     OnEntry(StateFirmwareUpdate),
@@ -121,7 +138,7 @@ pub enum Phase {
 /// Mantiene el contexto volátil y las métricas de una actualización en curso.
 pub struct UpdateSession {
     /// Mensaje original del servidor.
-    pub message: MessageFromServer,
+    pub message: Message,
     /// Cantidad total de hubs esperados en la red.
     pub total_hubs: usize,
     /// Set de IDs que ya han respondido (para garantizar idempotencia).
@@ -141,7 +158,7 @@ pub struct UpdateSession {
 
 impl UpdateSession {
     /// Crea una nueva sesión de actualización en fase Canario.
-    pub fn new(message: MessageFromServer, total_hubs: usize) -> Self {
+    pub fn new(message: Message, total_hubs: usize) -> Self {
         Self {
             message,
             total_hubs,
@@ -180,6 +197,7 @@ impl UpdateSession {
 
 
 impl FsmStateFirmware {
+
     /// Inicializa la máquina en estado de espera.
     pub fn new() -> Self {
         Self {
@@ -388,7 +406,7 @@ mod tests {
                 assert!(t.actions.contains(&Action::SelectRandomHub));
                 assert!(t.actions.contains(&Action::OnEntry(StateFirmwareUpdate::NotifyHub)));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -404,7 +422,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingNetworkAnswer);
                 assert!(t.actions.contains(&Action::SendMessageToNetwork));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -420,7 +438,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
                 assert!(t.actions.contains(&Action::StopTimer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -436,7 +454,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
                 assert!(t.actions.contains(&Action::StopTimer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -452,7 +470,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
                 assert!(t.actions.contains(&Action::StopTimer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -468,7 +486,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServer);
                 assert!(t.actions.contains(&Action::StopTimer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -484,7 +502,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
                 assert!(t.actions.contains(&Action::SendMessageOkToServer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("ESe esperaba una transición válida"),
         }
     }
 
@@ -500,7 +518,7 @@ mod tests {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
                 assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
-            Transition::Invalid(_) => panic!("Expected valid transition"),
+            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -557,7 +575,7 @@ mod tests {
                 // OnEntry debe estar al principio
                 assert_eq!(t.actions[0], Action::OnEntry(StateFirmwareUpdate::NotifyHub));
             }
-            _ => panic!("Expected valid transition"),
+            _ => panic!("Se esperaba una transición válida"),
         }
     }
 
@@ -566,25 +584,27 @@ mod tests {
     // ============================================================
 
     // Helper para crear mensajes dummy
-    fn create_test_message() -> MessageFromServer {
+    fn create_test_message() -> Message {
         use crate::message::domain::*;
 
-        let metadata = Metadata {
-            sender_user_id: "server".to_string(),
-            destination_type: DestinationType::Node,
-            destination_id: "hub1".to_string(),
-            timestamp: "01/01/2025 00:00:00".to_string(),
-        };
+        let metadata = Metadata::new(
+            "server".to_string(),
+            DestinationType::Node,
+            "hub1".to_string(),
+            "01/01/2025 00:00:00".to_string(),
+        );
 
-        MessageFromServer {
-            topic_where_arrive: "network/test".to_string(),
-            msg: MessageFromServerTypes::UpdateFirmware(UpdateFirmware {
+        let message = Message::new(
+            "network/test".to_string(),
+            MessageTypes::UpdateFirmware(UpdateFirmware {
                 metadata,
                 version: "v1.0.0".to_string(),
                 url: "https://test.com/fw.bin".to_string(),
                 sha256: "abc123".to_string(),
             })
-        }
+        );
+
+        message
     }
 
     #[test]

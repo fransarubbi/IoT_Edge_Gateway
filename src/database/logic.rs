@@ -27,12 +27,11 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{error, info, instrument};
 use crate::config::sqlite::{BATCH_SIZE, FLUSH_INTERVAL};
 use crate::context::domain::AppContext;
-use crate::message::domain::{MessageFromHub, MessageFromHubTypes, ServerStatus};
+use crate::message::domain::{Message, MessageTypes, ServerStatus};
 use super::domain::{DataRequest, NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
-use crate::fsm::domain::InternalEvent;
 use crate::network::domain::{NetworkManager, UpdateNetwork};
-
+use crate::system::domain::InternalEvent;
 
 /// Envío auxiliar "Fire-and-Forget".
 ///
@@ -64,11 +63,11 @@ async fn send_ignore<T>(tx: &mpsc::Sender<T>, msg: T) {
 /// Utiliza `tokio::select!` para manejar concurrentemente cambios de estado y flujo de mensajes.
 
 #[instrument(name = "dba_task", skip(app_context))]
-pub async fn dba_task(tx_to_server: mpsc::Sender<MessageFromHub>,
+pub async fn dba_task(tx_to_server: mpsc::Sender<Message>,
                       tx_to_server_batch: mpsc::Sender<TableDataVector>,
-                      tx_to_insert: mpsc::Sender<MessageFromHub>,
+                      tx_to_insert: mpsc::Sender<Message>,
                       tx_to_db: watch::Sender<DataRequest>,
-                      mut rx_from_hub: mpsc::Receiver<MessageFromHub>,
+                      mut rx_from_hub: mpsc::Receiver<Message>,
                       mut rx_server_status: mpsc::Receiver<InternalEvent>,
                       mut rx_from_db: mpsc::Receiver<TableDataVector>,
                       app_context: AppContext) {
@@ -151,7 +150,7 @@ async fn sync_pending_data(repo: &Repository, state_flag: &mut StateFlag, tx_to_
 /// sincroniza los buffers locales (crea nuevos para redes nuevas, elimina los de redes borradas).
 
 #[instrument(name = "dba_insert_task", skip(app_context))]
-pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
+pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<Message>,
                              mut rx_from_net_man: mpsc::Receiver<UpdateNetwork>,
                              app_context: AppContext) {
 
@@ -207,45 +206,45 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<MessageFromHub>,
 /// Clasifica un mensaje entrante y lo inserta en el vector correspondiente en memoria.
 ///
 /// Identifica la red y el tipo de tabla basándose en el tópico MQTT.
-fn sort_by_vectors(msg: MessageFromHub, net_vec: &mut HashMap<String, Vectors>, net_manager: &NetworkManager) {
+fn sort_by_vectors(msg: Message, net_vec: &mut HashMap<String, Vectors>, net_manager: &NetworkManager) {
 
-    let id = match net_manager.extract_net_id(&msg.topic_where_arrive) {
+    let id = match net_manager.extract_net_id(&msg.get_topic_arrive()) {
         Some(id) => id,
         None => {
-            log::error!("No existe la red con ID: {}", msg.topic_where_arrive);
+            log::error!("No existe la red con ID: {}", msg.get_topic_arrive());
             return;
         }
     };
 
-    let table_type = net_manager.extract_topic(&msg.topic_where_arrive, &id);
+    let table_type = net_manager.extract_topic(&msg.get_topic_arrive(), &id);
     match table_type {
         Table::Measurement | Table::Monitor | Table::AlertAir | Table::AlertTemp => {
-            match_message_with_row(msg.msg, msg.topic_where_arrive, &id, net_vec);
+            match_message_with_row(msg.get_message(), msg.get_topic_arrive(), &id, net_vec);
         },
         Table::Error => {
-            log::warn!("Error de tópico: {}", msg.topic_where_arrive);
+            log::warn!("Error de tópico: {}", msg.get_topic_arrive());
         }
     }
 }
 
 
 /// Convierte el mensaje genérico a una fila de base de datos específica y lo empuja al vector.
-fn match_message_with_row(msg: MessageFromHubTypes, topic: String, id: &str, net_vec: &mut HashMap<String, Vectors>) {
+fn match_message_with_row(msg: MessageTypes, topic: &str, id: &str, net_vec: &mut HashMap<String, Vectors>) {
     match msg {
-        MessageFromHubTypes::Report(report) => {
-            let mr = report.cast_measurement_to_row(topic);
+        MessageTypes::Report(report) => {
+            let mr = report.cast_measurement_to_row(topic.to_string());
             net_vec.entry(id.to_string()).or_default().measurements.push(mr);
         },
-        MessageFromHubTypes::Monitor(monitor) => {
-            let mr = monitor.cast_monitor_to_row(topic);
+        MessageTypes::Monitor(monitor) => {
+            let mr = monitor.cast_monitor_to_row(topic.to_string());
             net_vec.entry(id.to_string()).or_default().monitors.push(mr);
         },
-        MessageFromHubTypes::AlertAir(alert_air) => {
-            let aar = alert_air.cast_alert_air_to_row(topic);
+        MessageTypes::AlertAir(alert_air) => {
+            let aar = alert_air.cast_alert_air_to_row(topic.to_string());
             net_vec.entry(id.to_string()).or_default().alert_airs.push(aar);
         },
-        MessageFromHubTypes::AlertTem(alert_temp) => {
-            let ath = alert_temp.cast_alert_th_to_row(topic);
+        MessageTypes::AlertTem(alert_temp) => {
+            let ath = alert_temp.cast_alert_th_to_row(topic.to_string());
             net_vec.entry(id.to_string()).or_default().alert_temps.push(ath);
         },
         _ => {},

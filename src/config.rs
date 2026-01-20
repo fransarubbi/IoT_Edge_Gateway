@@ -24,3 +24,8 @@ pub mod firmware {
     use tokio::time::{Duration};
     pub const OTA_TIMEOUT: Duration = Duration::from_secs(300); // 5 min
 }
+
+pub mod fsm {
+    use tokio::time::{Duration};
+    pub const HELLO_TIMEOUT: Duration = Duration::from_secs(180); // 3 min
+}

@@ -16,15 +16,11 @@ use serde::Serialize;
 use tokio::sync::{mpsc};
 use tracing::{error, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, MessageToHub, MessageFromHub, MessageToServer, MessageFromServer, ServerStatus, MessageFromHubTypes, MessageFromServerTypes, MessageToHubTypes, LocalStatus};
-use crate::message::domain::MessageToServer::ToServer;
-use crate::fsm::domain::{InternalEvent};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, MessageTypes};
 use crate::database::domain::{TableDataVector, TableDataVectorTypes};
-use crate::message::domain::MessageToHub::ToHub;
-use crate::message::domain::MessageToHubTypes::ServerToHub;
 use crate::mqtt::domain::PayloadTopic;
 use crate::network::domain::{NetworkManager};
-use crate::system::domain::System;
+use crate::system::domain::{InternalEvent, System};
 
 
 /// Gestor de mensajes salientes hacia el Hub (Downlink Local).
@@ -45,17 +41,17 @@ use crate::system::domain::System;
 /// - Serializa los mensajes a bytes (MessagePack/JSON) antes de enviarlos a la capa de transporte MQTT.
 
 pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
-                        mut rx_from_fsm: mpsc::Receiver<MessageToHub>,
-                        mut rx_from_server: mpsc::Receiver<MessageToHub>,
+                        mut rx_from_fsm: mpsc::Receiver<Message>,
+                        mut rx_from_server: mpsc::Receiver<Message>,
                         mut rx_from_hub: mpsc::Receiver<InternalEvent>,
-                        mut rx_from_network: mpsc::Receiver<MessageToHub>,
-                        mut rx_from_firmware: mpsc::Receiver<MessageToHub>,
+                        mut rx_from_network: mpsc::Receiver<Message>,
+                        mut rx_from_firmware: mpsc::Receiver<Message>,
                         app_context: AppContext) {
 
     let mut state = LocalStatus::Connected;
     loop {
         tokio::select! {
-            Some(ToHub(msg_from_fsm)) = rx_from_fsm.recv() => {
+            Some(msg_from_fsm) = rx_from_fsm.recv() => {
                 if matches!(state, LocalStatus::Disconnected) {
                     warn!("Mensaje FSM descartado: Broker desconectado");
                     continue;
@@ -63,7 +59,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
 
                 let metadata = {
                     let manager = app_context.net_man.read().await;
-                    resolve_fsm_metadata(&manager, &msg_from_fsm)
+                    resolve_fsm_metadata(&manager, &msg_from_fsm.get_message())
                 };
 
                 if let Some((topic, qos, retain)) = metadata {
@@ -74,34 +70,34 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                 }
             }
 
-            Some(ToHub(ServerToHub(wrapper))) = rx_from_server.recv() => {
+            Some(wrapper) = rx_from_server.recv() => {
                 if matches!(state, LocalStatus::Disconnected) {
                     warn!("Mensaje del Servidor descartado: Broker desconectado");
                     continue;
                 }
 
-                match wrapper.msg {
-                    MessageFromServerTypes::Settings(settings) => {
+                match wrapper.get_message() {
+                    MessageTypes::FromServerSettings(settings) => {
                         let topic_opt = {
                             let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
+                            manager.get_topic_to_send_msg_from_server(&wrapper.get_topic_arrive())
                         };
 
                         if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::Settings(settings), false).await {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::FromServerSettings(settings), false).await {
                                 Ok(_) => {}
                                 Err(_) => error!("Error: No se pudo serializar el mensaje de Setting al Broker"),
                             }
                         }
                     },
-                    MessageFromServerTypes::SettingOk(setting_ok) => {
+                    MessageTypes::FromServerSettingsAck(setting_ok) => {
                         let topic_opt = {
                             let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_from_server(&wrapper.topic_where_arrive)
+                            manager.get_topic_to_send_msg_from_server(&wrapper.get_topic_arrive())
                         };
 
                         if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::SettingOk(setting_ok), false).await {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::FromServerSettingsAck(setting_ok), false).await {
                                 Ok(_) => {}
                                 Err(_) => error!("Error: No se pudo serializar el mensaje de SettingOk al Broker"),
                             }
@@ -125,34 +121,29 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                     continue;
                 }
 
-                match msg_from_network {
-                    ToHub(ServerToHub(msg_from_server)) => {
-                        match msg_from_server.msg {
-                            MessageFromServerTypes::ActiveHub(active) => {
-                                let topic_opt = {
-                                    let manager = app_context.net_man.read().await;
-                                    manager.get_topic_to_send_msg_active_hub(&msg_from_server.topic_where_arrive)
-                                };
-                                if let Some(t) = topic_opt {
-                                    match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::ActiveHub(active), false).await {
-                                        Ok(_) => {}
-                                        Err(_) => error!("Error: No se pudo serializar el mensaje de ActiveHub al Broker"),
-                                    }
-                                }
-                            },
-                            MessageFromServerTypes::DeleteHub(delete_hub) => {
-                                let topic_opt = {
-                                    let manager = app_context.net_man.read().await;
-                                    manager.get_topic_to_send_msg_delete_hub(&msg_from_server.topic_where_arrive)
-                                };
-                                if let Some(t) = topic_opt {
-                                    match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::DeleteHub(delete_hub), false).await {
-                                        Ok(_) => {}
-                                        Err(_) => error!("Error: No se pudo serializar el mensaje de DeleteHub al Broker"),
-                                    }
-                                }
-                            },
-                            _ => {},
+                match msg_from_network.get_message() {
+                    MessageTypes::ActiveHub(active) => {
+                        let topic_opt = {
+                            let manager = app_context.net_man.read().await;
+                            manager.get_topic_to_send_msg_active_hub(&msg_from_network.get_topic_arrive())
+                        };
+                        if let Some(t) = topic_opt {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::ActiveHub(active), false).await {
+                                Ok(_) => {}
+                                Err(_) => error!("Error: No se pudo serializar el mensaje de ActiveHub al Broker"),
+                            }
+                        }
+                    },
+                    MessageTypes::DeleteHub(delete_hub) => {
+                        let topic_opt = {
+                            let manager = app_context.net_man.read().await;
+                            manager.get_topic_to_send_msg_delete_hub(&msg_from_network.get_topic_arrive())
+                        };
+                        if let Some(t) = topic_opt {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::DeleteHub(delete_hub), false).await {
+                                Ok(_) => {}
+                                Err(_) => error!("Error: No se pudo serializar el mensaje de DeleteHub al Broker"),
+                            }
                         }
                     },
                     _ => {},
@@ -160,22 +151,17 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
             }
             
             Some(msg_from_firmware) = rx_from_firmware.recv() => {
-                match msg_from_firmware {
-                    ToHub(ServerToHub(msg)) => {
-                        match msg.msg {
-                            MessageFromServerTypes::UpdateFirmware(update) => {
-                                let topic_opt = {
-                                    let manager = app_context.net_man.read().await;
-                                    manager.get_topic_to_send_msg_delete_hub(&msg.topic_where_arrive)
-                                };
-                                if let Some(t) = topic_opt {
-                                    match send(&tx_to_mqtt_local, t.topic, t.qos, MessageFromServerTypes::UpdateFirmware(update), false).await {
-                                        Ok(_) => {}
-                                        Err(_) => error!("Error: No se pudo serializar el mensaje de UpdateFirmware al Broker"),
-                                    }
-                                }
-                            },
-                            _ => {},
+                match msg_from_firmware.get_message() {
+                    MessageTypes::UpdateFirmware(update) => {
+                        let topic_opt = {
+                            let manager = app_context.net_man.read().await;
+                            manager.get_topic_to_send_msg_delete_hub(&msg_from_firmware.get_topic_arrive())
+                        };
+                        if let Some(t) = topic_opt {
+                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::UpdateFirmware(update), false).await {
+                                Ok(_) => {}
+                                Err(_) => error!("Error: No se pudo serializar el mensaje de UpdateFirmware al Broker"),
+                            }
                         }
                     },
                     _ => {},
@@ -188,22 +174,22 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
 
 /// Extrae tópico, QoS y flag Retain para mensajes generados por la FSM.
 fn resolve_fsm_metadata(manager: &NetworkManager,
-                        msg: &MessageToHubTypes
+                        msg: &MessageTypes
                        ) -> Option<(String, u8, bool)> {
     match msg {
-        MessageToHubTypes::Handshake(_) =>
+        MessageTypes::HandshakeToHub(_) =>
             Some((manager.topic_handshake.topic.clone(), manager.topic_handshake.qos, false)),
 
-        MessageToHubTypes::StateBalanceMode(_) =>
+        MessageTypes::StateBalanceMode(_) =>
             Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
 
-        MessageToHubTypes::StateNormal(_) =>
+        MessageTypes::StateNormal(_) =>
             Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
 
-        MessageToHubTypes::StateSafeMode(_) =>
+        MessageTypes::StateSafeMode(_) =>
             Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
 
-        MessageToHubTypes::Heartbeat(_) =>
+        MessageTypes::Heartbeat(_) =>
             Some((manager.topic_heartbeat.topic.clone(), manager.topic_heartbeat.qos, false)),
 
         _ => None,
@@ -227,11 +213,11 @@ fn resolve_fsm_metadata(manager: &NetworkManager,
 ///     - Si NO hay conexión -> A la Base de Datos (`dba_task`).
 
 pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
-                          tx_to_server: mpsc::Sender<MessageToServer>,
-                          tx_to_dba: mpsc::Sender<MessageFromHub>,
-                          tx_to_fsm: mpsc::Sender<MessageFromHub>,
-                          tx_to_network: mpsc::Sender<MessageFromHub>,
-                          tx_to_firmware: mpsc::Sender<MessageFromHub>,
+                          tx_to_server: mpsc::Sender<Message>,
+                          tx_to_dba: mpsc::Sender<Message>,
+                          tx_to_fsm: mpsc::Sender<Message>,
+                          tx_to_network: mpsc::Sender<Message>,
+                          tx_to_firmware: mpsc::Sender<Message>,
                           mut rx_from_local_mqtt: mpsc::Receiver<InternalEvent>,
                           mut rx_from_server: mpsc::Receiver<InternalEvent>) {
 
@@ -270,64 +256,64 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
 
 
 /// Deserializa y clasifica mensajes del Hub.
-async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
-                        tx_to_dba: &mpsc::Sender<MessageFromHub>,
-                        tx_to_fsm: &mpsc::Sender<MessageFromHub>,
-                        tx_to_network: &mpsc::Sender<MessageFromHub>,
-                        tx_to_firmware: &mpsc::Sender<MessageFromHub>,
+async fn handle_message(tx_to_server: &mpsc::Sender<Message>,
+                        tx_to_dba: &mpsc::Sender<Message>,
+                        tx_to_fsm: &mpsc::Sender<Message>,
+                        tx_to_network: &mpsc::Sender<Message>,
+                        tx_to_firmware: &mpsc::Sender<Message>,
                         message: PayloadTopic,
                         state: &ServerStatus) {
 
-    let decoded: Result<MessageFromHubTypes, _> = from_slice(&message.payload);
+    let decoded: Result<MessageTypes, _> = from_slice(&message.payload);
     match decoded {
-        Ok(MessageFromHubTypes::Handshake(handshake)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::Handshake(handshake));
+        Ok(MessageTypes::HandshakeFromHub(handshake)) => {
+            let msg = Message::new(message.topic, MessageTypes::HandshakeFromHub(handshake));
             if tx_to_fsm.send(msg).await.is_err() {
                 error!("Error: No se pudo enviar el mensaje Handshake a fsm");
             }
         },
-        Ok(MessageFromHubTypes::Settings(settings)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::Settings(settings));
+        Ok(MessageTypes::FromHubSettings(settings)) => {
+            let msg = Message::new(message.topic, MessageTypes::FromHubSettings(settings));
             if tx_to_network.send(msg.clone()).await.is_err() {
                 error!("Error: No se pudo enviar el mensaje Settings a network_task");
             }
             if matches!(state, ServerStatus::Connected) {
-                if tx_to_server.send(ToServer(msg)).await.is_err() {
+                if tx_to_server.send(msg).await.is_err() {
                     error!("Error: No se pudo enviar el mensaje Settings a msg_to_server");
                 }
             }
         },
-        Ok(MessageFromHubTypes::SettingsOk(settings_ok)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::SettingsOk(settings_ok));
+        Ok(MessageTypes::FromHubSettingsAck(settings_ok)) => {
+            let msg = Message::new(message.topic, MessageTypes::FromHubSettingsAck(settings_ok));
             if tx_to_network.send(msg.clone()).await.is_err() {
                 error!("Error: No se pudo enviar el mensaje SettingsOk a network_task");
             }
             if matches!(state, ServerStatus::Connected) {
-                if tx_to_server.send(ToServer(msg)).await.is_err() {
+                if tx_to_server.send(msg).await.is_err() {
                     error!("Error: No se pudo enviar el mensaje SettingsOk a msg_to_server");
                 }
             }
         },
-        Ok(MessageFromHubTypes::FirmwareOk(firmware_ok)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::FirmwareOk(firmware_ok));
+        Ok(MessageTypes::FirmwareOk(firmware_ok)) => {
+            let msg = Message::new(message.topic, MessageTypes::FirmwareOk(firmware_ok));
             if tx_to_firmware.send(msg).await.is_err() {
                 error!("Error: No se pudo enviar el mensaje FirmwareOk a update_firmware_task");
             }
         },
-        Ok(MessageFromHubTypes::Monitor(monitor)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::Monitor(monitor));
+        Ok(MessageTypes::Monitor(monitor)) => {
+            let msg = Message::new(message.topic, MessageTypes::Monitor(monitor));
             route_message(state, &tx_to_server, &tx_to_dba, msg).await;
         },
-        Ok(MessageFromHubTypes::AlertAir(alert_air)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::AlertAir(alert_air));
+        Ok(MessageTypes::AlertAir(alert_air)) => {
+            let msg = Message::new(message.topic, MessageTypes::AlertAir(alert_air));
             route_message(state, &tx_to_server, &tx_to_dba, msg).await;
         },
-        Ok(MessageFromHubTypes::AlertTem(alert_temp)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::AlertTem(alert_temp));
+        Ok(MessageTypes::AlertTem(alert_temp)) => {
+            let msg = Message::new(message.topic, MessageTypes::AlertTem(alert_temp));
             route_message(state, &tx_to_server, &tx_to_dba, msg).await;
         },
-        Ok(MessageFromHubTypes::Report(report)) => {
-            let msg = MessageFromHub::new(message.topic, MessageFromHubTypes::Report(report));
+        Ok(MessageTypes::Report(report)) => {
+            let msg = Message::new(message.topic, MessageTypes::Report(report));
             route_message(state, &tx_to_server, &tx_to_dba, msg).await;
         },
         _ => {},
@@ -338,12 +324,12 @@ async fn handle_message(tx_to_server: &mpsc::Sender<MessageToServer>,
 /// Enrutador inteligente Store & Forward.
 /// Decide entre envío directo (Servidor) o persistencia (DB) según el estado.
 async fn route_message(state: &ServerStatus,
-                       tx_to_server: &mpsc::Sender<MessageToServer>,
-                       tx_to_dba: &mpsc::Sender<MessageFromHub>,
-                       msg: MessageFromHub) {
+                       tx_to_server: &mpsc::Sender<Message>,
+                       tx_to_dba: &mpsc::Sender<Message>,
+                       msg: Message) {
 
     if matches!(state, ServerStatus::Connected) {
-        if tx_to_server.send(ToServer(msg)).await.is_err() {
+        if tx_to_server.send(msg).await.is_err() {
             error!("Error: No se pudo enviar el mensaje de msg_from_hub a msg_to_server");
         }
     } else {
@@ -373,9 +359,9 @@ async fn route_message(state: &ServerStatus,
 /// con identidad de Edge.
 
 pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
-                           mut rx_from_fsm: mpsc::Receiver<MessageToServer>,
-                           mut rx_from_hub: mpsc::Receiver<MessageToServer>,
-                           mut rx_from_firmware: mpsc::Receiver<MessageToServer>,
+                           mut rx_from_fsm: mpsc::Receiver<Message>,
+                           mut rx_from_hub: mpsc::Receiver<Message>,
+                           mut rx_from_firmware: mpsc::Receiver<Message>,
                            mut rx_from_dba_batch: mpsc::Receiver<TableDataVector>,
                            mut rx_from_server: mpsc::Receiver<InternalEvent>,
                            app_context: AppContext) {
@@ -389,18 +375,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
 
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 if matches!(state, ServerStatus::Connected) {
-                    match msg_from_hub {
-                        ToServer(msg) => {
-                            let manager = app_context.net_man.read().await;
-                            if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(&msg.topic_where_arrive, &app_context.system) {
-                                drop(manager);
-                                match send(&tx_to_server, topic_out.topic, topic_out.qos, msg, false).await {
-                                    Ok(_) => {},
-                                    Err(_) => error!("Error: No se pudo enviar el mensaje al Server"),
-                                }
-                            }
-                        }
-                    }
+                    process_msg_from_hub(&tx_to_server, msg_from_hub, &app_context).await;
                 }
             }
 
@@ -425,19 +400,62 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
             Some(msg_from_firmware) = rx_from_firmware.recv() => {
                 if matches!(state, ServerStatus::Connected) {
                     match msg_from_firmware {
-                        ToServer(msg) => {
-                            let manager = app_context.net_man.read().await;
-                            if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(&msg.topic_where_arrive, &app_context.system) {
-                                drop(manager);
-                                match send(&tx_to_server, topic_out.topic, topic_out.qos, msg, false).await {
-                                    Ok(_) => {},
-                                    Err(_) => error!("Error: No se pudo enviar el mensaje al Server"),
-                                }
-                            }
-                        }
+                        _ => {}
                     }
                 }
             }
+        }
+    }
+}
+
+
+async fn process_msg_from_hub(tx_to_server: &mpsc::Sender<SerializedMessage>, 
+                              msg_from_hub: Message, 
+                              app_context: &AppContext) {
+    
+    match msg_from_hub.get_message() {
+        MessageTypes::Report(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::Monitor(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::AlertAir(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::AlertTem(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::FromHubSettings(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::FromHubSettingsAck(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::HandshakeFromHub(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::FirmwareOk(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        MessageTypes::FirmwareOutcome(_) => {
+            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
+        },
+        _ => {},
+    }
+}
+
+
+async fn route_msg_from_hub(tx_to_server: &mpsc::Sender<SerializedMessage>,
+           app_context: &AppContext,
+           msg: Message) {
+    
+    let manager = app_context.net_man.read().await;
+    if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(&msg.get_topic_arrive(), &app_context.system) {
+        drop(manager);
+        match send(&tx_to_server, topic_out.topic, topic_out.qos, msg, false).await {
+            Ok(_) => {},
+            Err(_) => error!("Error: No se pudo enviar el mensaje al Server"),
         }
     }
 }
@@ -454,28 +472,28 @@ async fn process_batch(batch: TableDataVector,
         TableDataVectorTypes::Measurement(vec) => {
             for row in vec {
                 let topic = row.metadata.topic_where_arrive.clone();
-                let payload = MessageFromHubTypes::Report(row.cast_measurement());
+                let payload = MessageTypes::Report(row.cast_measurement());
                 dispatch_to_server(&topic, payload, tx, manager, system).await;
             }
         },
         TableDataVectorTypes::Monitor(vec) => {
             for row in vec {
                 let topic = row.metadata.topic_where_arrive.clone();
-                let payload = MessageFromHubTypes::Monitor(row.cast_monitor());
+                let payload = MessageTypes::Monitor(row.cast_monitor());
                 dispatch_to_server(&topic, payload, tx, manager, system).await;
             }
         },
         TableDataVectorTypes::AlertAir(vec) => {
             for row in vec {
                 let topic = row.metadata.topic_where_arrive.clone();
-                let payload = MessageFromHubTypes::AlertAir(row.cast_alert_air());
+                let payload = MessageTypes::AlertAir(row.cast_alert_air());
                 dispatch_to_server(&topic, payload, tx, manager, system).await;
             }
         },
         TableDataVectorTypes::AlertTemp(vec) => {
             for row in vec {
                 let topic = row.metadata.topic_where_arrive.clone();
-                let payload = MessageFromHubTypes::AlertTem(row.cast_alert_th());
+                let payload = MessageTypes::AlertTem(row.cast_alert_th());
                 dispatch_to_server(&topic, payload, tx, manager, system).await;
             }
         },
@@ -486,7 +504,7 @@ async fn process_batch(batch: TableDataVector,
 
 /// Auxiliar para resolver tópico de salida y enviar.
 async fn dispatch_to_server(topic_in: &str,
-                            payload: MessageFromHubTypes,
+                            payload: MessageTypes,
                             tx: &mpsc::Sender<SerializedMessage>,
                             manager: &NetworkManager,
                             system: &System) {
@@ -508,13 +526,13 @@ async fn dispatch_to_server(topic_in: &str,
 /// - Mensajes de negocio (`IncomingMessage`): Deserializa y enruta al Hub o Gestor de Redes.
 /// - Eventos de conexión (`ServerConnected/Disconnected`): Notifica a DBA y Hub.
 
-pub async fn msg_from_server(_tx_to_fsm: mpsc::Sender<MessageFromServer>,
-                             tx_to_hub: mpsc::Sender<MessageToHub>,
-                             tx_to_network: mpsc::Sender<MessageFromServer>,
+pub async fn msg_from_server(_tx_to_fsm: mpsc::Sender<Message>,
+                             tx_to_hub: mpsc::Sender<Message>,
+                             tx_to_network: mpsc::Sender<Message>,
                              tx_to_dba: mpsc::Sender<InternalEvent>,
                              tx_to_from_hub: mpsc::Sender<InternalEvent>,
                              tx_to_server: mpsc::Sender<InternalEvent>,
-                             tx_to_firmware: mpsc::Sender<MessageFromServer>,
+                             tx_to_firmware: mpsc::Sender<Message>,
                              mut rx_from_server: mpsc::Receiver<InternalEvent>) {
 
     while let Some(msg_from_server) = rx_from_server.recv().await {
@@ -541,30 +559,29 @@ pub async fn msg_from_server(_tx_to_fsm: mpsc::Sender<MessageFromServer>,
 
 /// Deserializa y distribuye mensajes del servidor a su destino.
 async fn handle_incoming_message(message: PayloadTopic,
-                                 tx_to_hub: &mpsc::Sender<MessageToHub>,
-                                 tx_to_network: &mpsc::Sender<MessageFromServer>,
-                                 tx_to_firmware: &mpsc::Sender<MessageFromServer>) {
+                                 tx_to_hub: &mpsc::Sender<Message>,
+                                 tx_to_network: &mpsc::Sender<Message>,
+                                 tx_to_firmware: &mpsc::Sender<Message>) {
 
-    let decoded: Result<MessageFromServerTypes, _> = from_slice(&message.payload);
+    let decoded: Result<MessageTypes, _> = from_slice(&message.payload);
     match decoded {
         Ok(payload) => {
-            let msg_wrapper = MessageFromServer::new(message.topic, payload.clone());
+            let msg = Message::new(message.topic, payload.clone());
 
             match payload {
-                MessageFromServerTypes::SettingOk(_) => {
-                    let to_hub_msg = ToHub(MessageToHubTypes::ServerToHub(msg_wrapper));
-                    if tx_to_hub.send(to_hub_msg).await.is_err() {
+                MessageTypes::FromServerSettingsAck(_) => {
+                    if tx_to_hub.send(msg).await.is_err() {
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }
                 },
-                MessageFromServerTypes::Network(_) | MessageFromServerTypes::Settings(_) |
-                MessageFromServerTypes::DeleteHub(_) => {
-                    if tx_to_network.send(msg_wrapper).await.is_err() {
+                MessageTypes::Network(_) | MessageTypes::FromServerSettings(_) |
+                MessageTypes::DeleteHub(_) => {
+                    if tx_to_network.send(msg).await.is_err() {
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }
                 },
-                MessageFromServerTypes::UpdateFirmware(_firmware) => {
-                    if tx_to_firmware.send(msg_wrapper).await.is_err() {
+                MessageTypes::UpdateFirmware(_) => {
+                    if tx_to_firmware.send(msg).await.is_err() {
                         error!("Error: Receptor no disponible, mensaje descartado");
                     }
                 },
