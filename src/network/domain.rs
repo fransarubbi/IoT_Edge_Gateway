@@ -169,7 +169,7 @@ impl NetworkManager {
     ///
     /// - `Some(Topic)`: Con el nuevo string de tópico y el QoS correcto.
     /// - `None`: Si la red no existe, el tópico es malformado o no coincide con ninguna configuración.
-    pub fn get_topic_to_send_msg_from_hub(&self, topic_in: &str, system: &System) -> Option<Topic> {
+    pub fn get_topic_to_send_msg_from_hub(&self, topic_in: &str, id: &str) -> Option<Topic> {
 
         let parts: Vec<&str> = topic_in.split('/').collect();
         if parts.len() < 4 {
@@ -177,7 +177,6 @@ impl NetworkManager {
         }
         let net = parts[1];
         let type_msg = parts[4];
-        let id = &system.id_edge;
         let qos_topic : u8;
 
         if let Some(n) = self.networks.get(net) {
@@ -250,6 +249,27 @@ impl NetworkManager {
             } else if topic_matches(&n.topic_new_firmware.topic, topic_in) {
                 qos_topic = n.topic_new_firmware.qos;
                 Some(Topic::new(format!("iot/{net}/new_firmware_to_hub"), qos_topic))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_topic_to_send_msg_from_network(&self, topic_in: &str) -> Option<Topic> {
+
+        let parts: Vec<&str> = topic_in.split('/').collect();
+        if parts.len() < 4 {
+            return None;
+        }
+        let net = parts[1];
+        let qos_topic : u8;
+
+        if let Some(n) = self.networks.get(net) {
+            if topic_matches(&n.topic_active_hub.topic, topic_in) {
+                qos_topic = n.topic_active_hub.qos;
+                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
             } else if topic_matches(&n.topic_delete_hub.topic, topic_in) {
                 qos_topic = n.topic_delete_hub.qos;
                 Some(Topic::new(format!("iot/{net}/delete_hub"), qos_topic))
@@ -261,7 +281,7 @@ impl NetworkManager {
         }
     }
 
-    pub fn get_topic_to_send_msg_active_hub(&self, topic_in: &str) -> Option<Topic> {
+    pub fn get_topic_to_send_firmware_ok(&self, topic_in: &str, id: &str) -> Option<Topic> {
 
         let parts: Vec<&str> = topic_in.split('/').collect();
         if parts.len() < 4 {
@@ -271,9 +291,9 @@ impl NetworkManager {
         let qos_topic : u8;
 
         if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_network.topic, topic_in) {
-                qos_topic = n.topic_network.qos;
-                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
+            if topic_matches(&n.topic_new_firmware.topic, topic_in) {
+                qos_topic = n.topic_hub_firmware_ok.qos;
+                Some(Topic::new(format!("iot/{net}/edge/{id}/hub_firmware_ok"), qos_topic))
             } else {
                 None
             }
@@ -282,7 +302,7 @@ impl NetworkManager {
         }
     }
 
-    pub fn get_topic_to_send_msg_delete_hub(&self, topic_in: &str) -> Option<Topic> {
+    pub fn cast_topic_from_network_to_delete(&self, topic_in: &str, id: &str) -> Option<Topic> {
 
         let parts: Vec<&str> = topic_in.split('/').collect();
         if parts.len() < 4 {
@@ -293,8 +313,29 @@ impl NetworkManager {
 
         if let Some(n) = self.networks.get(net) {
             if topic_matches(&n.topic_network.topic, topic_in) {
-                qos_topic = n.topic_network.qos;
-                Some(Topic::new(format!("iot/{net}/delete_hub"), qos_topic))
+                qos_topic = n.topic_delete_hub.qos;
+                Some(Topic::new(format!("iot/{net}/edge/{id}/delete_hub"), qos_topic))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn cast_topic_from_network_to_active(&self, topic_in: &str) -> Option<Topic> {
+
+        let parts: Vec<&str> = topic_in.split('/').collect();
+        if parts.len() < 4 {
+            return None;
+        }
+        let net = parts[1];
+        let qos_topic : u8;
+
+        if let Some(n) = self.networks.get(net) {
+            if topic_matches(&n.topic_new_firmware.topic, topic_in) {
+                qos_topic = n.topic_active_hub.qos;
+                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
             } else {
                 None
             }
@@ -458,7 +499,6 @@ impl Network {
             topic_new_firmware: Topic::new(t_new_firmware, 0),
             topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 0),
             topic_balance_mode_handshake: Topic::new(t_balance_mode_handshake, 0),
-
             topic_setting: Topic::new(t_setting, 0),
             topic_delete_hub: Topic::new(t_delete_hub, 0),
             topic_setting_ok: Topic::new(t_setting_ok, 0),

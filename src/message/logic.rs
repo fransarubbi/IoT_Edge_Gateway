@@ -14,7 +14,7 @@
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc};
-use tracing::{error, warn};
+use tracing::{error, instrument, warn};
 use crate::context::domain::AppContext;
 use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, MessageTypes};
 use crate::database::domain::{TableDataVector, TableDataVectorTypes};
@@ -40,6 +40,7 @@ use crate::system::domain::{InternalEvent, System};
 /// - Resuelve dinámicamente el tópico de destino y QoS utilizando el [`NetworkManager`].
 /// - Serializa los mensajes a bytes (MessagePack/JSON) antes de enviarlos a la capa de transporte MQTT.
 
+#[instrument(name = "msg_to_hub", skip(app_context))]
 pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                         mut rx_from_fsm: mpsc::Receiver<Message>,
                         mut rx_from_server: mpsc::Receiver<Message>,
@@ -51,62 +52,6 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
     let mut state = LocalStatus::Connected;
     loop {
         tokio::select! {
-            Some(msg_from_fsm) = rx_from_fsm.recv() => {
-                if matches!(state, LocalStatus::Disconnected) {
-                    warn!("Mensaje FSM descartado: Broker desconectado");
-                    continue;
-                }
-
-                let metadata = {
-                    let manager = app_context.net_man.read().await;
-                    resolve_fsm_metadata(&manager, &msg_from_fsm.get_message())
-                };
-
-                if let Some((topic, qos, retain)) = metadata {
-                    match send(&tx_to_mqtt_local, topic, qos, msg_from_fsm, retain).await {
-                        Ok(_) => {}
-                        Err(_) => error!("Error: No se pudo serializar el mensaje de al Broker"),
-                    }
-                }
-            }
-
-            Some(wrapper) = rx_from_server.recv() => {
-                if matches!(state, LocalStatus::Disconnected) {
-                    warn!("Mensaje del Servidor descartado: Broker desconectado");
-                    continue;
-                }
-
-                match wrapper.get_message() {
-                    MessageTypes::FromServerSettings(settings) => {
-                        let topic_opt = {
-                            let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_from_server(&wrapper.get_topic_arrive())
-                        };
-
-                        if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::FromServerSettings(settings), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de Setting al Broker"),
-                            }
-                        }
-                    },
-                    MessageTypes::FromServerSettingsAck(setting_ok) => {
-                        let topic_opt = {
-                            let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_from_server(&wrapper.get_topic_arrive())
-                        };
-
-                        if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::FromServerSettingsAck(setting_ok), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de SettingOk al Broker"),
-                            }
-                        }
-                    },
-                    _ => {},
-                }
-            }
-
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 match msg_from_hub {
                     InternalEvent::LocalConnected => state = LocalStatus::Connected,
@@ -115,56 +60,79 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                 }
             }
 
-            Some(msg_from_network) = rx_from_network.recv() => {
+            Some(msg_from_fsm) = rx_from_fsm.recv() => {
                 if matches!(state, LocalStatus::Disconnected) {
-                    warn!("Mensaje de Red descartado: Broker desconectado");
+                    warn!("Warning: Mensaje FSM descartado, broker desconectado");
                     continue;
                 }
 
-                match msg_from_network.get_message() {
-                    MessageTypes::ActiveHub(active) => {
-                        let topic_opt = {
-                            let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_active_hub(&msg_from_network.get_topic_arrive())
-                        };
-                        if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::ActiveHub(active), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de ActiveHub al Broker"),
-                            }
-                        }
-                    },
-                    MessageTypes::DeleteHub(delete_hub) => {
-                        let topic_opt = {
-                            let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_delete_hub(&msg_from_network.get_topic_arrive())
-                        };
-                        if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::DeleteHub(delete_hub), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de DeleteHub al Broker"),
-                            }
-                        }
-                    },
-                    _ => {},
+                let topic_out = {
+                    let manager = app_context.net_man.read().await;
+                    resolve_fsm_topic(&manager, &msg_from_fsm.get_message())
+                };
+
+                if let Some((topic, qos, retain)) = topic_out {
+                    match send(&tx_to_mqtt_local, topic, qos, msg_from_fsm, retain).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de la FSM al broker"),
+                    }
+                }
+            }
+
+            Some(msg_from_server) = rx_from_server.recv() => {
+                if matches!(state, LocalStatus::Disconnected) {
+                    warn!("Warning: Mensaje del servidor descartado, broker desconectado");
+                    continue;
+                }
+
+                let topic_opt = {
+                    let manager = app_context.net_man.read().await;
+                    manager.get_topic_to_send_msg_from_server(&msg_from_server.get_topic_arrive())
+                };
+
+                if let Some(t) = topic_opt {
+                    match send(&tx_to_mqtt_local, t.topic, t.qos, msg_from_server, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje del servidor al broker"),
+                    }
+                }
+            }
+
+            Some(msg_from_network) = rx_from_network.recv() => {
+                if matches!(state, LocalStatus::Disconnected) {
+                    warn!("Warning: Mensaje de network descartado, broker desconectado");
+                    continue;
+                }
+
+                let topic_opt = {
+                    let manager = app_context.net_man.read().await;
+                    manager.get_topic_to_send_msg_from_network(&msg_from_network.get_topic_arrive())
+                };
+
+                if let Some(t) = topic_opt {
+                    match send(&tx_to_mqtt_local, t.topic, t.qos, msg_from_network, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de network al broker"),
+                    }
                 }
             }
             
             Some(msg_from_firmware) = rx_from_firmware.recv() => {
-                match msg_from_firmware.get_message() {
-                    MessageTypes::UpdateFirmware(update) => {
-                        let topic_opt = {
-                            let manager = app_context.net_man.read().await;
-                            manager.get_topic_to_send_msg_delete_hub(&msg_from_firmware.get_topic_arrive())
-                        };
-                        if let Some(t) = topic_opt {
-                            match send(&tx_to_mqtt_local, t.topic, t.qos, MessageTypes::UpdateFirmware(update), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de UpdateFirmware al Broker"),
-                            }
-                        }
-                    },
-                    _ => {},
+                if matches!(state, LocalStatus::Disconnected) {
+                    warn!("Warning: Mensaje de firmware descartado, broker desconectado");
+                    continue;
+                }
+
+                let topic_opt = {
+                    let manager = app_context.net_man.read().await;
+                    manager.get_topic_to_send_msg_from_server(&msg_from_firmware.get_topic_arrive())
+                };
+
+                if let Some(t) = topic_opt {
+                    match send(&tx_to_mqtt_local, t.topic, t.qos, msg_from_firmware, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de UpdateFirmware al broker"),
+                    }
                 }
             }
         }
@@ -173,7 +141,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
 
 
 /// Extrae tópico, QoS y flag Retain para mensajes generados por la FSM.
-fn resolve_fsm_metadata(manager: &NetworkManager,
+fn resolve_fsm_topic(manager: &NetworkManager,
                         msg: &MessageTypes
                        ) -> Option<(String, u8, bool)> {
     match msg {
@@ -269,13 +237,13 @@ async fn handle_message(tx_to_server: &mpsc::Sender<Message>,
         Ok(MessageTypes::HandshakeFromHub(handshake)) => {
             let msg = Message::new(message.topic, MessageTypes::HandshakeFromHub(handshake));
             if tx_to_fsm.send(msg).await.is_err() {
-                error!("Error: No se pudo enviar el mensaje Handshake a fsm");
+                error!("Error: No se pudo enviar el mensaje Handshake a la FSM");
             }
         },
         Ok(MessageTypes::FromHubSettings(settings)) => {
             let msg = Message::new(message.topic, MessageTypes::FromHubSettings(settings));
             if tx_to_network.send(msg.clone()).await.is_err() {
-                error!("Error: No se pudo enviar el mensaje Settings a network_task");
+                error!("Error: No se pudo enviar el mensaje Settings a network");
             }
             if matches!(state, ServerStatus::Connected) {
                 if tx_to_server.send(msg).await.is_err() {
@@ -286,7 +254,7 @@ async fn handle_message(tx_to_server: &mpsc::Sender<Message>,
         Ok(MessageTypes::FromHubSettingsAck(settings_ok)) => {
             let msg = Message::new(message.topic, MessageTypes::FromHubSettingsAck(settings_ok));
             if tx_to_network.send(msg.clone()).await.is_err() {
-                error!("Error: No se pudo enviar el mensaje SettingsOk a network_task");
+                error!("Error: No se pudo enviar el mensaje SettingsOk a network");
             }
             if matches!(state, ServerStatus::Connected) {
                 if tx_to_server.send(msg).await.is_err() {
@@ -334,7 +302,7 @@ async fn route_message(state: &ServerStatus,
         }
     } else {
         if tx_to_dba.send(msg).await.is_err() {
-            error!("Error: No se pudo enviar el mensaje de msg_from_hub a dba_task");
+            error!("Error: No se pudo enviar el mensaje de msg_from_hub a data_dba_admin");
         }
     }
 }
@@ -369,26 +337,6 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
     let mut state = ServerStatus::Connected;
     loop {
         tokio::select! {
-            Some(_) = rx_from_fsm.recv() => {
-
-            },
-
-            Some(msg_from_hub) = rx_from_hub.recv() => {
-                if matches!(state, ServerStatus::Connected) {
-                    process_msg_from_hub(&tx_to_server, msg_from_hub, &app_context).await;
-                }
-            }
-
-            Some(msg_from_dba_batch) = rx_from_dba_batch.recv() => {
-                if matches!(state, ServerStatus::Connected) {
-                    let manager = app_context.net_man.read().await;
-                    match process_batch(msg_from_dba_batch, &tx_to_server, &manager, &app_context.system).await {
-                        Ok(_) => {},
-                        Err(_) => error!("Error: No se pudo enviar el batch al Server"),
-                    }
-                }
-            }
-
             Some(msg_from_server) = rx_from_server.recv() => {
                 match msg_from_server {
                     InternalEvent::ServerConnected => state = ServerStatus::Connected,
@@ -396,66 +344,60 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<SerializedMessage>,
                     _ => {},
                 }
             }
-            
-            Some(msg_from_firmware) = rx_from_firmware.recv() => {
-                if matches!(state, ServerStatus::Connected) {
-                    match msg_from_firmware {
-                        _ => {}
+
+            Some(msg_from_hub) = rx_from_hub.recv() => {
+                if matches!(state, ServerStatus::Disconnected) {
+                    warn!("Warning: Mensaje del hub descartado, servidor desconectado");
+                    continue;
+                }
+                let manager = app_context.net_man.read().await;
+                if let Some(topic) = manager.get_topic_to_send_msg_from_hub(msg_from_hub.get_topic_arrive(), &app_context.system.id_edge) {
+                    match send(&tx_to_server, topic.topic, topic.qos, msg_from_hub, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de FirmwareOutcome al servidor"),
                     }
                 }
             }
-        }
-    }
-}
 
+            Some(msg_from_fsm) = rx_from_fsm.recv() => {
+                if matches!(state, ServerStatus::Disconnected) {
+                    warn!("Warning: Mensaje FSM descartado, servidor desconectado");
+                    continue;
+                }
+                let manager = app_context.net_man.read().await;
+                let topic = manager.topic_state.topic.clone();
+                let qos = manager.topic_state.qos;
+                match send(&tx_to_server, topic, qos, msg_from_fsm, true).await {
+                    Ok(_) => {},
+                    Err(_) => error!("Error: No se pudo serializar el mensaje al servidor"),
+                }
+            },
 
-async fn process_msg_from_hub(tx_to_server: &mpsc::Sender<SerializedMessage>, 
-                              msg_from_hub: Message, 
-                              app_context: &AppContext) {
-    
-    match msg_from_hub.get_message() {
-        MessageTypes::Report(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::Monitor(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::AlertAir(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::AlertTem(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::FromHubSettings(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::FromHubSettingsAck(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::HandshakeFromHub(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::FirmwareOk(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        MessageTypes::FirmwareOutcome(_) => {
-            route_msg_from_hub(&tx_to_server, app_context, msg_from_hub).await;
-        },
-        _ => {},
-    }
-}
+            Some(msg_from_dba_batch) = rx_from_dba_batch.recv() => {
+                if matches!(state, ServerStatus::Disconnected) {
+                    warn!("Warning: Mensaje batch descartado, servidor desconectado");
+                    continue;
+                }
+                let manager = app_context.net_man.read().await;
+                match process_batch(msg_from_dba_batch, &tx_to_server, &manager, &app_context.system).await {
+                    Ok(_) => {},
+                    Err(_) => error!("Error: No se pudo serializar el batch al servidor"),
+                }
+            }
 
-
-async fn route_msg_from_hub(tx_to_server: &mpsc::Sender<SerializedMessage>,
-           app_context: &AppContext,
-           msg: Message) {
-    
-    let manager = app_context.net_man.read().await;
-    if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(&msg.get_topic_arrive(), &app_context.system) {
-        drop(manager);
-        match send(&tx_to_server, topic_out.topic, topic_out.qos, msg, false).await {
-            Ok(_) => {},
-            Err(_) => error!("Error: No se pudo enviar el mensaje al Server"),
+            Some(msg_from_firmware) = rx_from_firmware.recv() => {
+                if matches!(state, ServerStatus::Disconnected) {
+                    warn!("Warning: Mensaje firmware descartado, servidor desconectado");
+                    continue;
+                }
+                let manager = app_context.net_man.read().await;
+                if let Some(topic) = manager.get_topic_to_send_firmware_ok(msg_from_firmware.get_topic_arrive(), &app_context.system.id_edge) {
+                    match send(&tx_to_server, topic.topic, topic.qos, msg_from_firmware, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de FirmwareOutcome al servidor"),
+                    }
+                }
+            }
         }
     }
 }
@@ -509,9 +451,9 @@ async fn dispatch_to_server(topic_in: &str,
                             manager: &NetworkManager,
                             system: &System) {
 
-    if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(topic_in, system) {
+    if let Some(topic_out) = manager.get_topic_to_send_msg_from_hub(topic_in, &system.id_edge) {
         if send(tx, topic_out.topic, topic_out.qos, payload, false).await.is_err() {
-            error!("Error: No se pudo enviar el mensaje al Server");
+            error!("Error: No se pudo serializar el mensaje al servidor");
         }
     }
 }
@@ -526,8 +468,7 @@ async fn dispatch_to_server(topic_in: &str,
 /// - Mensajes de negocio (`IncomingMessage`): Deserializa y enruta al Hub o Gestor de Redes.
 /// - Eventos de conexión (`ServerConnected/Disconnected`): Notifica a DBA y Hub.
 
-pub async fn msg_from_server(_tx_to_fsm: mpsc::Sender<Message>,
-                             tx_to_hub: mpsc::Sender<Message>,
+pub async fn msg_from_server(tx_to_hub: mpsc::Sender<Message>,
                              tx_to_network: mpsc::Sender<Message>,
                              tx_to_dba: mpsc::Sender<InternalEvent>,
                              tx_to_from_hub: mpsc::Sender<InternalEvent>,
@@ -542,13 +483,13 @@ pub async fn msg_from_server(_tx_to_fsm: mpsc::Sender<Message>,
             },
             InternalEvent::ServerConnected | InternalEvent::ServerDisconnected => {
                 if tx_to_dba.send(msg_from_server.clone()).await.is_err() {
-                    error!("Error: Receptor DBA no disponible");
+                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
                 }
                 if tx_to_from_hub.send(msg_from_server.clone()).await.is_err() {
-                    error!("Error: Receptor FromHub no disponible");
+                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
                 }
                 if tx_to_server.send(msg_from_server).await.is_err() {
-                    error!("Error: Receptor FromHub no disponible");
+                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
                 }
             },
             _ => {}
@@ -571,18 +512,18 @@ async fn handle_incoming_message(message: PayloadTopic,
             match payload {
                 MessageTypes::FromServerSettingsAck(_) => {
                     if tx_to_hub.send(msg).await.is_err() {
-                        error!("Error: Receptor no disponible, mensaje descartado");
+                        error!("Error: No se pudo enviar mensaje al hub");
                     }
                 },
                 MessageTypes::Network(_) | MessageTypes::FromServerSettings(_) |
                 MessageTypes::DeleteHub(_) => {
                     if tx_to_network.send(msg).await.is_err() {
-                        error!("Error: Receptor no disponible, mensaje descartado");
+                        error!("Error: No se pudo enviar mensaje a network");
                     }
                 },
                 MessageTypes::UpdateFirmware(_) => {
                     if tx_to_firmware.send(msg).await.is_err() {
-                        error!("Error: Receptor no disponible, mensaje descartado");
+                        error!("Error: No se pudo enviar mensaje UpdateFirmware a firmware");
                     }
                 },
                 _ => {},

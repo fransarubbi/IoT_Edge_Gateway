@@ -570,7 +570,6 @@ impl FirmwareOutcome {
 }
 
 
-// -------------------------------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     topic_arrive: String,

@@ -11,7 +11,7 @@ use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_se
 use crate::mqtt::local::local_mqtt;
 use crate::mqtt::remote::remote_mqtt;
 use crate::network::domain::{HubChanged, NetworkChanged, UpdateNetwork};
-use crate::network::logic::{network_dba_task, network_task};
+use crate::network::logic::{network_admin, network_dba};
 use crate::system::domain::{init_tracing, InternalEvent};
 use crate::system::fsm::init_fsm;
 
@@ -117,8 +117,7 @@ async fn main() {
                             app_context.clone()
     ));
 
-    tokio::spawn(msg_from_server(msg_from_server_tx_to_fsm,
-                                 msg_from_server_tx_to_hub,
+    tokio::spawn(msg_from_server(msg_from_server_tx_to_hub,
                                  msg_from_server_tx_to_network,
                                  msg_from_server_tx_to_dba,
                                  msg_from_server_tx_to_from_hub,
@@ -156,7 +155,7 @@ async fn main() {
                               app_context.clone()
     ));
 
-    tokio::spawn(network_task(network_tx_to_insert,
+    tokio::spawn(network_admin(network_tx_to_insert,
                               network_tx_to_dba_insert,
                               network_tx_to_hub,
                               network_tx_to_insert_hub,
@@ -165,7 +164,7 @@ async fn main() {
                               app_context.clone()
     ));
 
-    tokio::spawn(network_dba_task(network_insert_rx_from_network,
+    tokio::spawn(network_dba(network_insert_rx_from_network,
                                   network_dba_rx_from_network,
                                   app_context.clone()
     ));
