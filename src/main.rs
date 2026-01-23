@@ -6,6 +6,8 @@ use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
 use crate::firmware::domain::{firmware_watchdog_timer, Action, Event};
 use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
 use crate::grpc::EdgeUpload;
+use crate::grpc_service::logic::remote_grpc;
+use crate::heartbeat::logic::{heartbeat, run_fsm_heartbeat};
 use crate::message::domain::{Message, SerializedMessage};
 use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
 use crate::mqtt::local::local_mqtt;
@@ -13,6 +15,7 @@ use crate::network::domain::{HubChanged, NetworkChanged, UpdateNetwork};
 use crate::network::logic::{network_admin, network_dba};
 use crate::system::domain::{init_tracing, InternalEvent};
 use crate::system::fsm::init_fsm;
+use crate::heartbeat::domain::{Event as HeartbeatEvent, Action as HeartbeatAction, watchdog_timer_for_heartbeat};
 
 mod system;
 mod mqtt;
@@ -25,6 +28,7 @@ mod context;
 mod firmware;
 mod metrics;
 mod grpc_service;
+mod heartbeat;
 
 pub mod grpc {
     tonic::include_proto!("grpc");
@@ -35,18 +39,21 @@ async fn main() {
 
     init_tracing();
 
+    let (heartbeat_tx, broadcast_rx) = watch::channel(InternalEvent::ServerDisconnected);
+    let (heartbeat_tx_to_timer, timer_rx_from_heartbeat) = mpsc::channel::<HeartbeatEvent>(100);
+
+    let (fsm_heartbeat_tx, fsm_heartbeat_rx) = mpsc::channel::<HeartbeatEvent>(100);
+    let (fsm_heartbeat_tx_to_heartbeat, heartbeat_rx_from_heartbeat) = mpsc::channel::<Vec<HeartbeatAction>>(100);
+
     let (msg_to_hub_tx_to_mqtt, local_mqtt_rx) = mpsc::channel::<SerializedMessage>(100);
     let (msg_to_server_tx_to_mqtt, server_mqtt_rx) = mpsc::channel::<EdgeUpload>(100);
-    let (mqtt_server_tx, rx_from_mqtt_server) = mpsc::channel::<InternalEvent>(100);
+    let (grpc_server_tx, rx_from_grpc_server) = mpsc::channel::<InternalEvent>(100);
     let (mqtt_local_tx, rx_from_mqtt_hub) = mpsc::channel::<InternalEvent>(100);
 
-    let (msg_from_server_tx_to_fsm, fsm_rx_from_server) = mpsc::channel::<Message>(100);
     let (msg_from_server_tx_to_hub, msg_to_hub_rx_from_server) = mpsc::channel::<Message>(100);
     let (msg_from_server_tx_to_network, network_rx_from_server) = mpsc::channel::<Message>(100);
-    let (msg_from_server_tx_to_dba, dba_rx_from_server) = mpsc::channel::<InternalEvent>(100);
-    let (msg_from_server_tx_to_from_hub, msg_from_hub_rx_from_server) = mpsc::channel::<InternalEvent>(100);
-    let (msg_from_server_tx_to_server, msg_to_server_rx_from_server) = mpsc::channel::<InternalEvent>(100);
     let (msg_from_server_tx_to_firmware, update_firmware_rx_from_server) = mpsc::channel::<Message>(100);
+    let (msg_from_server_tx_to_heartbeat, heartbeat_rx_from_server) = mpsc::channel::<Message>(100);
 
     let (msg_from_hub_tx_to_hub, msg_to_hub_rx_from_hub) = mpsc::channel::<InternalEvent>(100);
     let (msg_from_hub_tx_to_server, msg_to_server_rx_from_hub) = mpsc::channel::<Message>(100);
@@ -62,7 +69,6 @@ async fn main() {
 
     let (fsm_tx_to_hub, msg_to_hub_rx_from_fsm) = mpsc::channel::<Message>(100);
     let (fsm_tx_to_server, msg_to_server_rx_from_fsm) = mpsc::channel::<Message>(100);
-
 
     let (run_fsm_firmware_tx_actions, update_network_rx_from_fsm) = mpsc::channel::<Vec<Action>>(100);
 
@@ -86,6 +92,22 @@ async fn main() {
         }
     };
 
+    let heartbeat_tx_to_fsm = fsm_heartbeat_tx.clone();
+    tokio::spawn(heartbeat(heartbeat_tx,
+                           heartbeat_tx_to_fsm,
+                           heartbeat_tx_to_timer,
+                           heartbeat_rx_from_server,
+                           heartbeat_rx_from_heartbeat
+    ));
+
+    tokio::spawn(run_fsm_heartbeat(fsm_heartbeat_tx_to_heartbeat,
+                                   fsm_heartbeat_rx
+    ));
+
+    let watchdog_heartbeat_tx_to_fsm = fsm_heartbeat_tx.clone();
+    tokio::spawn(watchdog_timer_for_heartbeat(watchdog_heartbeat_tx_to_fsm,
+                                              timer_rx_from_heartbeat
+    ));
 
     /*
     tokio::spawn(run_fsm(
@@ -97,9 +119,12 @@ async fn main() {
                             app_context.clone()
     ));
 
+    tokio::spawn(remote_grpc(grpc_server_tx,
+                             server_mqtt_rx,
+                             app_context.clone()
+    ));
 
-
-    
+    let msg_from_hub_rx_from_server = broadcast_rx.clone();
     tokio::spawn(msg_from_hub(msg_from_hub_tx_to_hub,
                               msg_from_hub_tx_to_server,
                               msg_from_hub_tx_to_dba,
@@ -121,13 +146,12 @@ async fn main() {
 
     tokio::spawn(msg_from_server(msg_from_server_tx_to_hub,
                                  msg_from_server_tx_to_network,
-                                 msg_from_server_tx_to_dba,
-                                 msg_from_server_tx_to_from_hub,
-                                 msg_from_server_tx_to_server,
                                  msg_from_server_tx_to_firmware,
-                                 rx_from_mqtt_server
+                                 msg_from_server_tx_to_heartbeat,
+                                 rx_from_grpc_server
     ));
 
+    let msg_to_server_rx_from_server = broadcast_rx.clone();
     tokio::spawn(msg_to_server(msg_to_server_tx_to_mqtt,
                                msg_to_server_rx_from_fsm,
                                msg_to_server_rx_from_hub,
@@ -137,12 +161,13 @@ async fn main() {
                                app_context.clone()
     ));
 
+    let dba_rx_from_heartbeat = broadcast_rx.clone();
     tokio::spawn(dba_task(dba_task_tx_to_server,
                           dba_task_tx_to_server_batch,
                           dba_task_tx_to_insert,
                           dba_task_tx_to_db,
                           dba_task_rx_from_msg,
-                          dba_rx_from_server,
+                          dba_rx_from_heartbeat,
                           dba_task_rx_from_db,
                           app_context.clone()
     ));

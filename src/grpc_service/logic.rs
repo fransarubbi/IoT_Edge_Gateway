@@ -56,8 +56,7 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 }
 
 
-pub async fn remote_grpc(tx_status: mpsc::Sender<InternalEvent>,
-                         tx_inbound: mpsc::Sender<InternalEvent>,
+pub async fn remote_grpc(tx: mpsc::Sender<InternalEvent>,
                          mut rx_outbound: mpsc::Receiver<EdgeUpload>,
                          app_context: AppContext) {
 
@@ -87,7 +86,7 @@ pub async fn remote_grpc(tx_status: mpsc::Sender<InternalEvent>,
                                 tx_session = Some(tx_sess);
                                 inbound_stream = Some(response.into_inner());
 
-                                if tx_status.send(InternalEvent::ServerConnected).await.is_err() {
+                                if tx.send(InternalEvent::ServerConnected).await.is_err() {
                                     error!("Error: No se pudo enviar el evento ServerConnected");
                                 }
                                 state = StateClient::Work;
@@ -126,7 +125,7 @@ pub async fn remote_grpc(tx_status: mpsc::Sender<InternalEvent>,
                         server_msg = stream.next() => {   // Recibir datos (Downstream)
                             match server_msg {
                                 Some(Ok(download_msg)) => {
-                                    if tx_inbound.send(InternalEvent::IncomingGrpc(download_msg)).await.is_err() {
+                                    if tx.send(InternalEvent::IncomingGrpc(download_msg)).await.is_err() {
                                         error!("Error: No se pudo enviar el mensaje recibido del servidor");
                                     }
                                 }
@@ -149,7 +148,7 @@ pub async fn remote_grpc(tx_status: mpsc::Sender<InternalEvent>,
 
             StateClient::Error => {
                 warn!("Warning: Desconectado del servidor. Reintentando en 5s...");
-                if tx_status.send(InternalEvent::ServerDisconnected).await.is_err() {
+                if tx.send(InternalEvent::ServerDisconnected).await.is_err() {
                     error!("Error: No se pudo enviar el evento ServerDisconnected");
                 }
 

@@ -68,7 +68,7 @@ pub async fn dba_task(tx_to_server: mpsc::Sender<Message>,
                       tx_to_insert: mpsc::Sender<Message>,
                       tx_to_db: watch::Sender<DataRequest>,
                       mut rx_from_hub: mpsc::Receiver<Message>,
-                      mut rx_server_status: mpsc::Receiver<InternalEvent>,
+                      mut rx_server_status: watch::Receiver<InternalEvent>,
                       mut rx_from_db: mpsc::Receiver<TableDataVector>,
                       app_context: AppContext) {
 
@@ -77,19 +77,20 @@ pub async fn dba_task(tx_to_server: mpsc::Sender<Message>,
 
     loop {
         tokio::select! {
-
-            Some(msg) = rx_server_status.recv() => {
-                match msg {
+            status = rx_server_status.changed() => {
+                if status.is_err() {
+                    break;
+                }
+                let internal = rx_server_status.borrow().clone();
+                match internal {
                     InternalEvent::ServerConnected => {
                         state = ServerStatus::Connected;
-                    },
+                        sync_pending_data(&app_context.repo, &mut state_flag, &tx_to_db).await;
+                    }
                     InternalEvent::ServerDisconnected => {
                         state = ServerStatus::Disconnected;
-                    },
-                    _ => {},
-                }
-                if state == ServerStatus::Connected {
-                    sync_pending_data(&app_context.repo, &mut state_flag, &tx_to_db).await;
+                    }
+                    _ => {}
                 }
             }
 

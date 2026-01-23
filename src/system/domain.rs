@@ -104,7 +104,7 @@ pub enum Flag {
 /// Eventos internos de conectividad y red.
 ///
 /// Se utilizan para notificar cambios en la conexión MQTT local o remota.
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum InternalEvent {
     ServerConnected,
     ServerDisconnected,

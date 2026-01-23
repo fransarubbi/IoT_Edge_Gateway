@@ -13,10 +13,10 @@
 
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
-use tokio::sync::{mpsc};
+use tokio::sync::{mpsc, watch};
 use tracing::{error, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg};
 use crate::database::domain::{TableDataVector, TableDataVectorTypes};
 use crate::grpc;
 use crate::grpc::{edge_download, AlertAir, AlertTh, EdgeDownload, EdgeUpload, EdgeUploadToDataSaver, EdgeUploadToManager, FirmwareOutcome, Heartbeat, Measurement, Monitor, SettingOk as SettOk, StateBalanceMode, StateNormal, StateSafeMode, Settings as Sett};
@@ -190,7 +190,7 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
                           tx_to_network: mpsc::Sender<Message>,
                           tx_to_firmware: mpsc::Sender<Message>,
                           mut rx_from_local_mqtt: mpsc::Receiver<InternalEvent>,
-                          mut rx_from_server: mpsc::Receiver<InternalEvent>) {
+                          mut rx_from_server: watch::Receiver<InternalEvent>) {
 
     let mut state: ServerStatus = ServerStatus::Connected;
     loop {
@@ -214,11 +214,19 @@ pub async fn msg_from_hub(tx_to_hub: mpsc::Sender<InternalEvent>,
                 }
             }
 
-            Some(msg) = rx_from_server.recv() => {
-                match msg {
-                    InternalEvent::ServerConnected => state = ServerStatus::Connected,
-                    InternalEvent::ServerDisconnected => state = ServerStatus::Disconnected,
-                    _ => {},
+            status = rx_from_server.changed() => {
+                if status.is_err() {
+                    break;
+                }
+                let internal = rx_from_server.borrow().clone();
+                match internal {
+                    InternalEvent::ServerConnected => {
+                        state = ServerStatus::Connected;
+                    }
+                    InternalEvent::ServerDisconnected => {
+                        state = ServerStatus::Disconnected;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -333,17 +341,25 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
                            mut rx_from_hub: mpsc::Receiver<Message>,
                            mut rx_from_firmware: mpsc::Receiver<Message>,
                            mut rx_from_dba_batch: mpsc::Receiver<TableDataVector>,
-                           mut rx_from_server: mpsc::Receiver<InternalEvent>,
+                           mut rx_from_server: watch::Receiver<InternalEvent>,
                            app_context: AppContext) {
 
     let mut state = ServerStatus::Connected;
     loop {
         tokio::select! {
-            Some(msg_from_server) = rx_from_server.recv() => {
-                match msg_from_server {
-                    InternalEvent::ServerConnected => state = ServerStatus::Connected,
-                    InternalEvent::ServerDisconnected => state = ServerStatus::Disconnected,
-                    _ => {},
+            status = rx_from_server.changed() => {
+                if status.is_err() {
+                    break;
+                }
+                let internal = rx_from_server.borrow().clone();
+                match internal {
+                    InternalEvent::ServerConnected => {
+                        state = ServerStatus::Connected;
+                    }
+                    InternalEvent::ServerDisconnected => {
+                        state = ServerStatus::Disconnected;
+                    }
+                    _ => {}
                 }
             }
 
@@ -665,27 +681,14 @@ async fn process_batch(batch: TableDataVector,
 
 pub async fn msg_from_server(tx_to_hub: mpsc::Sender<Message>,
                              tx_to_network: mpsc::Sender<Message>,
-                             tx_to_dba: mpsc::Sender<InternalEvent>,
-                             tx_to_from_hub: mpsc::Sender<InternalEvent>,
-                             tx_to_server: mpsc::Sender<InternalEvent>,
                              tx_to_firmware: mpsc::Sender<Message>,
+                             tx_to_heartbeat: mpsc::Sender<Message>,
                              mut rx_from_server: mpsc::Receiver<InternalEvent>) {
 
     while let Some(msg_from_server) = rx_from_server.recv().await {
         match msg_from_server {
             InternalEvent::IncomingGrpc(edge_download) => {
-                handle_grpc_message(edge_download, &tx_to_hub, &tx_to_network, &tx_to_firmware).await;
-            },
-            InternalEvent::ServerConnected | InternalEvent::ServerDisconnected => {
-                if tx_to_dba.send(msg_from_server.clone()).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
-                }
-                if tx_to_from_hub.send(msg_from_server.clone()).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
-                }
-                if tx_to_server.send(msg_from_server).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje de ServerConnected/ServerDisconnected");
-                }
+                handle_grpc_message(edge_download, &tx_to_hub, &tx_to_network, &tx_to_firmware, &tx_to_heartbeat).await;
             },
             _ => {}
         }
@@ -696,7 +699,8 @@ pub async fn msg_from_server(tx_to_hub: mpsc::Sender<Message>,
 async fn handle_grpc_message(proto_msg: EdgeDownload,
                              tx_to_hub: &mpsc::Sender<Message>,
                              tx_to_network: &mpsc::Sender<Message>,
-                             tx_to_firmware: &mpsc::Sender<Message>) {
+                             tx_to_firmware: &mpsc::Sender<Message>,
+                             tx_to_heartbeat: &mpsc::Sender<Message>) {
 
     let mut metadata = Metadata::default();
     metadata.sender_user_id = proto_msg.sender_user_id;
@@ -773,7 +777,13 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                 if let Some(inner) = manager_msg.payload {
                     match inner {
                         grpc::edge_download_from_data_saver::Payload::Heartbeat(_) => {
-                            // HEARTBEAT
+                            let msg = HeartbeatMsg {
+                                metadata,
+                                beat: true,
+                            };
+                            if tx_to_heartbeat.send(Message::Heartbeat(msg)).await.is_err() {
+                                error!("Error: No se pudo enviar mensaje a heartbeat");
+                            }
                         },
                     }
                 }

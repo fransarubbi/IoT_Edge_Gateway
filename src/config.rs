@@ -37,3 +37,8 @@ pub mod grpc_service {
     pub const SESSION_CHANNEL_BUFFER: usize = 100;
     pub const GZIP_ENABLED: bool = true;
 }
+
+pub mod heartbeat {
+    use tokio::time::{Duration};
+    pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(50);
+}
