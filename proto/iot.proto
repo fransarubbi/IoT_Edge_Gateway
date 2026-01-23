@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package grpc;
+
+
+service IotService {
+  // Streaming Bidireccional
+  rpc ConnectStream(stream EdgeUpload) returns (stream EdgeDownload);
+}
+
+
+// =================
+// CARRIL DE SUBIDA
+// =================
+message EdgeUpload {
+  string edge_id = 1;
+  string sender_user_id = 2;
+  string destination_id = 3;
+  int64 timestamp = 4;
+
+  oneof payload {
+    EdgeUploadToDataSaver to_data_saver = 5;
+    EdgeUploadToManager to_manager = 6;
+  }
+}
+
+
+// =================
+// CARRIL DE BAJADA
+// =================
+message EdgeDownload {
+  string edge_id = 1;
+  string sender_user_id = 2;
+  string destination_id = 3;
+  int64 timestamp = 4;
+
+  oneof payload {
+    EdgeDownloadFromManager from_manager = 5;
+    EdgeDownloadFromDataSaver from_data_saver = 6;
+  }
+}
+
+
+message EdgeUploadToDataSaver {
+  oneof payload {
+    Measurement measurement = 1;
+    Monitor monitor = 2;
+    AlertAir alert_air = 3;
+    AlertTh alert_th = 4;
+  }
+}
+
+
+message EdgeUploadToManager {
+  oneof payload {
+    Settings settings = 1;
+    SettingOk setting_ok = 2;
+    StateBalanceMode balance_mode = 3;
+    StateNormal normal = 4;
+    StateSafeMode safe_mode = 5;
+    Heartbeat heartbeat = 6;
+    FirmwareOutcome firmware_outcome = 7;
+  }
+}
+
+
+message EdgeDownloadFromManager {
+  oneof payload {
+    SettingOk setting_ok = 2;
+    UpdateFirmware update_firmware = 3;
+    Network network = 4;
+    DeleteHub delete_hub = 5;
+    Settings settings = 7;
+  }
+}
+
+
+message EdgeDownloadFromDataSaver {
+  oneof payload {
+    Heartbeat heartbeat = 3;
+  }
+}
+
+
+message Measurement {
+  int64 pulse_counter = 1;
+  int64 pulse_max_duration = 2;
+  float temperature = 3;
+  float humidity = 4;
+  float co2_ppm = 5;
+  uint32 sample = 6;
+}
+
+message AlertAir {
+  float co2_initial_ppm = 1;
+  float co2_actual_ppm = 2;
+}
+
+message AlertTh {
+  float initial_temp = 1;
+  float actual_temp = 2;
+}
+
+message Monitor {
+  int64 mem_free = 1;
+  int64 mem_free_hm = 2;
+  int64 mem_free_block = 3;
+  int64 mem_free_internal = 4;
+  int64 stack_free_min_coll = 5;
+  int64 stack_free_min_pub = 6;
+  int64 stack_free_min_mic = 7;
+  int64 stack_free_min_th = 8;
+  int64 stack_free_min_air = 9;
+  int64 stack_free_min_mon = 10;
+  string wifi_ssid = 11;
+  int32 wifi_rssi = 12;
+  int64 active_time = 13;
+}
+
+message Settings {
+  string network = 1;
+  string wifi_ssid = 2;
+  string wifi_password = 3;
+  string mqtt_uri = 4;
+  string device_name = 5;
+  uint32 sample = 6;
+  uint32 energy_mode = 7;
+}
+
+message SettingOk {
+  string network = 1;
+  bool handshake = 2;
+}
+
+message Network {
+  string id_network = 1;
+  string name_network = 2;
+  bool active = 3;
+  bool delete_network = 4;
+}
+
+message StateBalanceMode {
+  string state = 1;
+  uint32 balance_epoch = 2;
+  string sub_state = 3;
+  uint32 duration = 4;
+}
+
+message StateNormal {
+  string state = 1;
+}
+
+message StateSafeMode {
+  string state = 1;
+  uint32 duration = 2;
+  uint32 frequency = 3;
+  uint32 jitter = 4;
+}
+
+message DeleteHub {
+  string network = 1;
+}
+
+message ActiveHub {
+  string network = 1;
+  bool active = 2;
+}
+
+message Heartbeat {
+  bool beat = 1;
+}
+
+message UpdateFirmware {
+  string network = 1;
+  string version = 2;
+  string url = 3;
+  string sha256 = 4;
+}
+
+message FirmwareOutcome {
+  string version = 1;
+  bool is_ok = 2;
+  float percentage_ok = 3;
+}

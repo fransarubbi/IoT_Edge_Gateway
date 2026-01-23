@@ -139,6 +139,8 @@ pub enum Phase {
 pub struct UpdateSession {
     /// Mensaje original del servidor.
     pub message: Message,
+    /// ID de la red a la que se le aplica la actualización
+    pub network: String,
     /// Cantidad total de hubs esperados en la red.
     pub total_hubs: usize,
     /// Set de IDs que ya han respondido (para garantizar idempotencia).
@@ -158,10 +160,11 @@ pub struct UpdateSession {
 
 impl UpdateSession {
     /// Crea una nueva sesión de actualización en fase Canario.
-    pub fn new(message: Message, total_hubs: usize) -> Self {
+    pub fn new(message: Message, total_hubs: usize, network: String) -> Self {
         Self {
             message,
             total_hubs,
+            network,
             responses: HashSet::new(),
             successes: 0,
             failures: 0,
@@ -383,6 +386,7 @@ pub async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
 //--------------------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use super::*;
 
     // ============================================================
@@ -586,22 +590,22 @@ mod tests {
     // Helper para crear mensajes dummy
     fn create_test_message() -> Message {
         use crate::message::domain::*;
+        let timestamp = Utc::now().timestamp();
 
-        let metadata = Metadata::new(
-            "server".to_string(),
-            DestinationType::Node,
-            "hub1".to_string(),
-            "01/01/2025 00:00:00".to_string(),
-        );
+        let metadata = Metadata { 
+            sender_user_id: "server".to_string(),
+            destination_id: "hub1".to_string(),
+            timestamp,
+        };
 
-        let message = Message::new(
-            "network/test".to_string(),
-            MessageTypes::UpdateFirmware(UpdateFirmware {
+        let message = Message::UpdateFirmware(
+            UpdateFirmware {
                 metadata,
+                network: "sala8".to_string(),
                 version: "v1.0.0".to_string(),
                 url: "https://test.com/fw.bin".to_string(),
                 sha256: "abc123".to_string(),
-            })
+            }
         );
 
         message
@@ -610,7 +614,7 @@ mod tests {
     #[test]
     fn test_session_starts_in_canary_phase() {
         let msg = create_test_message();
-        let session = UpdateSession::new(msg, 10);
+        let session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         assert_eq!(session.phase, Phase::Canary);
         assert!(session.is_canary());
@@ -620,7 +624,7 @@ mod tests {
     #[test]
     fn test_session_initialized_with_zeros() {
         let msg = create_test_message();
-        let session = UpdateSession::new(msg, 10);
+        let session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         assert_eq!(session.successes, 0);
         assert_eq!(session.failures, 0);
@@ -632,14 +636,14 @@ mod tests {
     #[test]
     fn test_is_complete_false_initially() {
         let msg = create_test_message();
-        let session = UpdateSession::new(msg, 10);
+        let session = UpdateSession::new(msg, 10, "sala8".to_string());
         assert!(!session.is_complete());
     }
 
     #[test]
     fn test_is_complete_true_when_all_responded() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 10);
+        let mut session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         session.successes = 7;
         session.failures = 3;
@@ -650,7 +654,7 @@ mod tests {
     #[test]
     fn test_is_complete_false_with_partial_responses() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 10);
+        let mut session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         session.successes = 5;
         session.failures = 2;
@@ -661,7 +665,7 @@ mod tests {
     #[test]
     fn test_success_rate_calculation() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 10);
+        let mut session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         session.successes = 7;
 
@@ -671,7 +675,7 @@ mod tests {
     #[test]
     fn test_success_rate_100_percent() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 5);
+        let mut session = UpdateSession::new(msg, 5, "sala8".to_string());
 
         session.successes = 5;
 
@@ -681,7 +685,7 @@ mod tests {
     #[test]
     fn test_success_rate_0_percent() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 5);
+        let mut session = UpdateSession::new(msg, 5, "sala8".to_string());
 
         session.failures = 5;
 
@@ -691,7 +695,7 @@ mod tests {
     #[test]
     fn test_success_rate_with_zero_hubs_no_panic() {
         let msg = create_test_message();
-        let session = UpdateSession::new(msg, 0);
+        let session = UpdateSession::new(msg, 0, "sala8".to_string());
 
         // No debe hacer panic por división por cero
         assert_eq!(session.success_rate(), 0.0);
@@ -700,7 +704,7 @@ mod tests {
     #[test]
     fn test_responses_hashset_prevents_duplicates() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 3);
+        let mut session = UpdateSession::new(msg, 3, "sala8".to_string());
 
         assert!(session.responses.insert("hub1".to_string()));
         assert!(session.responses.insert("hub2".to_string()));
@@ -712,7 +716,7 @@ mod tests {
     #[test]
     fn test_phase_transitions() {
         let msg = create_test_message();
-        let mut session = UpdateSession::new(msg, 10);
+        let mut session = UpdateSession::new(msg, 10, "sala8".to_string());
 
         // Comienza en Canary
         assert!(session.is_canary());

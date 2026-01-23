@@ -48,8 +48,7 @@ use crate::database::tables::hub::{create_table_hub, delete_hub_according_to_id,
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
 use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
-use crate::message::domain_for_table::HubRow;
-use crate::network::domain::{NetworkRow};
+use crate::network::domain::{HubRow, NetworkRow};
 
 
 /// Repositorio central de acceso a la base de datos.

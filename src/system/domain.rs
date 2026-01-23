@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing_subscriber::{fmt, EnvFilter};
+use crate::grpc::EdgeDownload;
 use crate::mqtt::domain::PayloadTopic;
 use crate::network::domain::{NetworkRow};
 
@@ -84,6 +85,9 @@ pub enum ErrorType {
 
     #[error("Error de SQLite")]
     SQLiteError(#[from] sqlx::Error),
+
+    #[error("Error de endpoint grpc")]
+    Endpoint,
 }
 
 
@@ -107,6 +111,7 @@ pub enum InternalEvent {
     LocalConnected,
     LocalDisconnected,
     IncomingMessage(PayloadTopic),
+    IncomingGrpc(EdgeDownload),
 }
 
 

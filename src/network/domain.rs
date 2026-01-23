@@ -1,12 +1,11 @@
 use sqlx::{FromRow};
 use std::collections::{HashMap, HashSet};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use crate::database::domain::Table;
-use crate::message::domain_for_table::HubRow;
 use crate::system::domain::System;
 use rand::seq::IteratorRandom;
-
+use crate::message::domain::{Message,Metadata};
 
 /// Gestor en memoria de las configuraciones de redes y tópicos del sistema.
 ///
@@ -142,205 +141,51 @@ impl NetworkManager {
         let hubs_set = self.hubs.get(id_net)?;
         Some(hubs_set.len())
     }
-
-    /// Transforma un tópico local (proveniente del Hub) en un tópico de destino para el Servidor.
-    ///
-    /// Esta función actúa como un **Gateway de Salida** (Uplink). Toma mensajes generados
-    /// en la red local y los reempaqueta estandarizándolos con la identidad del Edge
-    /// antes de subirlos a la nube.
-    ///
-    /// # Lógica de Transformación
-    ///
-    /// Extrae dinámicamente el tipo de mensaje (el sufijo del tópico) y lo preserva,
-    /// pero inyecta el `id_edge` en la ruta.
-    ///
-    /// - **Entrada:** `iot/{red}/hub/{id_nodo}/{tipo}`
-    /// - **Salida:** `iot/{red}/edge/{id_edge}/{tipo}`
-    ///
-    /// # Proceso de Validación
-    ///
-    /// 1. Verifica que el tópico tenga al menos 4 segmentos.
-    /// 2. Busca si la red (segmento 1) existe en memoria.
-    /// 3. Compara el tópico de entrada contra la lista de patrones configurados
-    ///    (Datos, Alertas, Monitor, Handshakes) usando coincidencia con wildcards (`topic_matches`).
-    /// 4. Si hay coincidencia, asigna el QoS configurado para ese tipo de mensaje.
-    ///
-    /// # Retorno
-    ///
-    /// - `Some(Topic)`: Con el nuevo string de tópico y el QoS correcto.
-    /// - `None`: Si la red no existe, el tópico es malformado o no coincide con ninguna configuración.
-    pub fn get_topic_to_send_msg_from_hub(&self, topic_in: &str, id: &str) -> Option<Topic> {
-
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let type_msg = parts[4];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            let pairs = [
-                (&n.topic_data.topic, n.topic_data.qos),
-                (&n.topic_alert_air.topic, n.topic_alert_air.qos),
-                (&n.topic_alert_temp.topic, n.topic_alert_temp.qos),
-                (&n.topic_monitor.topic, n.topic_monitor.qos),
-                (&n.topic_hub_setting_ok.topic, n.topic_hub_setting_ok.qos),
-                (&n.topic_hub_firmware_ok.topic, n.topic_hub_firmware_ok.qos),
-                (&n.topic_balance_mode_handshake.topic, n.topic_balance_mode_handshake.qos),
-            ];
-
-            if let Some((_, qos)) = pairs.iter().find(|(pattern, _)| topic_matches(pattern, topic_in)) {
-                qos_topic = *qos;
-            } else {
-                // Si no coincide con ninguno de los patrones configurados, no hay un QoS para darle
-                return None
-            }
-
-            Some(Topic::new(format!("iot/{net}/edge/{id}/{type_msg}"), qos_topic))
-        } else {
-            None
-        }
-    }
     
-    /// Transforma un tópico remoto (proveniente del Servidor) en un tópico de destino para el Hub local.
-    ///
-    /// Esta función actúa como un **Router de Bajada** (Downlink). Filtra los mensajes de control
-    /// enviados por el servidor y los traduce a los tópicos específicos que el Hub local
-    /// está escuchando.
-    ///
-    /// # Lógica de Transformación
-    ///
-    /// A diferencia de la función de subida, esta función realiza un mapeo **explícito y estático**
-    /// de comandos específicos.
-    ///
-    /// | Tipo de Comando | Tópico de Salida (hacia el Hub) |
-    /// |-----------------|---------------------------------|
-    /// | Red Activa/Inactiva | `iot/{red}/network_active` |
-    /// | Nueva Configuración | `iot/{red}/new_setting_to_hub` |
-    /// | Nuevo Firmware | `iot/{red}/new_firmware_to_hub` |
-    ///
-    /// # Proceso de Validación
-    ///
-    /// 1. Verifica la estructura base del tópico.
-    /// 2. Busca la red en memoria.
-    /// 3. Compara el tópico de entrada contra los tópicos de control específicos configurados en `Network`.
-    ///
-    /// # Retorno
-    ///
-    /// - `Some(Topic)`: Con el tópico traducido y el QoS configurado.
-    /// - `None`: Si el mensaje no corresponde a un comando de control conocido.
-    pub fn get_topic_to_send_msg_from_server(&self, topic_in: &str) -> Option<Topic> {
+    pub fn get_topic_to_send_msg_to_hub(&self, msg: &Message) -> Option<Topic> {
 
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_network.topic, topic_in) {
-                qos_topic = n.topic_network.qos;
-                Some(Topic::new(format!("iot/{net}/network_active"), qos_topic))
-            } else if topic_matches(&n.topic_new_setting_to_hub.topic, topic_in) {
-                qos_topic = n.topic_new_setting_to_hub.qos;
-                Some(Topic::new(format!("iot/{net}/new_setting_to_hub"), qos_topic))
-            } else if topic_matches(&n.topic_new_firmware.topic, topic_in) {
-                qos_topic = n.topic_new_firmware.qos;
-                Some(Topic::new(format!("iot/{net}/new_firmware_to_hub"), qos_topic))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn get_topic_to_send_msg_from_network(&self, topic_in: &str) -> Option<Topic> {
-
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_active_hub.topic, topic_in) {
-                qos_topic = n.topic_active_hub.qos;
-                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
-            } else if topic_matches(&n.topic_delete_hub.topic, topic_in) {
-                qos_topic = n.topic_delete_hub.qos;
-                Some(Topic::new(format!("iot/{net}/delete_hub"), qos_topic))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn get_topic_to_send_firmware_ok(&self, topic_in: &str, id: &str) -> Option<Topic> {
-
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_new_firmware.topic, topic_in) {
-                qos_topic = n.topic_hub_firmware_ok.qos;
-                Some(Topic::new(format!("iot/{net}/edge/{id}/hub_firmware_ok"), qos_topic))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn cast_topic_from_network_to_delete(&self, topic_in: &str, id: &str) -> Option<Topic> {
-
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_network.topic, topic_in) {
-                qos_topic = n.topic_delete_hub.qos;
-                Some(Topic::new(format!("iot/{net}/edge/{id}/delete_hub"), qos_topic))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn cast_topic_from_network_to_active(&self, topic_in: &str) -> Option<Topic> {
-
-        let parts: Vec<&str> = topic_in.split('/').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let net = parts[1];
-        let qos_topic : u8;
-
-        if let Some(n) = self.networks.get(net) {
-            if topic_matches(&n.topic_new_firmware.topic, topic_in) {
-                qos_topic = n.topic_active_hub.qos;
-                Some(Topic::new(format!("iot/{net}/active_hub"), qos_topic))
-            } else {
-                None
-            }
-        } else {
-            None
+        match msg {
+            Message::UpdateFirmware(firmware) => {
+                let id_net = firmware.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_new_firmware.clone())
+                } else {
+                    None
+                }
+            },
+            Message::FromServerSettings(settings) => {
+                let id_net = settings.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_new_setting.clone())
+                } else {
+                    None
+                }
+            },
+            Message::FromServerSettingsAck(settings_ack) => {
+                let id_net = settings_ack.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_setting_ok.clone())
+                } else {
+                    None
+                }
+            },
+            Message::DeleteHub(delete_hub) => {
+                let id_net = delete_hub.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_delete_hub.clone())
+                } else { 
+                    None 
+                }
+            },
+            Message::ActiveHub(active_hub) => {
+                let id_net = active_hub.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_active_hub.clone())
+                } else {
+                    None
+                }
+            },
+            _ => None,
         }
     }
 
@@ -357,32 +202,6 @@ impl NetworkManager {
         } else {
             None
         }
-    }
-
-    /// Determina a qué tabla de base de datos corresponde un tópico.
-    ///
-    /// Compara el tópico de entrada con los tópicos configurados para esa red
-    /// (datos, monitor, alertas, etc.).
-    ///
-    /// # Retorno
-    /// - `Table::[Tipo]`: Si hay coincidencia.
-    /// - `Table::Error`: Si la red no existe o el tópico no coincide con ninguno conocido.
-    pub fn extract_topic(&self, topic_in: &str, id: &str) -> Table {
-        self.networks.get(id).map(|n| {
-            if topic_matches(&n.topic_data.topic, topic_in) {
-                return Table::Measurement;
-            }
-            if topic_matches(&n.topic_monitor.topic, topic_in) {
-                return Table::Monitor;
-            }
-            if topic_matches(&n.topic_alert_air.topic, topic_in)  {
-                return Table::AlertAir;
-            }
-            if topic_matches(&n.topic_alert_temp.topic, topic_in) {
-                return Table::AlertTemp;
-            }
-            Table::Error
-        }).unwrap_or(Table::Error)
     }
 }
 
@@ -444,6 +263,8 @@ impl Topic {
 pub struct Network {
     pub id_network: String,
     pub name_network: String,
+
+    // Tópicos de recepción
     pub topic_data: Topic,
     pub topic_alert_air: Topic,
     pub topic_alert_temp: Topic,
@@ -451,40 +272,34 @@ pub struct Network {
     pub topic_hub_setting_ok: Topic,
     pub topic_hub_firmware_ok: Topic,
     pub topic_balance_mode_handshake: Topic,
-
     pub topic_setting: Topic,
-    pub topic_delete_hub: Topic,
+
+    // Tópicos de envío
+    pub topic_new_setting: Topic,
+    pub topic_new_firmware: Topic,
     pub topic_setting_ok: Topic,
+    pub topic_delete_hub: Topic,
     pub topic_active_hub: Topic,
 
-    pub topic_hello_world: Topic,
-
-    pub topic_network: Topic,
-    pub topic_new_setting_to_hub: Topic,
-    pub topic_new_firmware: Topic,
     pub active: bool,
 }
 
 
 impl Network {
-    pub fn new(id_network: String, name_network: String, active: bool, system: &System) -> Self {
-        let id_system = system.id_edge.clone();
+    pub fn new(id_network: String, name_network: String, active: bool) -> Self {
         let t_data = format!("iot/{id_network}/hub/+/data");
         let t_alert_air = format!("iot/{id_network}/hub/+/alert_air");
         let t_alert_temp = format!("iot/{id_network}/hub/+/alert_temp");
         let t_monitor = format!("iot/{id_network}/hub/+/monitor");
-        let t_network = format!("iot/{id_network}/edge/{id_system}/network");
-        let t_new_setting_to_hub = format!("iot/{id_network}/edge/{id_system}/new_setting_to_hub");
         let t_hub_setting_ok = format!("iot/{id_network}/hub/+/hub_setting_ok");
-        let t_new_firmware = format!("iot/{id_network}/edge/{id_system}/new_firmware");
         let t_hub_firmware_ok = format!("iot/{id_network}/hub/+/hub_firmware_ok");
         let t_balance_mode_handshake = format!("iot/{id_network}/hub/+/balance_mode_handshake");
         let t_setting = format!("iot/{id_network}/hub/+/setting");
-        let t_delete_hub = format!("iot/{id_network}/edge/{id_system}/delete_hub");
-        let t_setting_ok = format!("iot/{id_network}/edge/{id_system}/setting_ok");
-        let t_hello_world = format!("iot/{id_network}/edge/{id_system}/hello_world");
-
-        let t_active_hub = format!("iot/{id_network}/active_hub");
+        let t_new_setting = format!("iot/{id_network}/new_setting");
+        let t_new_firmware = format!("iot/{id_network}/new_firmware");
+        let t_setting_ok = format!("iot/{id_network}/new_setting_ok");
+        let t_delete_hub = format!("iot/{id_network}/delete_hub");
+        let t_active = format!("iot/{id_network}/active");
 
         Self {
             id_network,
@@ -493,17 +308,15 @@ impl Network {
             topic_alert_air: Topic::new(t_alert_air, 1),
             topic_alert_temp: Topic::new(t_alert_temp, 1),
             topic_monitor: Topic::new(t_monitor, 0),
-            topic_network: Topic::new(t_network, 0),
-            topic_new_setting_to_hub: Topic::new(t_new_setting_to_hub, 0),
             topic_hub_setting_ok: Topic::new(t_hub_setting_ok, 0),
-            topic_new_firmware: Topic::new(t_new_firmware, 0),
             topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 0),
             topic_balance_mode_handshake: Topic::new(t_balance_mode_handshake, 0),
             topic_setting: Topic::new(t_setting, 0),
-            topic_delete_hub: Topic::new(t_delete_hub, 0),
+            topic_new_setting: Topic::new(t_new_setting, 0),
+            topic_new_firmware: Topic::new(t_new_firmware, 0),
             topic_setting_ok: Topic::new(t_setting_ok, 0),
-            topic_active_hub: Topic::new(t_active_hub, 0),
-            topic_hello_world: Topic::new(t_hello_world, 0),
+            topic_delete_hub: Topic::new(t_delete_hub, 0),
+            topic_active_hub: Topic::new(t_active, 0),
             active
         }
     }
@@ -522,8 +335,8 @@ pub struct NetworkRow {
 
 /// Convierte una fila plana de base de datos (`NetworkRow`) a la estructura jerárquica (`Network`).
 impl NetworkRow {
-    pub fn cast_to_network(self, system: &System) -> Network {
-        Network::new(self.id_network, self.name_network, self.active, &system)
+    pub fn cast_to_network(self) -> Network {
+        Network::new(self.id_network, self.name_network, self.active)
     }
 
     pub fn new(id_network: String, name_network: String, active: bool) -> Self {
@@ -565,5 +378,30 @@ pub enum UpdateNetwork { Changed, NotChanged }
 pub struct Hub {
     pub id: String,
     pub device_name: String,
-    pub energy_mode: u8,
+    pub energy_mode: u32,
+}
+
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
+pub struct HubRow {
+    #[sqlx(flatten)]
+    pub metadata: Metadata,
+    pub network_id: String,
+    pub wifi_ssid: String,
+    pub wifi_password: String,
+    pub mqtt_uri: String,
+    pub device_name: String,
+    pub sample: u32,
+    pub energy_mode: u32,
+}
+
+
+impl HubRow {
+    pub fn cast_to_hub(self) -> Hub {
+        let mut hub = Hub::default();
+        hub.id = self.metadata.sender_user_id;
+        hub.device_name = self.device_name;
+        hub.energy_mode = self.energy_mode;
+        hub
+    }
 }

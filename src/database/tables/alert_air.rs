@@ -1,6 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::domain_for_table::AlertAirRow;
+use crate::message::domain::AlertAir;
 
 
 /// Crea la tabla `alert_air` en la base de datos si aún no existe.
@@ -47,10 +47,8 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
         CREATE TABLE IF NOT EXISTS alert_air (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_user_id       TEXT NOT NULL,
-            destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            topic_where_arrive   TEXT NOT NULL,
+            timestamp            INTEGER NOT NULL,
             co2_initial_ppm      REAL NOT NULL,
             co2_actual_ppm       REAL NOT NULL
         );
@@ -99,7 +97,7 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
 ///
 
 pub async fn insert_alert_air(pool: &SqlitePool,
-                              data_vec: Vec<AlertAirRow>
+                              data_vec: Vec<AlertAir>
                               ) -> Result<(), sqlx::Error> {
     
     let mut tx = pool.begin().await?;
@@ -107,17 +105,15 @@ pub async fn insert_alert_air(pool: &SqlitePool,
     for data in data_vec {
         sqlx::query(
             r#"
-        INSERT INTO alert_air (sender_user_id, destination_type, destination_id,
-                               timestamp, topic_where_arrive, co2_initial_ppm,
+        INSERT INTO alert_air (sender_user_id, destination_id,
+                               timestamp, co2_initial_ppm,
                                co2_actual_ppm)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         "#
         )
             .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_type)
             .bind(data.metadata.destination_id)
             .bind(data.metadata.timestamp)
-            .bind(data.metadata.topic_where_arrive)
             .bind(data.co2_initial_ppm)
             .bind(data.co2_actual_ppm)
             .execute(&mut *tx)
@@ -159,7 +155,7 @@ pub async fn insert_alert_air(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_alert_air(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertAirRow>, sqlx::Error> {
+pub async fn pop_batch_alert_air(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertAir>, sqlx::Error> {
     pop_batch_generic(pool, "alert_air", topic).await
 }
 

@@ -10,8 +10,7 @@
 
 
 use sqlx::{Executor, SqlitePool};
-use crate::message::domain_for_table::{HubRow};
-use crate::network::domain::NetworkRow;
+use crate::network::domain::HubRow;
 
 /// Inicializa la tabla `hub` en la base de datos.
 ///
@@ -27,10 +26,8 @@ pub async fn create_table_hub(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
         CREATE TABLE IF NOT EXISTS hub (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_user_id       TEXT NOT NULL UNIQUE,
-            destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            topic_where_arrive   TEXT NOT NULL,
+            timestamp            INTEGER NOT NULL,
             network_id           TEXT NOT NULL,
             wifi_ssid            TEXT NOT NULL,
             wifi_password        TEXT NOT NULL,
@@ -62,10 +59,8 @@ pub async fn insert_hub_table(pool: &SqlitePool,
         r#"
             INSERT INTO hub (
                 sender_user_id,
-                destination_type,
                 destination_id,
                 timestamp,
-                topic_where_arrive,
                 network_id,
                 wifi_ssid,
                 wifi_password,
@@ -74,14 +69,12 @@ pub async fn insert_hub_table(pool: &SqlitePool,
                 sample,
                 energy_mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
     )
         .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_type)
         .bind(data.metadata.destination_id)
         .bind(data.metadata.timestamp)
-        .bind(data.metadata.topic_where_arrive)
         .bind(data.network_id)
         .bind(data.wifi_ssid)
         .bind(data.wifi_password)
@@ -143,10 +136,8 @@ pub async fn upsert_hub(pool: &SqlitePool, data: HubRow) -> Result<(), sqlx::Err
         r#"
         INSERT INTO hub (
             sender_user_id,
-            destination_type,
             destination_id,
             timestamp,
-            topic_where_arrive,
             network_id,
             wifi_ssid,
             wifi_password,
@@ -155,12 +146,10 @@ pub async fn upsert_hub(pool: &SqlitePool, data: HubRow) -> Result<(), sqlx::Err
             sample,
             energy_mode
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(sender_user_id) DO UPDATE SET
-            destination_type   = excluded.destination_type,
             destination_id     = excluded.destination_id,
             timestamp          = excluded.timestamp,
-            topic_where_arrive = excluded.topic_where_arrive,
             network_id         = excluded.network_id,
             wifi_ssid          = excluded.wifi_ssid,
             wifi_password      = excluded.wifi_password,
@@ -171,10 +160,8 @@ pub async fn upsert_hub(pool: &SqlitePool, data: HubRow) -> Result<(), sqlx::Err
         "#
     )
         .bind(&data.metadata.sender_user_id)
-        .bind(&data.metadata.destination_type)
         .bind(&data.metadata.destination_id)
         .bind(&data.metadata.timestamp)
-        .bind(&data.metadata.topic_where_arrive)
         .bind(&data.network_id)
         .bind(&data.wifi_ssid)
         .bind(&data.wifi_password)

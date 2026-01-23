@@ -27,7 +27,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{error, info, instrument};
 use crate::config::sqlite::{BATCH_SIZE, FLUSH_INTERVAL};
 use crate::context::domain::AppContext;
-use crate::message::domain::{Message, MessageTypes, ServerStatus};
+use crate::message::domain::{Message, ServerStatus};
 use super::domain::{DataRequest, NetworkAux, StateFlag, Table, TableDataVector, TableDataVectorTypes, Vectors};
 use crate::database::repository::Repository;
 use crate::network::domain::{NetworkManager, UpdateNetwork};
@@ -168,8 +168,7 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<Message>,
     loop {
         tokio::select! {
             Some(msg_from_dba) = rx_from_dba.recv() => {
-                let manager = app_context.net_man.read().await;
-                sort_by_vectors(msg_from_dba, &mut net_vec, &manager);
+                sort_by_vectors(msg_from_dba, &mut net_vec);
 
                 for (_, vectors) in net_vec.iter_mut() {
                     if vectors.is_full(BATCH_SIZE) {
@@ -206,50 +205,29 @@ pub async fn dba_insert_task(mut rx_from_dba: mpsc::Receiver<Message>,
 /// Clasifica un mensaje entrante y lo inserta en el vector correspondiente en memoria.
 ///
 /// Identifica la red y el tipo de tabla basándose en el tópico MQTT.
-fn sort_by_vectors(msg: Message, net_vec: &mut HashMap<String, Vectors>, net_manager: &NetworkManager) {
+fn sort_by_vectors(msg: Message, net_vec: &mut HashMap<String, Vectors>) {
 
-    let id = match net_manager.extract_net_id(&msg.get_topic_arrive()) {
-        Some(id) => id,
-        None => {
-            log::error!("No existe la red con ID: {}", msg.get_topic_arrive());
-            return;
-        }
-    };
-
-    let table_type = net_manager.extract_topic(&msg.get_topic_arrive(), &id);
-    match table_type {
-        Table::Measurement | Table::Monitor | Table::AlertAir | Table::AlertTemp => {
-            match_message_with_row(msg.get_message(), msg.get_topic_arrive(), &id, net_vec);
-        },
-        Table::Error => {
-            log::warn!("Error de tópico: {}", msg.get_topic_arrive());
-        }
-    }
-}
-
-
-/// Convierte el mensaje genérico a una fila de base de datos específica y lo empuja al vector.
-fn match_message_with_row(msg: MessageTypes, topic: &str, id: &str, net_vec: &mut HashMap<String, Vectors>) {
     match msg {
-        MessageTypes::Report(report) => {
-            let mr = report.cast_measurement_to_row(topic.to_string());
-            net_vec.entry(id.to_string()).or_default().measurements.push(mr);
+        Message::Report(report) => {
+            let id = report.network.clone();
+            net_vec.entry(id).or_default().measurements.push(report);
         },
-        MessageTypes::Monitor(monitor) => {
-            let mr = monitor.cast_monitor_to_row(topic.to_string());
-            net_vec.entry(id.to_string()).or_default().monitors.push(mr);
+        Message::Monitor(monitor) => {
+            let id = monitor.network.clone();
+            net_vec.entry(id).or_default().monitors.push(monitor);
         },
-        MessageTypes::AlertAir(alert_air) => {
-            let aar = alert_air.cast_alert_air_to_row(topic.to_string());
-            net_vec.entry(id.to_string()).or_default().alert_airs.push(aar);
+        Message::AlertAir(alert_air) => {
+            let id = alert_air.network.clone();
+            net_vec.entry(id).or_default().alert_airs.push(alert_air);
         },
-        MessageTypes::AlertTem(alert_temp) => {
-            let ath = alert_temp.cast_alert_th_to_row(topic.to_string());
-            net_vec.entry(id.to_string()).or_default().alert_temps.push(ath);
+        Message::AlertTem(alert_tem) => {
+            let id = alert_tem.network.clone();
+            net_vec.entry(id).or_default().alert_temps.push(alert_tem);
         },
         _ => {},
     }
 }
+
 
 
 /// Vacía los vectores de memoria y retorna un paquete listo para insertar.

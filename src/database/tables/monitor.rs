@@ -1,7 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::domain_for_table::MonitorRow;
-
+use crate::message::domain::Monitor;
 
 /// Crea la tabla `monitor` en la base de datos si aún no existe.
 ///
@@ -58,10 +57,8 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
         CREATE TABLE IF NOT EXISTS monitor (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_user_id       TEXT NOT NULL,
-            destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            topic_where_arrive   TEXT NOT NULL,
+            timestamp            INTEGER NOT NULL,
             mem_free             INTEGER NOT NULL,
             mem_free_hm          INTEGER NOT NULL,
             mem_free_block       INTEGER NOT NULL,
@@ -74,7 +71,7 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             stack_free_min_mon   INTEGER NOT NULL,
             wifi_ssid            TEXT NOT NULL,
             wifi_rssi            INTEGER NOT NULL,
-            active_time TEXT NOT NULL
+            active_time          INTEGER NOT NULL
         );
         "#
     )
@@ -122,7 +119,7 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
 ///
 
 pub async fn insert_monitor(pool: &SqlitePool,
-                            data_vec: Vec<MonitorRow>
+                            data_vec: Vec<Monitor>
                             ) -> Result<(), sqlx::Error> {
 
     let mut tx = pool.begin().await?;
@@ -130,18 +127,16 @@ pub async fn insert_monitor(pool: &SqlitePool,
     for data in data_vec {
         sqlx::query(
             r#"
-        INSERT INTO monitor (sender_user_id, destination_type, destination_id, timestamp, topic_where_arrive,
+        INSERT INTO monitor (sender_user_id, destination_id, timestamp,
                              mem_free, mem_free_hm, mem_free_block, mem_free_internal, stack_free_min_coll,
                              stack_free_min_pub, stack_free_min_mic, stack_free_min_th, stack_free_min_air,
                              stack_free_min_mon, wifi_ssid, wifi_rssi, active_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#
         )
             .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_type)
             .bind(data.metadata.destination_id)
             .bind(data.metadata.timestamp)
-            .bind(data.metadata.topic_where_arrive)
             .bind(data.mem_free)
             .bind(data.mem_free_hm)
             .bind(data.mem_free_block)
@@ -194,7 +189,7 @@ pub async fn insert_monitor(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_monitor(pool: &SqlitePool, topic: &str) -> Result<Vec<MonitorRow>, sqlx::Error> {
+pub async fn pop_batch_monitor(pool: &SqlitePool, topic: &str) -> Result<Vec<Monitor>, sqlx::Error> {
     pop_batch_generic(pool, "monitor", topic).await
 }
 

@@ -1,7 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::domain_for_table::MeasurementRow;
-
+use crate::message::domain::Measurement;
 
 /// Crea la tabla `measurement` en la base de datos si aún no existe.
 ///
@@ -53,12 +52,8 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
         CREATE TABLE IF NOT EXISTS measurement (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_user_id       TEXT NOT NULL,
-            destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            topic_where_arrive   TEXT NOT NULL,
-            ipv4addr             TEXT NOT NULL,
-            wifi_ssid            TEXT NOT NULL,
+            timestamp            INTEGER NOT NULL,
             pulse_counter        INTEGER NOT NULL,
             pulse_max_duration   INTEGER NOT NULL,
             temperature          REAL NOT NULL,
@@ -112,7 +107,7 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
 ///
 
 pub async fn insert_measurement(pool: &SqlitePool,
-                                data_vec: Vec<MeasurementRow>
+                                data_vec: Vec<Measurement>
                                ) -> Result<(), sqlx::Error> {
 
     let mut tx = pool.begin().await?;
@@ -122,12 +117,8 @@ pub async fn insert_measurement(pool: &SqlitePool,
             r#"
             INSERT INTO measurement (
                 sender_user_id,
-                destination_type,
                 destination_id,
                 timestamp,
-                topic_where_arrive,
-                ipv4addr,
-                wifi_ssid,
                 pulse_counter,
                 pulse_max_duration,
                 temperature,
@@ -135,16 +126,12 @@ pub async fn insert_measurement(pool: &SqlitePool,
                 co2_ppm,
                 sample
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
             .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_type)
             .bind(data.metadata.destination_id)
             .bind(data.metadata.timestamp)
-            .bind(data.metadata.topic_where_arrive)
-            .bind(data.ipv4addr.to_string())
-            .bind(data.wifi_ssid)
             .bind(data.pulse_counter)
             .bind(data.pulse_max_duration)
             .bind(data.temperature)
@@ -190,7 +177,7 @@ pub async fn insert_measurement(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_measurement(pool: &SqlitePool, topic: &str) -> Result<Vec<MeasurementRow>, sqlx::Error> {
+pub async fn pop_batch_measurement(pool: &SqlitePool, topic: &str) -> Result<Vec<Measurement>, sqlx::Error> {
     pop_batch_generic(pool, "measurement", topic).await
 }
 

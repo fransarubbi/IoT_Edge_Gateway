@@ -5,11 +5,10 @@ use crate::database::domain::{DataRequest, TableDataVector};
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_task};
 use crate::firmware::domain::{firmware_watchdog_timer, Action, Event};
 use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
-use crate::fsm::logic::run_fsm;
+use crate::grpc::EdgeUpload;
 use crate::message::domain::{Message, SerializedMessage};
 use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
 use crate::mqtt::local::local_mqtt;
-use crate::mqtt::remote::remote_mqtt;
 use crate::network::domain::{HubChanged, NetworkChanged, UpdateNetwork};
 use crate::network::logic::{network_admin, network_dba};
 use crate::system::domain::{init_tracing, InternalEvent};
@@ -24,6 +23,12 @@ mod network;
 mod fsm;
 mod context;
 mod firmware;
+mod metrics;
+mod grpc_service;
+
+pub mod grpc {
+    tonic::include_proto!("grpc");
+}
 
 #[tokio::main]
 async fn main() {
@@ -31,7 +36,7 @@ async fn main() {
     init_tracing();
 
     let (msg_to_hub_tx_to_mqtt, local_mqtt_rx) = mpsc::channel::<SerializedMessage>(100);
-    let (msg_to_server_tx_to_mqtt, server_mqtt_rx) = mpsc::channel::<SerializedMessage>(100);
+    let (msg_to_server_tx_to_mqtt, server_mqtt_rx) = mpsc::channel::<EdgeUpload>(100);
     let (mqtt_server_tx, rx_from_mqtt_server) = mpsc::channel::<InternalEvent>(100);
     let (mqtt_local_tx, rx_from_mqtt_hub) = mpsc::channel::<InternalEvent>(100);
 
@@ -92,10 +97,7 @@ async fn main() {
                             app_context.clone()
     ));
 
-    tokio::spawn(remote_mqtt(mqtt_server_tx,
-                             server_mqtt_rx,
-                             app_context.clone()
-    ));
+
 
     
     tokio::spawn(msg_from_hub(msg_from_hub_tx_to_hub,

@@ -29,3 +29,11 @@ pub mod fsm {
     use tokio::time::{Duration};
     pub const HELLO_TIMEOUT: Duration = Duration::from_secs(180); // 3 min
 }
+
+pub mod grpc_service {
+    pub const TLS_CERT_TIMEOUT_SECS: u64 = 10;
+    pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
+    pub const RECONNECT_DELAY_SECS: u64 = 5;
+    pub const SESSION_CHANNEL_BUFFER: usize = 100;
+    pub const GZIP_ENABLED: bool = true;
+}

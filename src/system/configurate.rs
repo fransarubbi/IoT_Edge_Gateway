@@ -426,12 +426,12 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
     if networks_row.is_empty() {
         let repo = Repository::create_repository(&system.db_path).await;
         let net_man = Arc::new(RwLock::new(NetworkManager::new_empty(&system)));
-        load_networks(&repo, &net_man, &system).await?;
+        load_networks(&repo, &net_man).await?;
         Ok(AppContext::new(repo, net_man, system))
     } else {
         let mut networks : HashMap<String, Network> = HashMap::new();
         for net in networks_row {
-            networks.insert(net.0, net.1.cast_to_network(&system));
+            networks.insert(net.0, net.1.cast_to_network());
         }
         let repo = Repository::create_repository(&system.db_path).await;
         for net in &networks {

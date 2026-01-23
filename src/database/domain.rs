@@ -9,7 +9,7 @@
 
 use tokio::sync::{mpsc, watch};
 use tracing::error;
-use crate::message::domain_for_table::{AlertAirRow, AlertThRow, MeasurementRow, MonitorRow};
+use crate::message::domain::{AlertAir, AlertTh, Measurement, Monitor};
 use crate::network::domain::Topic;
 
 
@@ -91,10 +91,10 @@ impl TableDataVector {
 /// Cada variante contiene un `Vec<T>` donde T es un struct `*Row`.
 #[derive(Clone, Debug)]
 pub enum TableDataVectorTypes {
-    Measurement(Vec<MeasurementRow>),
-    Monitor(Vec<MonitorRow>),
-    AlertAir(Vec<AlertAirRow>),
-    AlertTemp(Vec<AlertThRow>),
+    Measurement(Vec<Measurement>),
+    Monitor(Vec<Monitor>),
+    AlertAir(Vec<AlertAir>),
+    AlertTemp(Vec<AlertTh>),
 }
 
 
@@ -104,10 +104,10 @@ pub enum TableDataVectorTypes {
 /// para realizar inserciones por lotes.
 #[derive(Default, Debug)] 
 pub struct Vectors {
-    pub measurements: Vec<MeasurementRow>,
-    pub monitors: Vec<MonitorRow>,
-    pub alert_airs: Vec<AlertAirRow>,
-    pub alert_temps: Vec<AlertThRow>,
+    pub measurements: Vec<Measurement>,
+    pub monitors: Vec<Monitor>,
+    pub alert_airs: Vec<AlertAir>,
+    pub alert_temps: Vec<AlertTh>,
 }
 
 

@@ -1,7 +1,6 @@
 use sqlx::{Executor, SqlitePool};
 use crate::database::repository::pop_batch_generic;
-use crate::message::domain_for_table::AlertThRow;
-
+use crate::message::domain::AlertTh;
 
 /// Crea la tabla `alert_temp` en la base de datos si aún no existe.
 ///
@@ -47,10 +46,8 @@ pub async fn create_table_alert_temp(pool: &SqlitePool) -> Result<(), sqlx::Erro
         CREATE TABLE IF NOT EXISTS alert_temp (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_user_id       TEXT NOT NULL,
-            destination_type     TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
-            timestamp            TEXT NOT NULL,
-            topic_where_arrive   TEXT NOT NULL,
+            timestamp            INTEGER NOT NULL,
             initial_temp         REAL NOT NULL,
             actual_temp          REAL NOT NULL
         );
@@ -100,7 +97,7 @@ pub async fn create_table_alert_temp(pool: &SqlitePool) -> Result<(), sqlx::Erro
 ///
 
 pub async fn insert_alert_temp(pool: &SqlitePool,
-                               data_vec: Vec<AlertThRow>
+                               data_vec: Vec<AlertTh>
                               ) -> Result<(), sqlx::Error> {
 
     let mut tx = pool.begin().await?;
@@ -108,17 +105,15 @@ pub async fn insert_alert_temp(pool: &SqlitePool,
     for data in data_vec {
         sqlx::query(
             r#"
-        INSERT INTO alert_temp (sender_user_id, destination_type, destination_id,
-                                timestamp, topic_where_arrive, initial_temp,
+        INSERT INTO alert_temp (sender_user_id, destination_id,
+                                timestamp, initial_temp,
                                 actual_temp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         "#
         )
             .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_type)
             .bind(data.metadata.destination_id)
             .bind(data.metadata.timestamp)
-            .bind(data.metadata.topic_where_arrive)
             .bind(data.initial_temp)
             .bind(data.actual_temp)
             .execute(&mut *tx)
@@ -160,7 +155,7 @@ pub async fn insert_alert_temp(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_alert_temp(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertThRow>, sqlx::Error> {
+pub async fn pop_batch_alert_temp(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertTh>, sqlx::Error> {
     pop_batch_generic(pool, "alert_temp", topic).await
 }
 

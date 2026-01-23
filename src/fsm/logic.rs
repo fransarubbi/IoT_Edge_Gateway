@@ -1,11 +1,11 @@
-use chrono::Local;
+use chrono::{Utc};
 use tokio::sync::mpsc;
 use tokio::time::{Duration};
 use tracing::{error, info};
 use crate::config::fsm::HELLO_TIMEOUT;
 use crate::context::domain::AppContext;
 use crate::fsm::domain::{Action, Event, FsmState, SubStateBalanceMode, SubStateInit, SubStatePhase, SubStateQuorum, Transition};
-use crate::message::domain::{DestinationType, HandshakeToHub, Message, MessageStateBalanceMode, MessageTypes, Metadata};
+use crate::message::domain::{HandshakeToHub, Message, MessageStateBalanceMode, Metadata};
 
 
 pub async fn fsm_general_channels(tx_to_hub: mpsc::Sender<Message>,
@@ -157,17 +157,21 @@ async fn on_entry_in_handshake(tx_to_hub: &mpsc::Sender<Message>,
                                current_epoch: &u32,
                                app_context: AppContext) {
 
-    let state = MessageStateBalanceMode::new(
-        "Balance Mode".to_string(),
-        *current_epoch,
-        "in_handshake".to_string(),
-        5
-    );
+    let timestamp = Utc::now().timestamp();
+    let metadata = Metadata{
+        sender_user_id: app_context.system.id_edge.clone(),
+        destination_id: "all".to_string(),
+        timestamp,
+    };
+    let state = MessageStateBalanceMode{
+        metadata,
+        state: "Balance Mode".to_string(),
+        balance_epoch: *current_epoch,
+        sub_state: "in_handshake".to_string(),
+        duration: 5
+    };
 
-    let msg = Message::new(
-        " ".to_string(),
-        MessageTypes::StateBalanceMode(state),
-    );
+    let msg = Message::StateBalanceMode(state);
     if tx_to_hub.send(msg.clone()).await.is_err() {
         error!("Error: No se pudo enviar evento balance Mode");
     }
@@ -175,24 +179,19 @@ async fn on_entry_in_handshake(tx_to_hub: &mpsc::Sender<Message>,
         error!("Error: No se pudo enviar evento balance Mode");
     }
 
-    let now = Local::now();
-    let timestamp = now.format("%d/%m/%Y %H:%M:%S").to_string();
-    let metadata = Metadata::new(
-        app_context.system.id_edge.clone(),
-        DestinationType::Node,
-        "all".to_string(),
+    let timestamp = Utc::now().timestamp();
+    let metadata = Metadata{
+        sender_user_id: app_context.system.id_edge.clone(),
+        destination_id: "all".to_string(),
         timestamp,
-    );
-    let handshake = HandshakeToHub::new(
+    };
+    let handshake = HandshakeToHub {
         metadata,
-        current_epoch.clone(),
-        5
-    );
+        balance_epoch: current_epoch.clone(),
+        duration: 5
+    };
 
-    let msg = Message::new(
-        " ".to_string(),
-        MessageTypes::HandshakeToHub(handshake),
-    );
+    let msg = Message::HandshakeToHub(handshake);
     if tx_to_hub.send(msg.clone()).await.is_err() {
         error!("Error: No se pudo enviar evento balance Mode");
     }
@@ -210,17 +209,21 @@ async fn on_entry_out_handshake(tx_to_hub: &mpsc::Sender<Message>,
                                current_epoch: &u32,
                                app_context: AppContext) {
 
-    let state = MessageStateBalanceMode::new(
-        "Balance Mode".to_string(),
-        *current_epoch,
-        "out_handshake".to_string(),
-        5
-    );
+    let timestamp = Utc::now().timestamp();
+    let metadata = Metadata{
+        sender_user_id: app_context.system.id_edge.clone(),
+        destination_id: "all".to_string(),
+        timestamp,
+    };
+    let state = MessageStateBalanceMode {
+        metadata,
+        state: "Balance Mode".to_string(),
+        balance_epoch: *current_epoch,
+        sub_state: "out_handshake".to_string(),
+        duration: 5
+    };
 
-    let msg = Message::new(
-        " ".to_string(),
-        MessageTypes::StateBalanceMode(state),
-    );
+    let msg = Message::StateBalanceMode(state);
     if tx_to_hub.send(msg.clone()).await.is_err() {
         error!("Error: No se pudo enviar evento balance Mode");
     }
@@ -228,24 +231,19 @@ async fn on_entry_out_handshake(tx_to_hub: &mpsc::Sender<Message>,
         error!("Error: No se pudo enviar evento balance Mode");
     }
 
-    let now = Local::now();
-    let timestamp = now.format("%d/%m/%Y %H:%M:%S").to_string();
-    let metadata = Metadata::new(
-        app_context.system.id_edge.clone(),
-        DestinationType::Node,
-        "all".to_string(),
+    let timestamp = Utc::now().timestamp();
+    let metadata = Metadata{
+        sender_user_id: app_context.system.id_edge.clone(),
+        destination_id: "all".to_string(),
         timestamp,
-    );
-    let handshake = HandshakeToHub::new(
+    };
+    let handshake = HandshakeToHub {
         metadata,
-        current_epoch.clone(),
-        5
-    );
+        balance_epoch: current_epoch.clone(),
+        duration: 5
+    };
 
-    let msg = Message::new(
-        " ".to_string(),
-        MessageTypes::HandshakeToHub(handshake),
-    );
+    let msg = Message::HandshakeToHub(handshake);
     if tx_to_hub.send(msg.clone()).await.is_err() {
         error!("Error: No se pudo enviar evento balance Mode");
     }
