@@ -35,10 +35,6 @@ pub enum StateFirmwareUpdate {
     NotifyHub,
     /// Fase Broadcast: Se ha notificado a toda la red y se recolectan resultados.
     WaitingNetworkAnswer,
-    /// Estado terminal de Éxito (100% actualizado).
-    NotifyServer,
-    /// Estado terminal de Fallo (Timeout, error en canario, o <100% éxito).
-    NotifyServerFailure,
 }
 
 
@@ -217,7 +213,7 @@ impl FsmStateFirmware {
             },
             (StateFirmwareUpdate::NotifyHub, Event::MessageFromHub) => {
                 let next_fsm = self.clone();
-                state_notify_hub(next_fsm)
+                state_notify_hub_event_message_from_hub(next_fsm)
             },
             (StateFirmwareUpdate::NotifyHub, Event::Error) => {
                 let next_fsm = self.clone();
@@ -230,14 +226,6 @@ impl FsmStateFirmware {
             (StateFirmwareUpdate::WaitingNetworkAnswer, Event::AllMessageReceived) => {
                 let next_fsm = self.clone();
                 state_waiting_network_answer_event_all_message_received(next_fsm)
-            },
-            (StateFirmwareUpdate::NotifyServer, _ ) => {
-                let next_fsm = self.clone();
-                state_notify_server(next_fsm)
-            },
-            (StateFirmwareUpdate::NotifyServerFailure, _ ) => {
-                let next_fsm = self.clone();
-                state_notify_server_failure(next_fsm)
             },
             _ => {
                 let invalid = TransitionInvalid {
@@ -282,61 +270,41 @@ fn state_waiting_for_firmware_event_message_update(mut next_fsm: FsmStateFirmwar
 }
 
 
-fn state_notify_hub(mut next_fsm: FsmStateFirmware) -> Transition {
+fn state_notify_hub_event_message_from_hub(mut next_fsm: FsmStateFirmware) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![Action::SendMessageToNetwork],
+        actions: vec![Action::StopTimer, Action::SendMessageToNetwork],
     };
     Transition::Valid(valid)
 }
 
 
 fn state_notify_hub_event_error(mut next_fsm: FsmStateFirmware) -> Transition {
-    next_fsm.state = StateFirmwareUpdate::NotifyServerFailure;
+    next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![Action::StopTimer],
+        actions: vec![Action::SendMessageFailToServer],
     };
     Transition::Valid(valid)
 }
 
 
 fn state_waiting_network_answer_event_timeout_or_error(mut next_fsm: FsmStateFirmware) -> Transition {
-    next_fsm.state = StateFirmwareUpdate::NotifyServerFailure;
+    next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![Action::StopTimer],
+        actions: vec![Action::SendMessageFailToServer],
     };
     Transition::Valid(valid)
 }
 
 
 fn state_waiting_network_answer_event_all_message_received(mut next_fsm: FsmStateFirmware) -> Transition {
-    next_fsm.state = StateFirmwareUpdate::NotifyServer;
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![Action::StopTimer],
-    };
-    Transition::Valid(valid)
-}
-
-
-fn state_notify_server(mut next_fsm: FsmStateFirmware) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![Action::SendMessageOkToServer],
-    };
-    Transition::Valid(valid)
-}
-
-
-fn state_notify_server_failure(mut next_fsm: FsmStateFirmware) -> Transition {
-    next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![Action::SendMessageFailToServer],
+        actions: vec![Action::StopTimer, Action::SendMessageOkToServer],
     };
     Transition::Valid(valid)
 }
@@ -425,6 +393,7 @@ mod tests {
             Transition::Valid(t) => {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingNetworkAnswer);
                 assert!(t.actions.contains(&Action::SendMessageToNetwork));
+                assert!(t.actions.contains(&Action::StopTimer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
@@ -439,8 +408,8 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
-                assert!(t.actions.contains(&Action::StopTimer));
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
@@ -455,8 +424,8 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
-                assert!(t.actions.contains(&Action::StopTimer));
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
@@ -471,8 +440,8 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServerFailure);
-                assert!(t.actions.contains(&Action::StopTimer));
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
@@ -487,40 +456,9 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyServer);
+                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
                 assert!(t.actions.contains(&Action::StopTimer));
-            }
-            Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
-        }
-    }
-
-    #[test]
-    fn test_notify_server_returns_to_waiting() {
-        let mut fsm = FsmStateFirmware::new();
-        fsm.state = StateFirmwareUpdate::NotifyServer;
-
-        let transition = fsm.step(Event::MessageFromServer); // Cualquier evento
-
-        match transition {
-            Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
                 assert!(t.actions.contains(&Action::SendMessageOkToServer));
-            }
-            Transition::Invalid(_) => panic!("ESe esperaba una transición válida"),
-        }
-    }
-
-    #[test]
-    fn test_notify_server_failure_returns_to_waiting() {
-        let mut fsm = FsmStateFirmware::new();
-        fsm.state = StateFirmwareUpdate::NotifyServerFailure;
-
-        let transition = fsm.step(Event::Error); // Cualquier evento
-
-        match transition {
-            Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
-                assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }

@@ -51,6 +51,9 @@ async fn on_entry(action: Action,
                   current_epoch: &mut u32) {
 
     match action {
+        Action::OnEntryInit(SubStateInit::HelloWorld) => {
+            init_timer(&tx_to_timer, HELLO_TIMEOUT).await;
+        },
         Action::OnEntryInit(SubStateInit::WaitConfirmation) => {
             init_timer(&tx_to_timer, HELLO_TIMEOUT).await;
         },
@@ -263,6 +266,18 @@ pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
                      mut rx_event: mpsc::Receiver<Event>) {
 
     let mut state = FsmState::new();
+    let transition = state.step(Event::Start);
+    match transition {
+        Transition::Valid(t) => {
+            state = t.get_change_state();
+            if tx_actions.send(t.get_actions()).await.is_err() {
+                error!("Error: No se pudo enviar el vector de acciones");
+            }
+        },
+        Transition::Invalid(t) => {
+            error!("FSM transición inválida: {}", t.get_invalid());
+        }
+    }
 
     while let Some(event) = rx_event.recv().await {
         let transition = state.step(event);

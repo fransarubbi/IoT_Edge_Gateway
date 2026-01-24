@@ -201,7 +201,6 @@ async fn on_entry(state_firm: StateFirmwareUpdate, session: &mut Option<UpdateSe
         StateFirmwareUpdate::WaitingNetworkAnswer => {
             init_timer_and_update_phase(session, &tx_to_timer, Phase::Broadcast).await;
         }
-        _ => {},
     }
 }
 
