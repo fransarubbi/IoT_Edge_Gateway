@@ -47,6 +47,7 @@ message EdgeUploadToDataSaver {
     Monitor monitor = 2;
     AlertAir alert_air = 3;
     AlertTh alert_th = 4;
+    SystemMetrics metrics = 5;
   }
 }
 
@@ -58,8 +59,8 @@ message EdgeUploadToManager {
     StateBalanceMode balance_mode = 3;
     StateNormal normal = 4;
     StateSafeMode safe_mode = 5;
-    Heartbeat heartbeat = 6;
-    FirmwareOutcome firmware_outcome = 7;
+    FirmwareOutcome firmware_outcome = 6;
+    HelloWorld hello_world = 7;
   }
 }
 
@@ -181,4 +182,23 @@ message FirmwareOutcome {
   string version = 1;
   bool is_ok = 2;
   float percentage_ok = 3;
+}
+
+message HelloWorld {
+  bool hello = 1;
+}
+
+message SystemMetrics {
+  uint64 uptime_seconds = 1;
+  float cpu_usage_percent = 2;
+  float cpu_temp_celsius = 3;
+  uint64 ram_total_mb = 4;
+  uint64 ram_used_mb = 5;
+  uint64 sd_total_gb = 6;
+  uint64 sd_used_gb = 7;
+  float sd_usage_percent = 8;
+  uint64 network_rx_bytes = 9;
+  uint64 network_tx_bytes = 10;
+  int32 wifi_rssi = 11;
+  int32 wifi_signal_dbm = 12;
 }

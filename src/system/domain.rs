@@ -77,6 +77,9 @@ pub enum ErrorType {
     #[error("{0}")]
     NetworkFile(String),
 
+    #[error("{0}")]
+    Protocol(String),
+
     #[error("Error de lectura/escritura (IO)")]
     Io(#[from] io::Error),
 

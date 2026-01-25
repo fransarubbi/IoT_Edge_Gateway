@@ -23,8 +23,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::debug;
-
+use tracing::{debug};
 
 
 /// Estados Globales de nivel superior.
@@ -153,10 +152,9 @@ impl TransitionInvalid {
 /// pero no **ejecuta** la acción (principio de separación de responsabilidades).
 #[derive(Debug, PartialEq, Clone)]
 pub enum Action {
-    SendToServerHello,
-    IncrementAttempts,
     SendHeartbeatMessagePhase,
     SendHeartbeatMessageSafeMode,
+    SendHeartbeatMessageNormal,
     StopSendHeartbeatMessagePhase,
     StopSendHeartbeatMessageSafeMode,
     OnEntryInit(SubStateInit),
@@ -182,7 +180,6 @@ pub enum Event {
     ApproveQuorum,
     NotApproveQuorum,
     NotApproveNotAttempts,
-
     InitTimer(Duration),
     StopTimer,
 }
@@ -195,6 +192,66 @@ pub struct DataUpdateStateMessage {
     pub duration: u32,
     pub frequency: u32,
     pub jitter: u32
+}
+
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateOfSession {
+    None,
+    InHandshake,
+    Quorum,
+    RepeatHandshake,
+    OutHandshake,
+}
+
+pub struct UpdateSession {
+    state: StateOfSession,
+    total_handshake: f64,
+    total_attempts: f64,
+}
+
+
+impl UpdateSession {
+    pub fn new() -> Self {
+        Self {
+            state: StateOfSession::None,
+            total_handshake: 0.0,
+            total_attempts: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.total_handshake = 0.0;
+        self.total_attempts = 0.0;
+    }
+
+    pub fn reset_total_handshake_msg(&mut self) {
+        self.total_handshake = 0.0;
+    }
+
+    pub fn set_state(&mut self, state: StateOfSession) {
+        self.state = state;
+    }
+
+    pub fn increment_messages(&mut self) {
+        self.total_handshake += 1.0;
+    }
+
+    pub fn increment_attempts(&mut self) {
+        self.total_attempts += 1.0;
+    }
+
+    pub fn get_state(&self) -> &StateOfSession {
+        &self.state
+    }
+
+    pub fn get_total_handshake(&self) -> f64 {
+        self.total_handshake
+    }
+
+    pub fn get_total_attempts(&self) -> f64 {
+        self.total_attempts
+    }
 }
 
 
@@ -667,7 +724,7 @@ fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
 pub async fn general_fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
-                                     mut cmd_rx: mpsc::Receiver<Event>) {
+                                        mut cmd_rx: mpsc::Receiver<Event>) {
     loop {
         let duration = match cmd_rx.recv().await {
             Some(Event::InitTimer(d)) => d,
@@ -683,7 +740,7 @@ pub async fn general_fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                 let _ = tx_to_fsm.send(Event::Timeout).await;
             }
             Some(Event::StopTimer) = cmd_rx.recv() => {
-                debug!("Debug: Watchdog timer de fsm firmware, cancelado");
+                debug!("Debug: Watchdog timer de fsm general, cancelado");
             }
         }
     }
@@ -1509,7 +1566,7 @@ mod tests {
         tx_cmd.send(Event::InitTimer(Duration::from_millis(200))).await.unwrap();
 
         // Cancelar inmediatamente
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
         tx_cmd.send(Event::StopTimer).await.unwrap();
 
         // No debería recibir timeout
@@ -1554,7 +1611,7 @@ mod tests {
         tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
 
         // Debe funcionar normalmente
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -1611,7 +1668,7 @@ mod tests {
         tx_cmd.send(Event::InitTimer(Duration::from_millis(100))).await.unwrap();
 
         // Cancelar
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(20)).await;
         tx_cmd.send(Event::StopTimer).await.unwrap();
 
         // Reiniciar inmediatamente con un timer más corto

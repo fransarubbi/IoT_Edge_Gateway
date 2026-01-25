@@ -212,6 +212,13 @@ pub struct Heartbeat {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HelloWorld {
+    pub metadata: Metadata,
+    pub hello: bool,
+}
+
+
 /// Comando para eliminar un Hub del registro.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteHub {
@@ -264,8 +271,9 @@ pub struct FirmwareOutcome {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SystemMetrics {
+    pub metadata: Metadata,
     pub uptime_seconds: u64,
     pub cpu_usage_percent: f32,
     pub cpu_temp_celsius: f32,
@@ -306,9 +314,11 @@ pub enum Message {
     FromServerSettings(Settings),
     FromServerSettingsAck(SettingOk),
     Network(Network),
+    Metrics(SystemMetrics),
 
     // Mensajes para el Server
     FirmwareOutcome(FirmwareOutcome),
+    HelloWorld(HelloWorld),
 
     // Mensajes para el Server y el Hub
     StateBalanceMode(MessageStateBalanceMode),

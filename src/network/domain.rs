@@ -141,6 +141,16 @@ impl NetworkManager {
         let hubs_set = self.hubs.get(id_net)?;
         Some(hubs_set.len())
     }
+
+    /// Obtiene la cantidad total de hubs asociados al Edge.
+    pub fn get_total_hubs(&self) -> u64 {
+        let mut total_hubs = 0;
+        for hub in self.hubs.values() {
+            let total = hub.len() as u64;
+            total_hubs += total
+        }
+        total_hubs
+    }
     
     pub fn get_topic_to_send_msg_to_hub(&self, msg: &Message) -> Option<Topic> {
 
@@ -184,6 +194,9 @@ impl NetworkManager {
                 } else {
                     None
                 }
+            },
+            Message::Heartbeat(_) => {
+                Some(self.topic_heartbeat.clone())
             },
             _ => None,
         }

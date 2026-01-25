@@ -12,7 +12,8 @@
 
 use sysinfo::{System, Disks, Networks};
 use std::fs;
-use crate::message::domain::SystemMetrics;
+use std::process::Command;
+use crate::message::domain::{Metadata, SystemMetrics};
 
 
 /// Recolector de estado del sistema.
@@ -24,6 +25,8 @@ pub struct MetricsCollector {
     system: System,
     disks: Disks,
     networks: Networks,
+    last_rx_bytes: u64,
+    last_tx_bytes: u64,
 }
 
 
@@ -47,10 +50,21 @@ impl MetricsCollector {
         let disks = Disks::new_with_refreshed_list();
         let networks = Networks::new_with_refreshed_list();
 
+        // Inicializar contadores con valores actuales
+        let mut last_rx_bytes = 0;
+        let mut last_tx_bytes = 0;
+
+        for (_, data) in networks.iter() {
+            last_rx_bytes += data.received();
+            last_tx_bytes += data.transmitted();
+        }
+
         Self {
             system,
             disks,
             networks,
+            last_rx_bytes,
+            last_tx_bytes,
         }
     }
 
@@ -62,7 +76,7 @@ impl MetricsCollector {
     ///
     /// # Retorno
     /// Retorna un `SystemMetrics` (DTO) listo para ser enviado o almacenado.
-    pub fn collect(&mut self) -> SystemMetrics {
+    pub fn collect(&mut self, metadata: Metadata) -> SystemMetrics {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
         self.disks.refresh(false);
@@ -101,14 +115,22 @@ impl MetricsCollector {
             }
         }
 
-        // Red (acumulado de todas las interfaces)
-        let mut network_rx_bytes = 0;
-        let mut network_tx_bytes = 0;
+        // Red (acumulado actual)
+        let mut current_rx_bytes = 0;
+        let mut current_tx_bytes = 0;
 
         for (_, data) in self.networks.iter() {
-            network_rx_bytes += data.received();
-            network_tx_bytes += data.transmitted();
+            current_rx_bytes += data.received();
+            current_tx_bytes += data.transmitted();
         }
+
+        // Calcular delta desde última medición
+        let network_rx_bytes = current_rx_bytes.saturating_sub(self.last_rx_bytes);
+        let network_tx_bytes = current_tx_bytes.saturating_sub(self.last_tx_bytes);
+
+        // Actualizar valores para próxima medición
+        self.last_rx_bytes = current_rx_bytes;
+        self.last_tx_bytes = current_tx_bytes;
 
         // WiFi (específico para interfaz wlan0)
         let wifi = read_wifi_signal("wlan0");
@@ -119,6 +141,7 @@ impl MetricsCollector {
         let uptime_seconds = System::uptime();
 
         SystemMetrics {
+            metadata,
             uptime_seconds,
             cpu_usage_percent,
             cpu_temp_celsius,
@@ -150,31 +173,68 @@ fn read_cpu_temperature() -> Option<f32> {
 }
 
 
-/// Lee la calidad de la señal WiFi desde `/proc/net/wireless`.
-///
-/// # Argumentos
-/// * `interface`: Nombre de la interfaz (ej. "wlan0").
-///
-/// # Parsing
-/// Parsea el formato estándar de Linux Wireless Extensions
-
-// Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE
-//  face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22
-// wlan0: 0000   70.   -42.  -256     0      0       0      0      0        0
 fn read_wifi_signal(interface: &str) -> Option<WifiSignal> {
+    // Intentar primero con /proc (más confiable)
+    if let Some(signal) = read_wifi_from_proc(interface) {
+        return Some(signal);
+    }
+
+    // Fallback a iw si /proc falla
+    read_wifi_from_iw(interface)
+}
+
+
+fn read_wifi_from_proc(interface: &str) -> Option<WifiSignal> {
     let content = fs::read_to_string("/proc/net/wireless").ok()?;
 
-    for line in content.lines().skip(2) {  // Saltamos las 2 primeras líneas de cabecera
-        if line.trim_start().starts_with(interface) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
+    for line in content.lines().skip(2) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(interface) {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
 
-            // Índice 2: Link Quality
-            // Índice 3: Signal Level (dBm)
-            let rssi = parts.get(2)?.trim_end_matches('.').parse().ok()?;
-            let dbm  = parts.get(3)?.trim_end_matches('.').parse().ok()?;
+            if parts.len() < 4 {
+                return None;
+            }
+
+            let rssi = parts[2].trim_end_matches('.').parse().ok()?;
+            let dbm = parts[3].trim_end_matches('.').parse().ok()?;
 
             return Some(WifiSignal { rssi, dbm });
         }
     }
     None
+}
+
+
+fn read_wifi_from_iw(interface: &str) -> Option<WifiSignal> {
+    let output = Command::new("iw")
+        .args(&["dev", interface, "link"])
+        .output()
+        .ok()?;
+
+    let content = String::from_utf8_lossy(&output.stdout);
+
+    for line in content.lines() {
+        if line.contains("signal:") {
+            let dbm = line.split_whitespace().nth(1)?.parse().ok()?;
+            let rssi = calculate_rssi_from_dbm(dbm);
+            return Some(WifiSignal { rssi, dbm });
+        }
+    }
+    None
+}
+
+
+/// Convierte dBm a escala RSSI 0-100
+/// -90 dBm o menos = 0% (sin señal)
+/// -30 dBm o más = 100% (excelente)
+fn calculate_rssi_from_dbm(dbm: i32) -> i32 {
+    if dbm <= -90 {
+        0
+    } else if dbm >= -30 {
+        100
+    } else {
+        // Escala lineal de -90 a -30 → 0 a 100
+        ((dbm + 90) * 100 / 60).max(0).min(100)
+    }
 }

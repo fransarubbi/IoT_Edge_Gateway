@@ -19,7 +19,7 @@ use crate::context::domain::AppContext;
 use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg};
 use crate::database::domain::{TableDataVector, TableDataVectorTypes};
 use crate::grpc;
-use crate::grpc::{edge_download, AlertAir, AlertTh, EdgeDownload, EdgeUpload, EdgeUploadToDataSaver, EdgeUploadToManager, FirmwareOutcome, Heartbeat, Measurement, Monitor, SettingOk as SettOk, StateBalanceMode, StateNormal, StateSafeMode, Settings as Sett};
+use crate::grpc::{edge_download, AlertAir, AlertTh, EdgeDownload, EdgeUpload, EdgeUploadToDataSaver, EdgeUploadToManager, FirmwareOutcome, Measurement, Monitor, SettingOk as SettOk, StateBalanceMode, StateNormal, StateSafeMode, Settings as Sett, SystemMetrics};
 use crate::grpc::edge_upload::Payload;
 use crate::mqtt::domain::PayloadTopic;
 use crate::network::domain::{NetworkManager};
@@ -50,6 +50,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                         mut rx_from_hub: mpsc::Receiver<InternalEvent>,
                         mut rx_from_network: mpsc::Receiver<Message>,
                         mut rx_from_firmware: mpsc::Receiver<Message>,
+                        mut rx_from_heartbeat: mpsc::Receiver<Message>,
                         app_context: AppContext) {
 
     let mut state = LocalStatus::Connected;
@@ -135,6 +136,25 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                     match send(&tx_to_mqtt_local, t.topic, t.qos, msg_from_firmware, false).await {
                         Ok(_) => {}
                         Err(_) => error!("Error: No se pudo serializar el mensaje de UpdateFirmware al broker"),
+                    }
+                }
+            }
+
+            Some(msg_from_heartbeat) = rx_from_heartbeat.recv() => {
+                if matches!(state, LocalStatus::Disconnected) {
+                    warn!("Warning: Mensaje de heartbeat descartado, broker desconectado");
+                    continue;
+                }
+
+                let topic_opt = {
+                    let manager = app_context.net_man.read().await;
+                    manager.get_topic_to_send_msg_to_hub(&msg_from_heartbeat)
+                };
+
+                if let Some(t) = topic_opt {
+                    match send(&tx_to_mqtt_local, t.topic, t.qos, msg_from_heartbeat, false).await {
+                        Ok(_) => {}
+                        Err(_) => error!("Error: No se pudo serializar el mensaje de Heartbeat al broker"),
                     }
                 }
             }
@@ -342,6 +362,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
                            mut rx_from_firmware: mpsc::Receiver<Message>,
                            mut rx_from_dba_batch: mpsc::Receiver<TableDataVector>,
                            mut rx_from_server: watch::Receiver<InternalEvent>,
+                           mut rx_from_metrics: mpsc::Receiver<Message>,
                            app_context: AppContext) {
 
     let mut state = ServerStatus::Connected;
@@ -409,6 +430,18 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
                     }
                 }
             }
+
+            Some(msg_from_metrics) = rx_from_metrics.recv() => {
+                if matches!(state, ServerStatus::Disconnected) {
+                    warn!("Warning: Mensaje de métricas descartado, servidor desconectado");
+                    continue;
+                }
+                if let Some(proto_msg) = convert_to_proto_upload_data_saver(msg_from_metrics, app_context.system.id_edge.clone()) {
+                    if tx_to_server.send(proto_msg).await.is_err() {
+                         error!("Error: No se puede enviar mensaje Metrics al cliente gRPC");
+                    }
+                }
+            }
         }
     }
 }
@@ -472,7 +505,6 @@ fn convert_to_proto_upload_data_saver(msg: Message, edge_id: String) -> Option<E
                 ))
             }))
         },
-
         Message::AlertTem(alert_tem) => {
             metadata.sender_user_id = alert_tem.metadata.sender_user_id;
             metadata.destination_id = alert_tem.metadata.destination_id;
@@ -482,6 +514,29 @@ fn convert_to_proto_upload_data_saver(msg: Message, edge_id: String) -> Option<E
                     AlertTh {
                         initial_temp: alert_tem.initial_temp,
                         actual_temp: alert_tem.actual_temp,
+                    }
+                ))
+            }))
+        },
+        Message::Metrics(metrics) => {
+            metadata.sender_user_id = metrics.metadata.sender_user_id;
+            metadata.destination_id = metrics.metadata.destination_id;
+            metadata.timestamp = metrics.metadata.timestamp;
+            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
+                payload: Some(grpc::edge_upload_to_data_saver::Payload::Metrics(
+                    SystemMetrics {
+                        uptime_seconds: metrics.uptime_seconds,
+                        cpu_usage_percent: metrics.cpu_usage_percent,
+                        cpu_temp_celsius: metrics.cpu_temp_celsius,
+                        ram_total_mb: metrics.ram_total_mb,
+                        ram_used_mb: metrics.ram_used_mb,
+                        sd_total_gb: metrics.sd_total_gb,
+                        sd_used_gb: metrics.sd_used_gb,
+                        sd_usage_percent: metrics.sd_usage_percent,
+                        network_rx_bytes: metrics.network_rx_bytes,
+                        network_tx_bytes: metrics.network_tx_bytes,
+                        wifi_rssi: metrics.wifi_rssi.unwrap_or(0),
+                        wifi_signal_dbm: metrics.wifi_signal_dbm.unwrap_or(0),
                     }
                 ))
             }))
@@ -566,18 +621,6 @@ fn convert_to_proto_upload_manager(msg: Message, edge_id: String) -> Option<Edge
                         duration: safe_mode.duration,
                         frequency: safe_mode.frequency,
                         jitter: safe_mode.jitter,
-                    }
-                ))
-            }))
-        },
-        Message::Heartbeat(heartbeat) => {
-            metadata.sender_user_id = heartbeat.metadata.sender_user_id;
-            metadata.destination_id = heartbeat.metadata.destination_id;
-            metadata.timestamp = heartbeat.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::Heartbeat(
-                    Heartbeat {
-                        beat: heartbeat.beat,
                     }
                 ))
             }))

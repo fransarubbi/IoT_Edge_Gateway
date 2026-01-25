@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::database::repository::Repository;
 use crate::network::domain::NetworkManager;
+use crate::quorum::domain::{PFCBPSettings};
 use crate::system::domain::System;
 
 
@@ -49,6 +50,9 @@ pub struct AppContext {
     /// No se requiere bloqueo (`Lock`) para leer datos que nunca cambian, lo que
     /// mejora el rendimiento.
     pub system: Arc<System>,
+
+    /// Configuración de Quorum.
+    pub quorum: Arc<RwLock<PFCBPSettings>>,
 }
 
 
@@ -61,11 +65,17 @@ impl AppContext {
     /// - `repo`: Instancia inicializada del repositorio.
     /// - `net_man`: Gestor de redes ya envuelto en las primitivas de concurrencia.
     /// - `system`: Configuración del sistema ya envuelta en `Arc`.
-    pub fn new(repo: Repository, net_man: Arc<RwLock<NetworkManager>>, system: Arc<System>) -> Self {
+    /// - `quorum`: Configuración del comportamiento del protocolo de balanceo.
+    pub fn new(repo: Repository,
+               net_man: Arc<RwLock<NetworkManager>>,
+               system: Arc<System>,
+               quorum: Arc<RwLock<PFCBPSettings>>) -> Self {
+
         Self {
             repo,
             net_man,
             system,
+            quorum
         }
     }
 }

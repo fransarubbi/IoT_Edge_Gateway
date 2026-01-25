@@ -43,6 +43,7 @@ use crate::context::domain::AppContext;
 use crate::database::repository::Repository;
 use crate::network::domain::{Network, NetworkManager, NetworkRow};
 use crate::network::logic::load_networks;
+use crate::quorum::domain::PFCBPSettings;
 
 /// Configura el sistema en función de un evento de la FSM.
 ///
@@ -394,6 +395,8 @@ fn chown_root(path: &str) -> Result<(), ErrorType> {
 ///
 /// Lee los datos del archivo `system.toml` (el cual persiste y es de solo lectura) y
 /// crea la estructura `System` con los campos fundamentales de funcionamiento del sistema.
+/// Sigue con la lectura del archivo `protocol.toml`, el cual contiene la información necesaria
+/// para configurar el comportamiento del protocolo de control y balanceo post fallo.
 /// Luego, lee el archivo `network.toml`. Si es la primera ejecución, entonces el archivo
 /// tendrá datos que serán extraídos y finalmente se borra por completo. Si el archivo está vacío
 /// entonces no es la primera ejecución y ya hay datos en la base de datos. En base a esta condición,
@@ -408,6 +411,7 @@ fn chown_root(path: &str) -> Result<(), ErrorType> {
 ///
 /// etc/edge/files/system.toml
 /// etc/edge/files/network.toml
+/// etc/edge/files/protocol.toml
 ///
 
 pub async fn initializing_system() -> Result<AppContext, ErrorType> {
@@ -418,6 +422,12 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
     };
     let system = Arc::new(system);
 
+    let protocol = match load_protocol_toml(Path::new("/etc/edge/files/protocol.toml")) {
+        Ok(system) => system,
+        Err(e) => return Err(e),
+    };
+    let protocol = Arc::new(RwLock::new(protocol));
+
     let networks_row = match load_networks_toml(Path::new("/etc/edge/files/network.toml")) {
         Ok(networks) => networks,
         Err(e) => return Err(e),
@@ -427,7 +437,7 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
         let repo = Repository::create_repository(&system.db_path).await;
         let net_man = Arc::new(RwLock::new(NetworkManager::new_empty(&system)));
         load_networks(&repo, &net_man).await?;
-        Ok(AppContext::new(repo, net_man, system))
+        Ok(AppContext::new(repo, net_man, system, protocol))
     } else {
         let mut networks : HashMap<String, Network> = HashMap::new();
         for net in networks_row {
@@ -443,7 +453,9 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
         let net_man = Arc::new(RwLock::new(NetworkManager::new(&system, networks)));
         clean_networks_toml(Path::new("/etc/edge/files/network.toml"))
             .map_err(|_| ErrorType::NetworkFile("Error: No se pudo limpiar el archivo de redes".into()))?;
-        Ok(AppContext::new(repo, net_man, system))
+        clean_protocol_toml(Path::new("/etc/edge/files/protocol.toml"))
+            .map_err(|_| ErrorType::Protocol("Error: No se pudo limpiar el archivo de protocolo".into()))?;
+        Ok(AppContext::new(repo, net_man, system, protocol))
     }
 }
 
@@ -532,6 +544,65 @@ fn load_networks_toml(path: &Path) -> Result<HashMap<String, NetworkRow>, ErrorT
 ///
 
 fn clean_networks_toml(path: &Path) -> Result<(), ErrorType> {
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|_| ErrorType::Generic)?;
+
+    file.write_all(b"")
+        .map_err(|_| ErrorType::Generic)?;
+
+    Ok(())
+}
+
+
+/// Carga los datos del archivo `protocol.toml`
+///
+/// Lee los datos del archivo `protocol.toml`, el cual tiene los campos que necesita
+/// la estructura `PFCBPSettings` para funcionar.
+///
+/// # Retorno
+///
+/// - `PFCBPSettings` si finaliza con éxito.
+/// - `ErrorType` si falla o no puede ejecutarse.
+///
+/// # Requisitos del file system
+///
+/// El archivo toml en: `etc/edge/files/protocol.toml`
+///
+
+fn load_protocol_toml(path: &Path) -> Result<PFCBPSettings, ErrorType> {
+
+    let content = fs::read_to_string(path)
+        .map_err(|_| ErrorType::Protocol(
+            "Error: No se pudo leer el archivo de protocolo".into()
+        ))?;
+
+    toml::from_str(&content)
+        .map_err(|_| ErrorType::Protocol(
+            "Error: Archivo TOML de protocolo es inválido".into()
+        ))
+}
+
+
+/// Limpia el archivo `protocol.toml`
+///
+/// Borra todos los datos para indicar que se han consumido y
+/// la primera ejecución del sistema se acaba de realizar.
+///
+/// # Retorno
+///
+/// - `Ok` si finaliza con éxito.
+/// - `ErrorType` si falla o no puede ejecutarse.
+///
+/// # Requisitos del file system
+///
+/// El archivo toml en: `etc/edge/files/protocol.toml`
+///
+
+fn clean_protocol_toml(path: &Path) -> Result<(), ErrorType> {
 
     let mut file = OpenOptions::new()
         .write(true)

@@ -26,8 +26,7 @@ pub mod firmware {
 }
 
 pub mod fsm {
-    use tokio::time::{Duration};
-    pub const HELLO_TIMEOUT: Duration = Duration::from_secs(180); // 3 min
+    pub const PERCENTAGE: f64 = 80.0;
 }
 
 pub mod grpc_service {
