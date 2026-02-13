@@ -1,4 +1,4 @@
-use sqlx::{Executor, SqlitePool};
+use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 use crate::database::repository::pop_batch_generic;
 use crate::message::domain::Measurement;
 
@@ -110,39 +110,34 @@ pub async fn insert_measurement(pool: &SqlitePool,
                                 data_vec: Vec<Measurement>
                                ) -> Result<(), sqlx::Error> {
 
-    let mut tx = pool.begin().await?;
-
-    for data in data_vec {
-        sqlx::query(
-            r#"
-            INSERT INTO measurement (
-                sender_user_id,
-                destination_id,
-                timestamp,
-                pulse_counter,
-                pulse_max_duration,
-                temperature,
-                humidity,
-                co2_ppm,
-                sample
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
-        )
-            .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_id)
-            .bind(data.metadata.timestamp)
-            .bind(data.pulse_counter)
-            .bind(data.pulse_max_duration)
-            .bind(data.temperature)
-            .bind(data.humidity)
-            .bind(data.co2_ppm)
-            .bind(data.sample)
-            .execute(&mut *tx)
-            .await?;
+    if data_vec.is_empty() {
+        return Ok(());
     }
 
-    tx.commit().await?;
+    let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "INSERT INTO measurement (
+            sender_user_id, destination_id, timestamp,
+            network_id, pulse_counter, pulse_max_duration,
+            temperature, humidity, co2_ppm, sample
+        ) "
+    );
+
+    query_builder.push_values(data_vec, |mut b, data| {
+        b.push_bind(data.metadata.sender_user_id)
+            .push_bind(data.metadata.destination_id)
+            .push_bind(data.metadata.timestamp)
+            .push_bind(data.network)
+            .push_bind(data.pulse_counter)
+            .push_bind(data.pulse_max_duration)
+            .push_bind(data.temperature)
+            .push_bind(data.humidity)
+            .push_bind(data.co2_ppm)
+            .push_bind(data.sample);
+    });
+
+    let query = query_builder.build();
+    query.execute(pool).await?;
+    
     Ok(())
 }
 

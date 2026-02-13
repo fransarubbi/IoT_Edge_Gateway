@@ -1,4 +1,4 @@
-use sqlx::{Executor, SqlitePool};
+use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 use crate::database::repository::pop_batch_generic;
 use crate::message::domain::Monitor;
 
@@ -122,39 +122,43 @@ pub async fn insert_monitor(pool: &SqlitePool,
                             data_vec: Vec<Monitor>
                             ) -> Result<(), sqlx::Error> {
 
-    let mut tx = pool.begin().await?;
-
-    for data in data_vec {
-        sqlx::query(
-            r#"
-        INSERT INTO monitor (sender_user_id, destination_id, timestamp,
-                             mem_free, mem_free_hm, mem_free_block, mem_free_internal, stack_free_min_coll,
-                             stack_free_min_pub, stack_free_min_mic, stack_free_min_th, stack_free_min_air,
-                             stack_free_min_mon, wifi_ssid, wifi_rssi, active_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#
-        )
-            .bind(data.metadata.sender_user_id)
-            .bind(data.metadata.destination_id)
-            .bind(data.metadata.timestamp)
-            .bind(data.mem_free)
-            .bind(data.mem_free_hm)
-            .bind(data.mem_free_block)
-            .bind(data.mem_free_internal)
-            .bind(data.stack_free_min_coll)
-            .bind(data.stack_free_min_pub)
-            .bind(data.stack_free_min_mic)
-            .bind(data.stack_free_min_th)
-            .bind(data.stack_free_min_air)
-            .bind(data.stack_free_min_mon)
-            .bind(data.wifi_ssid)
-            .bind(data.wifi_rssi)
-            .bind(data.active_time)
-            .execute(&mut *tx)
-            .await?;
+    if data_vec.is_empty() {
+        return Ok(());
     }
 
-    tx.commit().await?;
+    let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "INSERT INTO monitor (
+            sender_user_id, destination_id, timestamp, network_id,
+            mem_free, mem_free_hm, mem_free_block, mem_free_internal,
+            stack_free_min_coll, stack_free_min_pub, stack_free_min_mic,
+            stack_free_min_th, stack_free_min_air, stack_free_min_mon,
+            wifi_ssid, wifi_rssi, active_time
+        ) "
+    );
+
+    query_builder.push_values(data_vec, |mut b, data| {
+        b.push_bind(data.metadata.sender_user_id)
+            .push_bind(data.metadata.destination_id)
+            .push_bind(data.metadata.timestamp)
+            .push_bind(data.network)
+            .push_bind(data.mem_free)
+            .push_bind(data.mem_free_hm)
+            .push_bind(data.mem_free_block)
+            .push_bind(data.mem_free_internal)
+            .push_bind(data.stack_free_min_coll)
+            .push_bind(data.stack_free_min_pub)
+            .push_bind(data.stack_free_min_mic)
+            .push_bind(data.stack_free_min_th)
+            .push_bind(data.stack_free_min_air)
+            .push_bind(data.stack_free_min_mon)
+            .push_bind(data.wifi_ssid)
+            .push_bind(data.wifi_rssi)
+            .push_bind(data.active_time);
+    });
+
+    let query = query_builder.build();
+    query.execute(pool).await?;
+
     Ok(())
 }
 
