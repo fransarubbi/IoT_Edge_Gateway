@@ -286,15 +286,16 @@ async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
             timestamp
         };
 
+        let network = session_ref.network.clone();
         if session_ref.percentage == 100.00 {
-            let firm_out = FirmwareOutcome { metadata, version: session_ref.version.clone(), is_ok: true, percentage_ok: 100.00 };
+            let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: 100.00 };
             let msg_outcome = firm_out;
             let msg = Message::FirmwareOutcome(msg_outcome);
             if tx_to_server.send(msg).await.is_err() {
                 error!("Error: No se pudo enviar FirmwareOutcome Ok al servidor");
             }
         } else {
-            let firm_out = FirmwareOutcome { metadata, version: session_ref.version.clone(), is_ok: true, percentage_ok: session_ref.percentage };
+            let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: session_ref.percentage };
             let msg_outcome = firm_out;
             let msg = Message::FirmwareOutcome(msg_outcome);
             if tx_to_server.send(msg).await.is_err() {

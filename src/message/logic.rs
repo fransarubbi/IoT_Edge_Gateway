@@ -19,7 +19,9 @@ use crate::context::domain::AppContext;
 use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Message, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg};
 use crate::database::domain::{TableDataVector, TableDataVectorTypes};
 use crate::grpc;
-use crate::grpc::{edge_download, AlertAir, AlertTh, EdgeDownload, EdgeUpload, EdgeUploadToDataSaver, EdgeUploadToManager, FirmwareOutcome, Measurement, Monitor, SettingOk as SettOk, StateBalanceMode, StateNormal, StateSafeMode, Settings as Sett, SystemMetrics};
+use crate::grpc::{edge_upload, edge_download, EdgeUpload, EdgeDownload,
+                  FirmwareOutcome, SettingOk as SettOk,
+                  Settings as Sett, SystemMetrics};
 use crate::grpc::edge_upload::Payload;
 use crate::mqtt::domain::PayloadTopic;
 use crate::network::domain::{NetworkManager};
@@ -448,215 +450,166 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
 
 
 fn convert_to_proto_upload_data_saver(msg: Message, edge_id: String) -> Option<EdgeUpload> {
-    let mut metadata = Metadata::default();
 
     let payload = match msg {
         Message::Report(report) => {
-            metadata.sender_user_id = report.metadata.sender_user_id;
-            metadata.destination_id = report.metadata.destination_id;
-            metadata.timestamp = report.metadata.timestamp;
-            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
-                payload: Some(grpc::edge_upload_to_data_saver::Payload::Measurement(
-                    Measurement {
-                        pulse_counter: report.pulse_counter,
-                        pulse_max_duration: report.pulse_max_duration,
-                        temperature: report.temperature,
-                        humidity: report.humidity,
-                        co2_ppm: report.co2_ppm,
-                        sample: report.sample as u32,
-                    }
-                ))
+            Some(Payload::Measurement(grpc::Measurement {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: report.metadata.sender_user_id,
+                    destination_id: report.metadata.destination_id,
+                    timestamp: report.metadata.timestamp,
+                }),
+                network: report.network, // Asegúrate de mapear este campo requerido por el proto
+                pulse_counter: report.pulse_counter,
+                pulse_max_duration: report.pulse_max_duration,
+                temperature: report.temperature,
+                humidity: report.humidity,
+                co2_ppm: report.co2_ppm,
+                sample: report.sample as u32,
             }))
         },
         Message::Monitor(monitor) => {
-            metadata.sender_user_id = monitor.metadata.sender_user_id;
-            metadata.destination_id = monitor.metadata.destination_id;
-            metadata.timestamp = monitor.metadata.timestamp;
-            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
-                payload: Some(grpc::edge_upload_to_data_saver::Payload::Monitor(
-                    Monitor {
-                        mem_free: monitor.mem_free,
-                        mem_free_hm: monitor.mem_free_hm,
-                        mem_free_block: monitor.mem_free_block,
-                        mem_free_internal: monitor.mem_free_internal,
-                        stack_free_min_coll: monitor.stack_free_min_coll,
-                        stack_free_min_pub: monitor.stack_free_min_pub,
-                        stack_free_min_mic: monitor.stack_free_min_mic,
-                        stack_free_min_th: monitor.stack_free_min_th,
-                        stack_free_min_air: monitor.stack_free_min_air,
-                        stack_free_min_mon: monitor.stack_free_min_mon,
-                        wifi_ssid: monitor.wifi_ssid,
-                        wifi_rssi: monitor.wifi_rssi as i32,
-                        active_time: monitor.active_time,
-                    }
-                ))
+            Some(Payload::Monitor(grpc::Monitor {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: monitor.metadata.sender_user_id,
+                    destination_id: monitor.metadata.destination_id,
+                    timestamp: monitor.metadata.timestamp,
+                }),
+                network: monitor.network,
+                mem_free: monitor.mem_free,
+                mem_free_hm: monitor.mem_free_hm,
+                mem_free_block: monitor.mem_free_block,
+                mem_free_internal: monitor.mem_free_internal,
+                stack_free_min_coll: monitor.stack_free_min_coll,
+                stack_free_min_pub: monitor.stack_free_min_pub,
+                stack_free_min_mic: monitor.stack_free_min_mic,
+                stack_free_min_th: monitor.stack_free_min_th,
+                stack_free_min_air: monitor.stack_free_min_air,
+                stack_free_min_mon: monitor.stack_free_min_mon,
+                wifi_ssid: monitor.wifi_ssid,
+                wifi_rssi: monitor.wifi_rssi as i32,
+                active_time: monitor.active_time,
             }))
         },
         Message::AlertAir(alert_air) => {
-            metadata.sender_user_id = alert_air.metadata.sender_user_id;
-            metadata.destination_id = alert_air.metadata.destination_id;
-            metadata.timestamp = alert_air.metadata.timestamp;
-            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
-                payload: Some(grpc::edge_upload_to_data_saver::Payload::AlertAir(
-                    AlertAir {
-                        co2_initial_ppm: alert_air.co2_initial_ppm,
-                        co2_actual_ppm: alert_air.co2_actual_ppm,
-                    }
-                ))
+            Some(Payload::AlertAir(grpc::AlertAir {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: alert_air.metadata.sender_user_id,
+                    destination_id: alert_air.metadata.destination_id,
+                    timestamp: alert_air.metadata.timestamp,
+                }),
+                network: alert_air.network,
+                co2_initial_ppm: alert_air.co2_initial_ppm,
+                co2_actual_ppm: alert_air.co2_actual_ppm,
             }))
         },
+
+        // CASO 4: AlertTh (AlertTem)
         Message::AlertTem(alert_tem) => {
-            metadata.sender_user_id = alert_tem.metadata.sender_user_id;
-            metadata.destination_id = alert_tem.metadata.destination_id;
-            metadata.timestamp = alert_tem.metadata.timestamp;
-            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
-                payload: Some(grpc::edge_upload_to_data_saver::Payload::AlertTh(
-                    AlertTh {
-                        initial_temp: alert_tem.initial_temp,
-                        actual_temp: alert_tem.actual_temp,
-                    }
-                ))
+            Some(Payload::AlertTh(grpc::AlertTh {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: alert_tem.metadata.sender_user_id,
+                    destination_id: alert_tem.metadata.destination_id,
+                    timestamp: alert_tem.metadata.timestamp,
+                }),
+                network: alert_tem.network,
+                initial_temp: alert_tem.initial_temp,
+                actual_temp: alert_tem.actual_temp,
             }))
         },
+
+        // CASO 5: SystemMetrics (Metrics)
         Message::Metrics(metrics) => {
-            metadata.sender_user_id = metrics.metadata.sender_user_id;
-            metadata.destination_id = metrics.metadata.destination_id;
-            metadata.timestamp = metrics.metadata.timestamp;
-            Some(Payload::ToDataSaver(EdgeUploadToDataSaver {
-                payload: Some(grpc::edge_upload_to_data_saver::Payload::Metrics(
-                    SystemMetrics {
-                        uptime_seconds: metrics.uptime_seconds,
-                        cpu_usage_percent: metrics.cpu_usage_percent,
-                        cpu_temp_celsius: metrics.cpu_temp_celsius,
-                        ram_total_mb: metrics.ram_total_mb,
-                        ram_used_mb: metrics.ram_used_mb,
-                        sd_total_gb: metrics.sd_total_gb,
-                        sd_used_gb: metrics.sd_used_gb,
-                        sd_usage_percent: metrics.sd_usage_percent,
-                        network_rx_bytes: metrics.network_rx_bytes,
-                        network_tx_bytes: metrics.network_tx_bytes,
-                        wifi_rssi: metrics.wifi_rssi.unwrap_or(0),
-                        wifi_signal_dbm: metrics.wifi_signal_dbm.unwrap_or(0),
-                    }
-                ))
+            Some(Payload::Metrics(SystemMetrics {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: metrics.metadata.sender_user_id,
+                    destination_id: metrics.metadata.destination_id,
+                    timestamp: metrics.metadata.timestamp,
+                }),
+                // Nota: SystemMetrics en tu proto NO tiene campo 'network', así que no lo ponemos aquí.
+                uptime_seconds: metrics.uptime_seconds,
+                cpu_usage_percent: metrics.cpu_usage_percent,
+                cpu_temp_celsius: metrics.cpu_temp_celsius,
+                ram_total_mb: metrics.ram_total_mb,
+                ram_used_mb: metrics.ram_used_mb,
+                sd_total_gb: metrics.sd_total_gb,
+                sd_used_gb: metrics.sd_used_gb,
+                sd_usage_percent: metrics.sd_usage_percent,
+                network_rx_bytes: metrics.network_rx_bytes,
+                network_tx_bytes: metrics.network_tx_bytes,
+                wifi_rssi: metrics.wifi_rssi.unwrap_or(0),
+                wifi_signal_dbm: metrics.wifi_signal_dbm.unwrap_or(0),
             }))
         },
         _ => None,
     };
 
-    generate_edge_upload(payload, metadata, edge_id.to_string())
+    generate_edge_upload(payload, edge_id.to_string())
 }
 
 
 fn convert_to_proto_upload_manager(msg: Message, edge_id: String) -> Option<EdgeUpload> {
-    let mut metadata = Metadata::default();
 
     let payload = match msg {
         Message::FromHubSettings(hub_settings) => {
-            metadata.sender_user_id = hub_settings.metadata.sender_user_id;
-            metadata.destination_id = hub_settings.metadata.destination_id;
-            metadata.timestamp = hub_settings.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::Settings(
-                    Sett {
-                        network: hub_settings.network,
-                        wifi_ssid: hub_settings.wifi_ssid,
-                        wifi_password: hub_settings.wifi_password,
-                        mqtt_uri: hub_settings.mqtt_uri,
-                        device_name: hub_settings.device_name,
-                        sample: hub_settings.sample,
-                        energy_mode: hub_settings.energy_mode,
-                    }
-                ))
-            }))
+            Some(Payload::Settings(
+                Sett {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: hub_settings.metadata.sender_user_id,
+                        destination_id: hub_settings.metadata.destination_id,
+                        timestamp: hub_settings.metadata.timestamp,
+                    }),
+                    network: hub_settings.network,
+                    wifi_ssid: hub_settings.wifi_ssid,
+                    wifi_password: hub_settings.wifi_password,
+                    mqtt_uri: hub_settings.mqtt_uri,
+                    device_name: hub_settings.device_name,
+                    sample: hub_settings.sample,
+                    energy_mode: hub_settings.energy_mode,
+                }
+            ))
         },
         Message::FromHubSettingsAck(hub_settings_ack) => {
-            metadata.sender_user_id = hub_settings_ack.metadata.sender_user_id;
-            metadata.destination_id = hub_settings_ack.metadata.destination_id;
-            metadata.timestamp = hub_settings_ack.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::SettingOk(
+            Some(Payload::SettingOk(
                     SettOk {
+                        metadata: Some(grpc::Metadata {
+                            sender_user_id: hub_settings_ack.metadata.sender_user_id,
+                            destination_id: hub_settings_ack.metadata.destination_id,
+                            timestamp: hub_settings_ack.metadata.timestamp,
+                        }),
                         network: hub_settings_ack.network,
                         handshake: hub_settings_ack.handshake,
                     }
-                ))
-            }))
-        },
-        Message::StateBalanceMode(balance_mode) => {
-            metadata.sender_user_id = balance_mode.metadata.sender_user_id;
-            metadata.destination_id = balance_mode.metadata.destination_id;
-            metadata.timestamp = balance_mode.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::BalanceMode(
-                    StateBalanceMode {
-                        state: balance_mode.state,
-                        balance_epoch: balance_mode.balance_epoch,
-                        sub_state: balance_mode.sub_state,
-                        duration: balance_mode.duration,
-                    }
-                ))
-            }))
-        },
-        Message::StateNormal(normal) => {
-            metadata.sender_user_id = normal.metadata.sender_user_id;
-            metadata.destination_id = normal.metadata.destination_id;
-            metadata.timestamp = normal.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::Normal(
-                    StateNormal {
-                        state: normal.state,
-                    }
-                ))
-            }))
-        },
-        Message::StateSafeMode(safe_mode) => {
-            metadata.sender_user_id = safe_mode.metadata.sender_user_id;
-            metadata.destination_id = safe_mode.metadata.destination_id;
-            metadata.timestamp = safe_mode.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::SafeMode(
-                    StateSafeMode {
-                        state: safe_mode.state,
-                        duration: safe_mode.duration,
-                        frequency: safe_mode.frequency,
-                        jitter: safe_mode.jitter,
-                    }
-                ))
-            }))
+            ))
         },
         Message::FirmwareOutcome(firmware_outcome) => {
-            metadata.sender_user_id = firmware_outcome.metadata.sender_user_id;
-            metadata.destination_id = firmware_outcome.metadata.destination_id;
-            metadata.timestamp = firmware_outcome.metadata.timestamp;
-            Some(Payload::ToManager(EdgeUploadToManager {
-                payload: Some(grpc::edge_upload_to_manager::Payload::FirmwareOutcome(
+            Some(Payload::FirmwareOutcome(
                     FirmwareOutcome {
-                        version: firmware_outcome.version,
+                        metadata: Some(grpc::Metadata {
+                            sender_user_id: firmware_outcome.metadata.sender_user_id,
+                            destination_id: firmware_outcome.metadata.destination_id,
+                            timestamp: firmware_outcome.metadata.timestamp,
+                        }),
+                        network: firmware_outcome.network,
                         is_ok: firmware_outcome.is_ok,
                         percentage_ok: firmware_outcome.percentage_ok,
                     }
                 ))
-            }))
         },
         _ => None,
     };
 
-    generate_edge_upload(payload, metadata, edge_id.to_string())
+    generate_edge_upload(payload, edge_id.to_string())
 }
 
 
 fn generate_edge_upload(payload: Option<Payload>,
-                        metadata: Metadata,
                         edge_id: String
                        ) -> Option<EdgeUpload> {
 
     if let Some(p) = payload {
         Some(EdgeUpload {
             edge_id,
-            sender_user_id: metadata.sender_user_id,
-            destination_id: metadata.destination_id,
-            timestamp: metadata.timestamp,
             payload: Some(p),
         })
     } else {
@@ -745,93 +698,84 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                              tx_to_firmware: &mpsc::Sender<Message>,
                              tx_to_heartbeat: &mpsc::Sender<Message>) {
 
-    let mut metadata = Metadata::default();
-    metadata.sender_user_id = proto_msg.sender_user_id;
-    metadata.destination_id = proto_msg.destination_id;
-    metadata.timestamp = proto_msg.timestamp;
-
     if let Some(payload) = proto_msg.payload {
         match payload {
-            edge_download::Payload::FromManager(manager_msg) => {
-                if let Some(inner) = manager_msg.payload {
-                    match inner {
-                        grpc::edge_download_from_manager::Payload::UpdateFirmware(update_firmware) => {
-                            let msg = UpdateFirmware {
-                                metadata,
-                                network: update_firmware.network,
-                                version: update_firmware.version,
-                                url: update_firmware.url,
-                                sha256: update_firmware.sha256,
-                            };
-                            if tx_to_firmware.send(Message::UpdateFirmware(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje UpdateFirmware a firmware");
-                            }
-                        },
-                        grpc::edge_download_from_manager::Payload::DeleteHub(delete) => {
-                            let msg = DeleteHub {
-                                metadata,
-                                network: delete.network,
-                            };
-                            if tx_to_network.send(Message::DeleteHub(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje a network");
-                            }
-                        },
-                        grpc::edge_download_from_manager::Payload::Settings(settings) => {
-                            let msg = Settings {
-                                metadata,
-                                network: settings.network,
-                                wifi_ssid: settings.wifi_ssid,
-                                wifi_password: settings.wifi_password,
-                                mqtt_uri: settings.mqtt_uri,
-                                device_name: settings.device_name,
-                                sample: settings.sample,
-                                energy_mode: settings.energy_mode,
-                            };
-                            if tx_to_network.send(Message::FromServerSettings(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje a network");
-                            }
-                        },
-                        grpc::edge_download_from_manager::Payload::SettingOk(setting_ok) => {
-                            let msg = SettingOk {
-                                metadata,
-                                network: setting_ok.network,
-                                handshake: setting_ok.handshake,
-                            };
-                            if tx_to_hub.send(Message::FromServerSettingsAck(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje al hub");
-                            }
-                        },
-                        grpc::edge_download_from_manager::Payload::Network(network) => {
-                            let msg = Network {
-                                metadata,
-                                id_network: network.id_network,
-                                name_network: network.name_network,
-                                active: network.active,
-                                delete_network: network.delete_network,
-                            };
-                            if tx_to_network.send(Message::Network(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje a network");
-                            }
-                        },
-                    }
+            edge_download::Payload::UpdateFirmware(update_firmware) => {
+                let msg = UpdateFirmware {
+                    metadata: extract_metadata(update_firmware.metadata),
+                    network: update_firmware.network,
+                };
+                if tx_to_firmware.send(Message::UpdateFirmware(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje UpdateFirmware a firmware");
                 }
             },
-            edge_download::Payload::FromDataSaver(manager_msg) => {
-                if let Some(inner) = manager_msg.payload {
-                    match inner {
-                        grpc::edge_download_from_data_saver::Payload::Heartbeat(_) => {
-                            let msg = HeartbeatMsg {
-                                metadata,
-                                beat: true,
-                            };
-                            if tx_to_heartbeat.send(Message::Heartbeat(msg)).await.is_err() {
-                                error!("Error: No se pudo enviar mensaje a heartbeat");
-                            }
-                        },
-                    }
+            edge_download::Payload::Settings(settings) => {
+                let msg = Settings {
+                    metadata: extract_metadata(settings.metadata),
+                    network: settings.network,
+                    wifi_ssid: settings.wifi_ssid,
+                    wifi_password: settings.wifi_password,
+                    mqtt_uri: settings.mqtt_uri,
+                    device_name: settings.device_name,
+                    sample: settings.sample,
+                    energy_mode: settings.energy_mode,
+                };
+                if tx_to_network.send(Message::FromServerSettings(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje a network");
+                }
+            },
+            edge_download::Payload::DeleteHub(delete) => {
+                let msg = DeleteHub {
+                    metadata: extract_metadata(delete.metadata),
+                    network: delete.network,
+                };
+                if tx_to_network.send(Message::DeleteHub(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje a network");
+                }
+            },
+            edge_download::Payload::SettingOk(setting_ok) => {
+                let msg = SettingOk {
+                    metadata: extract_metadata(setting_ok.metadata),
+                    network: setting_ok.network,
+                    handshake: setting_ok.handshake,
+                };
+                if tx_to_hub.send(Message::FromServerSettingsAck(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje al hub");
+                }
+            },
+            edge_download::Payload::Network(network) => {
+                let msg = Network {
+                    metadata: extract_metadata(network.metadata),
+                    id_network: network.id_network,
+                    name_network: network.name_network,
+                    active: network.active,
+                    delete_network: network.delete_network,
+                };
+                if tx_to_network.send(Message::Network(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje a network");
+                }
+            },
+            edge_download::Payload::Heartbeat(heartbeat) => {
+                let msg = HeartbeatMsg {
+                    metadata: extract_metadata(heartbeat.metadata),
+                    beat: true,
+                };
+                if tx_to_heartbeat.send(Message::Heartbeat(msg)).await.is_err() {
+                    error!("Error: No se pudo enviar mensaje a heartbeat");
                 }
             }
         }
+    }
+}
+
+
+// Convierte la metadata de gRPC a tu Metadata de dominio
+fn extract_metadata(proto_meta: Option<grpc::Metadata>) -> Metadata {
+    let meta = proto_meta.unwrap_or_default();
+    Metadata {
+        sender_user_id: meta.sender_user_id,
+        destination_id: meta.destination_id,
+        timestamp: meta.timestamp,
     }
 }
 

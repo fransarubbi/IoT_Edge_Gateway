@@ -248,9 +248,6 @@ pub struct SettingOk {
 pub struct UpdateFirmware {
     pub metadata: Metadata,
     pub network: String,
-    pub version: String,
-    pub url: String,
-    pub sha256: String,
 }
 
 
@@ -265,7 +262,7 @@ pub struct FirmwareOk {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FirmwareOutcome {
     pub metadata: Metadata,
-    pub version: String,
+    pub network: String,
     pub is_ok: bool,
     pub percentage_ok: f32,
 }
