@@ -13,17 +13,189 @@
 //! 4.  **Acciones (`Action`):** Instrucciones generadas por la FSM para que el "Runtime" (el bucle principal)
 //!     ejecute tareas reales (enviar mensajes MQTT, iniciar timers, escribir en DB).
 //!
-//! # Flujo de Vida
-//! `Init` -> `BalanceMode` (Ciclo de Sincronización) -> `Normal` (Estable)
-//!              |
-//!              v
-//!          `SafeMode` (Fallo crítico)
 
 
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::{debug};
+use tracing::{debug, error};
+use crate::context::domain::AppContext;
+use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
+use crate::message::domain::{HubMessage, ServerMessage};
+
+
+pub enum FsmServiceResponse {
+    NewEpoch(u32),
+    GetEpoch,
+    ToServer(ServerMessage),
+    ToHub(HubMessage),
+}
+
+
+pub enum FsmServiceCommand {
+    ErrorEpoch,
+    Epoch(u32),
+    FromHub(HubMessage),
+    FromServer(ServerMessage),
+}
+
+
+pub struct FsmService {
+    sender: mpsc::Sender<FsmServiceResponse>,
+    receiver: mpsc::Receiver<FsmServiceCommand>,
+    context: AppContext,
+}
+
+
+impl FsmService {
+    pub fn new(sender: mpsc::Sender<FsmServiceResponse>,
+               receiver: mpsc::Receiver<FsmServiceCommand>,
+               context: AppContext) -> Self {
+        Self {
+            sender,
+            receiver,
+            context,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_to_core, mut rx_response) = mpsc::channel::<FsmServiceResponse>(50);
+        let (tx_to_fsm, rx_event) = mpsc::channel::<Event>(50);
+        let (general_tx_to_timer, rx_from_general) = mpsc::channel::<Event>(50);
+        let (general_tx_to_heartbeat, rx_heartbeat_from_general) = mpsc::channel::<Action>(50);
+        let (tx_command, rx_command) = mpsc::channel::<FsmServiceCommand>(50);
+        let (tx_actions, rx_from_fsm) = mpsc::channel::<Vec<Action>>(50);
+        let (tx_to_heartbeat, rx_from_heartbeat_watchdog) = mpsc::channel::<Event>(50);
+        let (heartbeat_tx_to_core, mut rx_heartbeat_response) = mpsc::channel::<FsmServiceResponse>(50);
+        let (heartbeat_tx_to_timer, rx_from_heartbeat) = mpsc::channel::<Event>(50);
+
+        let general_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(fsm(tx_to_core,
+                         general_tx_to_fsm,
+                         general_tx_to_timer,
+                         general_tx_to_heartbeat,
+                         rx_command,
+                         rx_from_fsm,
+                         self.context.clone()));
+
+        tokio::spawn(run_fsm(tx_actions,
+                             rx_event));
+
+        let timer_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(general_fsm_watchdog_timer(timer_tx_to_fsm,
+                                                rx_from_general));
+
+        tokio::spawn(heartbeat_generator_timer(tx_to_heartbeat,
+                                               rx_from_heartbeat));
+
+        tokio::spawn(heartbeat_generator(heartbeat_tx_to_core,
+                                         heartbeat_tx_to_timer,
+                                         rx_heartbeat_from_general,
+                                         rx_from_heartbeat_watchdog,
+                                         self.context.clone()));
+
+        loop {
+            tokio::select! {
+                Some(cmd) = self.receiver.recv() => {
+                    match cmd {
+                        FsmServiceCommand::Epoch(epoch) => {
+                            if tx_command.send(FsmServiceCommand::Epoch(epoch)).await.is_err() {
+                                error!("Error: no se pudo enviar Epoch a fsm");
+                            }
+                        },
+                        FsmServiceCommand::ErrorEpoch => {
+                            if tx_command.send(FsmServiceCommand::ErrorEpoch).await.is_err() {
+                                error!("Error: no se pudo enviar ErrorEpoch a fsm");
+                            }
+                        },
+                        FsmServiceCommand::FromServer(server_message) => {
+                            if tx_command.send(FsmServiceCommand::FromServer(server_message)).await.is_err() {
+                                error!("Error: no se pudo enviar mensaje FromServer a fsm");
+                            }
+                        },
+                        FsmServiceCommand::FromHub(hub_message) => {
+                            if tx_command.send(FsmServiceCommand::FromHub(hub_message)).await.is_err() {
+                                error!("Error: no se pudo enviar FromHub a fsm");
+                            }
+                        },
+                    }
+                }
+                Some(response) = rx_response.recv() => {
+                    match response {
+                        FsmServiceResponse::GetEpoch => {
+                            if self.sender.send(FsmServiceResponse::GetEpoch).await.is_err() {
+                                error!("Error: no se pudo enviar GetEpoch desde FsmService al Core");
+                            }
+                        },
+                        FsmServiceResponse::NewEpoch(epoch) => {
+                            if self.sender.send(FsmServiceResponse::NewEpoch(epoch)).await.is_err() {
+                                error!("Error: no se pudo enviar NewEpoch desde FsmService al Core");
+                            }
+                        },
+                        FsmServiceResponse::ToHub(hub_message) => {
+                            match hub_message {
+                                HubMessage::HandshakeToHub(handshake) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(handshake))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de HandshakeToHub desde FsmService al Core");
+                                    }
+                                },
+                                HubMessage::StateBalanceMode(state) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateBalanceMode(state))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de StateBalanceMode desde FsmService al Core");
+                                    }
+                                },
+                                HubMessage::PhaseNotification(phase) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::PhaseNotification(phase))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de PhaseNotification desde FsmService al Core");
+                                    }
+                                },
+                                HubMessage::StateNormal(state) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateNormal(state))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de StateNormal desde FsmService al Core");
+                                    }
+                                },
+                                HubMessage::StateSafeMode(state) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateSafeMode(state))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de StateSafeMode desde FsmService al Core");
+                                    }
+                                },
+                                HubMessage::Ping(msg) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Ping(msg))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
+                                    }
+                                },
+                                _ => {}
+                            }
+                        },
+                        FsmServiceResponse::ToServer(server_message) => {
+                            match server_message {
+                                ServerMessage::HelloWorld(hello) => {
+                                    if self.sender.send(FsmServiceResponse::ToServer(ServerMessage::HelloWorld(hello))).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Some(heartbeat) = rx_heartbeat_response.recv() => {
+                    match heartbeat {
+                        FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat)) => {
+                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat))).await.is_err() {
+                                error!("Error: no se pudo enviar Heartbeat desde FsmService al Core");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 
 /// Estados Globales de nivel superior.
@@ -178,20 +350,12 @@ pub enum Event {
     BalanceEpochOk,
     BalanceEpochNotOk,
     ApproveQuorum,
+    QuorumPhase,
+    QuorumSafeMode,
     NotApproveQuorum,
     NotApproveNotAttempts,
     InitTimer(Duration),
     StopTimer,
-}
-
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DataUpdateStateMessage {
-    pub state: String,
-    pub phase: String,
-    pub duration: u32,
-    pub frequency: u32,
-    pub jitter: u32
 }
 
 
@@ -202,11 +366,17 @@ pub enum StateOfSession {
     Quorum,
     RepeatHandshake,
     OutHandshake,
+    PhaseAlert,
+    PhaseData,
+    PhaseMonitor,
+    SafeMode,
 }
 
+
 pub struct UpdateSession {
+    empty_hash: HashMap<String, bool>,
+    handshake_hash: HashMap<String, u32>,
     state: StateOfSession,
-    total_handshake: f64,
     total_attempts: f64,
 }
 
@@ -214,27 +384,39 @@ pub struct UpdateSession {
 impl UpdateSession {
     pub fn new() -> Self {
         Self {
+            empty_hash: HashMap::new(),
+            handshake_hash: HashMap::new(),
             state: StateOfSession::None,
-            total_handshake: 0.0,
             total_attempts: 0.0,
         }
     }
 
-    pub fn reset(&mut self) {
-        self.total_handshake = 0.0;
+    pub fn reset_total_attempts(&mut self) {
         self.total_attempts = 0.0;
     }
 
-    pub fn reset_total_handshake_msg(&mut self) {
-        self.total_handshake = 0.0;
+    pub fn reset_empty_hash(&mut self) {
+        self.empty_hash.clear();
+    }
+
+    pub fn reset_handshake_hash(&mut self) {
+        self.handshake_hash.clear();
+    }
+
+    pub fn insert_empty(&mut self, key: String, value: bool) {
+        if !self.empty_hash.contains_key(&key) {
+            self.empty_hash.insert(key, value);
+        }
+    }
+
+    pub fn insert_handshake(&mut self, key: String, value: u32) {
+        if !self.handshake_hash.contains_key(&key) {
+            self.handshake_hash.insert(key, value);
+        }
     }
 
     pub fn set_state(&mut self, state: StateOfSession) {
         self.state = state;
-    }
-
-    pub fn increment_messages(&mut self) {
-        self.total_handshake += 1.0;
     }
 
     pub fn increment_attempts(&mut self) {
@@ -245,13 +427,13 @@ impl UpdateSession {
         &self.state
     }
 
-    pub fn get_total_handshake(&self) -> f64 {
-        self.total_handshake
-    }
+    pub fn get_total_handshake(&self) -> u64 { self.handshake_hash.len() as u64 }
 
     pub fn get_total_attempts(&self) -> f64 {
         self.total_attempts
     }
+
+    pub fn get_total_empty(&self) -> u64 { self.empty_hash.len() as u64 }
 }
 
 
@@ -382,17 +564,17 @@ impl FsmState {
             },
             (Some(SubStateBalanceMode::Phase), _ ) => {
                 match (&self.phase, &event) {
-                    (Some(SubStatePhase::Alert), Event::Timeout) => {
+                    (Some(SubStatePhase::Alert), Event::Timeout | Event::QuorumPhase) => {
                         let next_fsm = self.clone();
-                        state_alert_event_timeout(next_fsm)
+                        state_alert_event_timeout_or_quorum(next_fsm)
                     },
-                    (Some(SubStatePhase::Data), Event::Timeout) => {
+                    (Some(SubStatePhase::Data), Event::Timeout | Event::QuorumPhase) => {
                         let next_fsm = self.clone();
-                        state_data_event_timeout(next_fsm)
+                        state_data_event_timeout_or_quorum(next_fsm)
                     },
-                    (Some(SubStatePhase::Monitor), Event::Timeout) => {
+                    (Some(SubStatePhase::Monitor), Event::Timeout | Event::QuorumPhase) => {
                         let next_fsm = self.clone();
-                        state_monitor_event_timeout(next_fsm)
+                        state_monitor_event_timeout_or_quorum(next_fsm)
                     },
                     _ => invalid()
                 }
@@ -407,7 +589,7 @@ impl FsmState {
 
     /// Maneja transiciones cuando el estado global es `SafeMode`.
     fn step_safe_mode(&self, event: Event) -> Transition {
-        if event == Event::Timeout {
+        if event == Event::Timeout || event == Event::QuorumSafeMode {
             let next_fsm = self.clone();
             let valid = TransitionValid {
                 change_state: next_fsm,
@@ -635,7 +817,7 @@ fn state_repeat_handshake_out(mut next_fsm: FsmState) -> Transition {
 
 
 /// Transición: Alert -> Data.
-fn state_alert_event_timeout(mut next_fsm: FsmState) -> Transition {
+fn state_alert_event_timeout_or_quorum(mut next_fsm: FsmState) -> Transition {
     next_fsm.phase = Some(SubStatePhase::Data);
 
     let valid = TransitionValid {
@@ -647,7 +829,7 @@ fn state_alert_event_timeout(mut next_fsm: FsmState) -> Transition {
 
 
 /// Transición: Data -> Monitor.
-fn state_data_event_timeout(mut next_fsm: FsmState) -> Transition {
+fn state_data_event_timeout_or_quorum(mut next_fsm: FsmState) -> Transition {
     next_fsm.phase = Some(SubStatePhase::Monitor);
 
     let valid = TransitionValid {
@@ -659,7 +841,7 @@ fn state_data_event_timeout(mut next_fsm: FsmState) -> Transition {
 
 
 /// Transición: Monitor -> OutHandshake.
-fn state_monitor_event_timeout(mut next_fsm: FsmState) -> Transition {
+fn state_monitor_event_timeout_or_quorum(mut next_fsm: FsmState) -> Transition {
     next_fsm.balance = Some(SubStateBalanceMode::OutHandshake);
     next_fsm.phase = None;
 
@@ -707,6 +889,14 @@ fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
         if let Some(s) = &new.quorum {
             actions.push(Action::OnEntryQuorum(s.clone()));
         }
+    }
+
+    if old.global != new.global && new.global == StateGlobal::Normal {
+        actions.push(Action::OnEntryNormal);
+    }
+
+    if old.global != new.global && new.global == StateGlobal::SafeMode {
+        actions.push(Action::OnEntrySafeMode);
     }
 
     if old.phase != new.phase {

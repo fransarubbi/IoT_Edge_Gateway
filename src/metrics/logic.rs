@@ -3,7 +3,7 @@ use tokio::time::{sleep, Duration};
 use tokio::sync::mpsc;
 use tracing::{error};
 use crate::context::domain::AppContext;
-use crate::message::domain::{Message, Metadata};
+use crate::message::domain::{Metadata, ServerMessage};
 use crate::metrics::domain::MetricsCollector;
 
 
@@ -13,7 +13,7 @@ pub enum MetricsTimerEvent {
 }
 
 
-pub async fn system_metrics(tx_to_server: mpsc::Sender<Message>, 
+pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>, 
                             tx_to_timer: mpsc::Sender<MetricsTimerEvent>, 
                             mut rx_from_timer: mpsc::Receiver<MetricsTimerEvent>, 
                             app_context: AppContext) {
@@ -34,7 +34,7 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<Message>,
                     timestamp: Utc::now().timestamp(),
                 };
                 let sys_met = metrics.collect(metadata);
-                let msg = Message::Metrics(sys_met);
+                let msg = ServerMessage::Metrics(sys_met);
                 if tx_to_server.send(msg).await.is_err() {
                     error!("Error: No se pudo enviar mensaje de métricas al servidor");
                 }

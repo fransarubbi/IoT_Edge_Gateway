@@ -35,6 +35,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tonic = { version = "0.12", features = ["tls", "tls-roots", "transport", "gzip"] }
 prost = "0.13"
 tokio-stream = "0.1.17"
+fastrand = "2.3.0"
+derive_builder = "0.20.2"
 
 [build-dependencies]
 tonic-build = "0.12"

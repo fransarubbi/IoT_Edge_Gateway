@@ -437,7 +437,7 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
         let repo = Repository::create_repository(&system.db_path).await;
         let net_man = Arc::new(RwLock::new(NetworkManager::new_empty(&system)));
         load_networks(&repo, &net_man).await?;
-        Ok(AppContext::new(repo, net_man, system, protocol))
+        Ok(AppContext::new(net_man, system, protocol))
     } else {
         let mut networks : HashMap<String, Network> = HashMap::new();
         for net in networks_row {
@@ -455,7 +455,7 @@ pub async fn initializing_system() -> Result<AppContext, ErrorType> {
             .map_err(|_| ErrorType::NetworkFile("Error: No se pudo limpiar el archivo de redes".into()))?;
         clean_protocol_toml(Path::new("/etc/edge/files/protocol.toml"))
             .map_err(|_| ErrorType::Protocol("Error: No se pudo limpiar el archivo de protocolo".into()))?;
-        Ok(AppContext::new(repo, net_man, system, protocol))
+        Ok(AppContext::new(net_man, system, protocol))
     }
 }
 

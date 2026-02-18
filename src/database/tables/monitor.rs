@@ -119,7 +119,7 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
 ///
 
 pub async fn insert_monitor(pool: &SqlitePool,
-                            data_vec: Vec<Monitor>
+                            data_vec: &Vec<Monitor>
                             ) -> Result<(), sqlx::Error> {
 
     if data_vec.is_empty() {
@@ -137,10 +137,10 @@ pub async fn insert_monitor(pool: &SqlitePool,
     );
 
     query_builder.push_values(data_vec, |mut b, data| {
-        b.push_bind(data.metadata.sender_user_id)
-            .push_bind(data.metadata.destination_id)
+        b.push_bind(data.metadata.sender_user_id.clone())
+            .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
-            .push_bind(data.network)
+            .push_bind(data.network.clone())
             .push_bind(data.mem_free)
             .push_bind(data.mem_free_hm)
             .push_bind(data.mem_free_block)
@@ -151,7 +151,7 @@ pub async fn insert_monitor(pool: &SqlitePool,
             .push_bind(data.stack_free_min_th)
             .push_bind(data.stack_free_min_air)
             .push_bind(data.stack_free_min_mon)
-            .push_bind(data.wifi_ssid)
+            .push_bind(data.wifi_ssid.clone())
             .push_bind(data.wifi_rssi)
             .push_bind(data.active_time);
     });
@@ -193,7 +193,7 @@ pub async fn insert_monitor(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_monitor(pool: &SqlitePool, topic: &str) -> Result<Vec<Monitor>, sqlx::Error> {
-    pop_batch_generic(pool, "monitor", topic).await
+pub async fn pop_batch_monitor(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx::Error> {
+    pop_batch_generic(pool, "monitor").await
 }
 

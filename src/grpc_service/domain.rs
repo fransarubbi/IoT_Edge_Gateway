@@ -14,6 +14,50 @@ use crate::system::domain::{InternalEvent, ErrorType};
 use crate::config::grpc_service::*;
 
 
+pub struct GrpcService {
+    sender: mpsc::Sender<InternalEvent>,
+    receiver: mpsc::Receiver<EdgeUpload>,
+    context: AppContext,
+}
+
+
+impl GrpcService {
+    pub fn new(sender: mpsc::Sender<InternalEvent>,
+               receiver: mpsc::Receiver<EdgeUpload>,
+               context: AppContext) -> Self {
+        Self {
+            sender,
+            receiver,
+            context,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_to_core, mut rx_from_grpc) = mpsc::channel::<InternalEvent>(50);
+        let (tx, rx) = mpsc::channel::<EdgeUpload>(50);
+
+        tokio::spawn(remote_grpc(tx_to_core, rx, self.context.clone()));
+        
+        loop {
+            tokio::select! {
+                Some(edge_upload) = self.receiver.recv() => {
+                    if tx.send(edge_upload).await.is_err() {
+                        error!("Error: no se pudo enviar EdgeUpload a remote_grpc");
+                    }
+                }
+                
+                Some(response) = rx_from_grpc.recv() => {
+                    if self.sender.send(response).await.is_err() {
+                        error!("Error: no se pudo enviar InternalEvent desde remote_grpc");
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum StateClient {
     Init,
@@ -56,9 +100,9 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 }
 
 
-pub async fn remote_grpc(tx: mpsc::Sender<InternalEvent>,
-                         mut rx_outbound: mpsc::Receiver<EdgeUpload>,
-                         app_context: AppContext) {
+async fn remote_grpc(tx: mpsc::Sender<InternalEvent>,
+                     mut rx_outbound: mpsc::Receiver<EdgeUpload>,
+                     app_context: AppContext) {
 
     let mut state = StateClient::Init;
     let mut tx_session: Option<mpsc::Sender<EdgeUpload>> = None;

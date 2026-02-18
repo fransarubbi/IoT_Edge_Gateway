@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::database::repository::Repository;
 use crate::network::domain::NetworkManager;
 use crate::quorum::domain::{PFCBPSettings};
 use crate::system::domain::System;
@@ -23,17 +22,11 @@ use crate::system::domain::System;
 ///
 /// # Componentes
 ///
-/// - **Persistencia (`repo`):** Acceso a SQLite.
 /// - **Estado Mutable (`net_man`):** Caché de redes dinámica.
 /// - **Configuración (`system`):** Datos estáticos del dispositivo.
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
-    /// Repositorio de acceso a datos.
-    ///
-    /// No requiere `Arc` ni `Mutex` externos porque el pool de conexiones de `sqlx`
-    /// ya maneja internamente la concurrencia y el conteo de referencias.
-    pub repo: Repository,
 
     /// Gestor de Redes (Caché en memoria).
     ///
@@ -66,13 +59,11 @@ impl AppContext {
     /// - `net_man`: Gestor de redes ya envuelto en las primitivas de concurrencia.
     /// - `system`: Configuración del sistema ya envuelta en `Arc`.
     /// - `quorum`: Configuración del comportamiento del protocolo de balanceo.
-    pub fn new(repo: Repository,
-               net_man: Arc<RwLock<NetworkManager>>,
+    pub fn new(net_man: Arc<RwLock<NetworkManager>>,
                system: Arc<System>,
                quorum: Arc<RwLock<PFCBPSettings>>) -> Self {
 
         Self {
-            repo,
             net_man,
             system,
             quorum

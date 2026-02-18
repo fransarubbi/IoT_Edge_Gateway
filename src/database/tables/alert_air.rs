@@ -97,7 +97,7 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
 ///
 
 pub async fn insert_alert_air(pool: &SqlitePool,
-                              data_vec: Vec<AlertAir>
+                              data_vec: &Vec<AlertAir>
                               ) -> Result<(), sqlx::Error> {
     
     if data_vec.is_empty() {
@@ -112,10 +112,10 @@ pub async fn insert_alert_air(pool: &SqlitePool,
     );
     
     query_builder.push_values(data_vec, |mut b, data| {
-        b.push_bind(data.metadata.sender_user_id)
-            .push_bind(data.metadata.destination_id)
+        b.push_bind(data.metadata.sender_user_id.clone())
+            .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
-            .push_bind(data.network)
+            .push_bind(data.network.clone())
             .push_bind(data.co2_initial_ppm)
             .push_bind(data.co2_actual_ppm);
     });
@@ -157,7 +157,7 @@ pub async fn insert_alert_air(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_alert_air(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertAir>, sqlx::Error> {
-    pop_batch_generic(pool, "alert_air", topic).await
+pub async fn pop_batch_alert_air(pool: &SqlitePool) -> Result<Vec<AlertAir>, sqlx::Error> {
+    pop_batch_generic(pool, "alert_air").await
 }
 

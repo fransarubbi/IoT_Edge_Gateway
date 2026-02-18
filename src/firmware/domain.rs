@@ -14,8 +14,100 @@ use std::cmp::PartialEq;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::debug;
-use crate::message::domain::{Message};
+use tracing::{debug, error};
+use crate::context::domain::AppContext;
+use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
+use crate::message::domain::{FirmwareOk, HubMessage, ServerMessage, UpdateFirmware};
+
+
+pub enum FirmwareServiceCommand {
+    Update(UpdateFirmware),
+    HubResponse(FirmwareOk),
+}
+
+
+pub enum FirmwareServiceResponse {
+    ServerAck(ServerMessage),
+    HubCommand(HubMessage),
+}
+
+
+pub struct FirmwareService {
+    sender: mpsc::Sender<FirmwareServiceResponse>,
+    receiver: mpsc::Receiver<FirmwareServiceCommand>,
+    context: AppContext,
+}
+
+
+impl FirmwareService {
+    pub fn new(sender: mpsc::Sender<FirmwareServiceResponse>,
+               receiver: mpsc::Receiver<FirmwareServiceCommand>,
+               context: AppContext) -> Self {
+        Self {
+            sender,
+            receiver,
+            context,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_response, mut rx_response) = mpsc::channel::<FirmwareServiceResponse>(50);
+        let (tx_to_fsm, fsm_rx_from_update_task) = mpsc::channel::<Event>(50);
+        let (tx_to_timer, timer_rx_from_update_task) = mpsc::channel::<Event>(50);
+        let (tx_msg, rx_msg) = mpsc::channel::<FirmwareServiceCommand>(50);
+        let (tx_to_update_task, rx_from_fsm) = mpsc::channel::<Vec<Action>>(50);
+
+        let update_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(update_firmware_task(tx_response,
+                                          update_tx_to_fsm,
+                                          tx_to_timer,
+                                          rx_msg,
+                                          rx_from_fsm,
+                                          self.context.clone()));
+
+        tokio::spawn(run_fsm_firmware(tx_to_update_task,
+                                      fsm_rx_from_update_task));
+
+        let timer_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(firmware_watchdog_timer(timer_tx_to_fsm,
+                                             timer_rx_from_update_task));
+
+        loop {
+            tokio::select! {
+                Some(cmd) = self.receiver.recv() => {
+                    match cmd {
+                        FirmwareServiceCommand::Update(update) => {
+                            if tx_msg.send(FirmwareServiceCommand::Update(update)).await.is_err() {
+                                error!("Error: no se pudo enviar comando Update a update_firmware_task");
+                            }
+                        },
+                        FirmwareServiceCommand::HubResponse(response) => {
+                            if tx_msg.send(FirmwareServiceCommand::HubResponse(response)).await.is_err() {
+                                error!("Error: no se pudo enviar mensaje HubResponse a update_firmware_task");
+                            }
+                        }
+                    }
+                }
+
+                Some(response) = rx_response.recv() => {
+                    match response {
+                        FirmwareServiceResponse::HubCommand(response) => {
+                            if self.sender.send(FirmwareServiceResponse::HubCommand(response)).await.is_err() {
+                                error!("Error: no se pudo enviar respuesta HubCommand al Core");
+                            }
+                        },
+                        FirmwareServiceResponse::ServerAck(response) => {
+                            if self.sender.send(FirmwareServiceResponse::ServerAck(response)).await.is_err() {
+                                error!("Error: no se pudo enviar respuesta ServerAck al Core");
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
 
 
 /// Envoltorio principal para el estado de la FSM.
@@ -134,7 +226,7 @@ pub enum Phase {
 /// Mantiene el contexto volátil y las métricas de una actualización en curso.
 pub struct UpdateSession {
     /// Mensaje original del servidor.
-    pub message: Message,
+    pub message: ServerMessage,
     /// ID de la red a la que se le aplica la actualización
     pub network: String,
     /// Cantidad total de hubs esperados en la red.
@@ -156,7 +248,7 @@ pub struct UpdateSession {
 
 impl UpdateSession {
     /// Crea una nueva sesión de actualización en fase Canario.
-    pub fn new(message: Message, total_hubs: usize, network: String) -> Self {
+    pub fn new(message: ServerMessage, total_hubs: usize, network: String) -> Self {
         Self {
             message,
             total_hubs,
@@ -325,7 +417,7 @@ fn compute_on_entry(old: &FsmStateFirmware, new: &FsmStateFirmware) -> Action {
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
-pub async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
+async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                                 mut cmd_rx: mpsc::Receiver<Event>) {
     loop {
         // Estado IDLE: Esperar comando de inicio
@@ -526,7 +618,7 @@ mod tests {
     // ============================================================
 
     // Helper para crear mensajes dummy
-    fn create_test_message() -> Message {
+    fn create_test_message() -> ServerMessage {
         use crate::message::domain::*;
         let timestamp = Utc::now().timestamp();
 
@@ -536,7 +628,7 @@ mod tests {
             timestamp,
         };
 
-        let message = Message::UpdateFirmware(
+        let message = ServerMessage::UpdateFirmware(
             UpdateFirmware {
                 metadata,
                 network: "sala8".to_string(),

@@ -40,6 +40,7 @@ message EdgeDownload {
     DeleteHub delete_hub = 5;
     Settings settings = 6;
     Heartbeat heartbeat = 7;
+    HelloWorld hello_world = 8;
   }
 }
 

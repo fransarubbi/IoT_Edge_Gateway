@@ -10,10 +10,7 @@ use crate::mqtt::domain::{PayloadTopic, StateClient};
 use crate::system::domain::{ErrorType, InternalEvent, System};
 
 
-
-
-
-pub fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), ErrorType> {
+fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), ErrorType> {
 
     let mut opts = MqttOptions::new(
         system.id_edge.clone(),
@@ -40,8 +37,7 @@ pub fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), Er
 }
 
 
-
-pub async fn local_mqtt(tx: mpsc::Sender<InternalEvent>,
+pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                         mut rx_msg: mpsc::Receiver<SerializedMessage>,
                         app_context: AppContext) {
     
@@ -152,7 +148,6 @@ fn collect_subscriptions(manager: &NetworkManager) -> Vec<(String, QoS)> {
   
     subs
 }
-
 
 
 fn cast_qos(qos: &u8) -> QoS {

@@ -97,7 +97,7 @@ pub async fn create_table_alert_temp(pool: &SqlitePool) -> Result<(), sqlx::Erro
 ///
 
 pub async fn insert_alert_temp(pool: &SqlitePool,
-                               data_vec: Vec<AlertTh>
+                               data_vec: &Vec<AlertTh>
                               ) -> Result<(), sqlx::Error> {
 
     if data_vec.is_empty() {
@@ -112,10 +112,10 @@ pub async fn insert_alert_temp(pool: &SqlitePool,
     );
 
     query_builder.push_values(data_vec, |mut b, data| {
-        b.push_bind(data.metadata.sender_user_id)
-            .push_bind(data.metadata.destination_id)
+        b.push_bind(data.metadata.sender_user_id.clone())
+            .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
-            .push_bind(data.network)
+            .push_bind(data.network.clone())
             .push_bind(data.initial_temp)
             .push_bind(data.actual_temp);
     });
@@ -157,7 +157,7 @@ pub async fn insert_alert_temp(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_alert_temp(pool: &SqlitePool, topic: &str) -> Result<Vec<AlertTh>, sqlx::Error> {
-    pop_batch_generic(pool, "alert_temp", topic).await
+pub async fn pop_batch_alert_temp(pool: &SqlitePool) -> Result<Vec<AlertTh>, sqlx::Error> {
+    pop_batch_generic(pool, "alert_temp").await
 }
 

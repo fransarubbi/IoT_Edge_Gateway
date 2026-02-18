@@ -7,10 +7,194 @@
 //! 3. Gestionar la máquina de estados para la sincronización de datos pendientes.
 
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc};
 use tracing::error;
-use crate::message::domain::{AlertAir, AlertTh, Measurement, Monitor};
-use crate::network::domain::Topic;
+use crate::config::sqlite::BATCH_SIZE;
+use crate::database::logic::{dba_get_task, dba_insert_task, dba_remove_task};
+use crate::database::repository::Repository;
+use crate::message::domain::{AlertAir, AlertTh, HubMessage, Measurement, Monitor};
+use crate::network::domain::{HubRow, NetworkRow};
+use crate::system::domain::InternalEvent;
+
+
+/// Comandos que recibe el servicio de base de datos
+/// desde fuera. Son todas las operaciones que debe realizar.
+pub enum DataServiceCommand {
+    Hub(HubMessage),
+    Internal(InternalEvent),
+    NewEpoch(u32),
+    GetEpoch,
+    NewHub(HubRow),
+    DeleteHub(String),
+    UpdateHub(HubRow),
+    NewNetwork(NetworkRow),
+    DeleteNetwork(String),
+    UpdateNetwork(NetworkRow),
+    DeleteAllHubByNetwork(String),
+}
+
+
+/// Wrapper para las posibles respuestas y datos
+/// enviados por el servicio de base de datos.
+pub enum DataServiceResponse {
+    Batch(TableDataVector),
+    Epoch(u32),
+    ErrorEpoch,
+}
+
+
+/// Comandos internos para la tarea get.
+pub enum DataCommandGet {
+    GetEpoch,
+}
+
+
+/// Comandos internos para la tarea delete.
+pub enum DataCommandDelete {
+    DeleteNetwork(String),
+    DeleteAllHubByNetwork(String),
+    DeleteHub(String),
+}
+
+
+/// Comandos internos para la tarea insert.
+pub enum DataCommandInsert {
+    InsertNetwork(NetworkRow),
+    UpdateNetwork(NetworkRow),
+    NewEpoch(u32),
+    InsertHub(HubRow),
+    UpdateHub(HubRow),
+}
+
+
+pub struct DataService {
+    sender: mpsc::Sender<DataServiceResponse>,
+    receiver: mpsc::Receiver<DataServiceCommand>,
+    repo: Repository,
+}
+
+
+impl DataService {
+    pub fn new(sender: mpsc::Sender<DataServiceResponse>,
+               receiver: mpsc::Receiver<DataServiceCommand>,
+               repo: Repository) -> Self {
+        Self {
+            sender,
+            receiver,
+            repo,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_response, mut rx_response) = mpsc::channel::<DataServiceResponse>(50);
+        let (tx_msg, rx_msg) = mpsc::channel::<HubMessage>(50);
+        let (tx_command_insert, rx_command_insert) = mpsc::channel::<DataCommandInsert>(50);
+        let (tx_internal, rx_internal) = mpsc::channel::<InternalEvent>(50);
+        let (tx_command_get, rx_command_get) = mpsc::channel::<DataCommandGet>(50);
+        let (tx_command_delete, rx_command_delete) = mpsc::channel::<DataCommandDelete>(50);
+
+        tokio::spawn(dba_insert_task(
+                        rx_msg,
+                        rx_command_insert,
+                        self.repo.clone()));
+
+        tokio::spawn(dba_get_task(
+                        tx_response,
+                        rx_internal,
+                        rx_command_get,
+                        self.repo.clone()));
+
+        tokio::spawn(dba_remove_task(
+                        rx_command_delete,
+                        self.repo.clone()
+        ));
+
+        loop {
+            tokio::select! {
+                Some(cmd) = self.receiver.recv() => {
+                    match cmd {
+                        DataServiceCommand::Hub(hub_msg) => {
+                            if tx_msg.send(hub_msg).await.is_err() {
+                                error!("Error: no se pudo enviar HubMessage a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::Internal(internal_event) => {
+                            if tx_internal.send(internal_event).await.is_err() {
+                                error!("Error: no se pudo enviar InternalEvent");
+                            }
+                        },
+                        DataServiceCommand::NewEpoch(epoch) => {
+                            if tx_command_insert.send(DataCommandInsert::NewEpoch(epoch)).await.is_err() {
+                                error!("Error: no se pudo enviar comando NewEpoch a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::GetEpoch => {
+                            if tx_command_get.send(DataCommandGet::GetEpoch).await.is_err() {
+                                error!("Error: no se pudo enviar comando GetEpoch a dba_get_task");
+                            }
+                        },
+                        DataServiceCommand::NewHub(row) => {
+                            if tx_command_insert.send(DataCommandInsert::InsertHub(row)).await.is_err() {
+                                error!("Error: no se pudo enviar comando InsertHub a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::DeleteHub(hub_id) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteHub(hub_id)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteHub a dba_remove_task");
+                            }
+                        },
+                        DataServiceCommand::UpdateHub(hub) => {
+                            if tx_command_insert.send(DataCommandInsert::UpdateHub(hub)).await.is_err() {
+                                error!("Error: no se pudo enviar comando UpdateHub a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::NewNetwork(network) => {
+                            if tx_command_insert.send(DataCommandInsert::InsertNetwork(network)).await.is_err() {
+                                error!("Error: no se pudo enviar comando InsertNetwork a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::DeleteNetwork(id_network) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteNetwork(id_network)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteNetwork a dba_remove_task");
+                            }
+                        },
+                        DataServiceCommand::UpdateNetwork(network) => {
+                            if tx_command_insert.send(DataCommandInsert::UpdateNetwork(network)).await.is_err() {
+                                error!("Error: no se pudo enviar comando UpdateNetwork a dba_insert_task");
+                            }
+                        },
+                        DataServiceCommand::DeleteAllHubByNetwork(id) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteAllHubByNetwork(id)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteAllHubByNetwork a dba_remove_task");
+                            }
+                        }
+                    }
+                }
+
+                Some(response) = rx_response.recv() => {
+                    match response {
+                        DataServiceResponse::Batch(batch) => {
+                            if self.sender.send(DataServiceResponse::Batch(batch)).await.is_err() {
+                                error!("Error: no se pudo enviar Batch de datos al Core");
+                            }
+                        }
+                        DataServiceResponse::Epoch(epoch) => {
+                            if self.sender.send(DataServiceResponse::Epoch(epoch)).await.is_err() {
+                                error!("Error: no se pudo enviar Epoch de datos al Core");
+                            }
+                        },
+                        DataServiceResponse::ErrorEpoch => {
+                            if self.sender.send(DataServiceResponse::ErrorEpoch).await.is_err() {
+                                error!("Error: no se pudo enviar ErrorEpoch al Core");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 
 /// Enumeración de las tablas existentes en la base de datos SQLite para
@@ -52,221 +236,87 @@ impl Table {
 
 /// Estructura que agrupa un lote de datos de un tipo específico junto con su metadato de origen.
 /// Se utiliza para mover batches desde la DB hacia el sistema de mensajería.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TableDataVector {
-    pub topic_where_arrive: String,
-    pub vec: TableDataVectorTypes,
+    pub measurement: Vec<Measurement>,
+    pub alert_air: Vec<AlertAir>,
+    pub alert_th: Vec<AlertTh>,
+    pub monitor: Vec<Monitor>,
 }
 
 
 impl TableDataVector {
-    /// Verifica si el vector interno no contiene elementos.
-    pub fn is_empty(&self) -> bool {
-        match &self.vec {
-            TableDataVectorTypes::Measurement(v) => v.is_empty(),
-            TableDataVectorTypes::Monitor(v) => v.is_empty(),
-            TableDataVectorTypes::AlertAir(v) => v.is_empty(),
-            TableDataVectorTypes::AlertTemp(v) => v.is_empty(),
-        }
-    }
 
-    /// Crea una nueva instancia.
-    pub fn new(topic_where_arrive: String, vec: TableDataVectorTypes) -> Self {
-        Self { topic_where_arrive, vec }
-    }
-
-    /// Devuelve el tipo de tabla (`Table`) que corresponde a los datos contenidos.
-    pub fn table_type(&self) -> Table {
-        match self.vec {
-            TableDataVectorTypes::Measurement(_) => Table::Measurement,
-            TableDataVectorTypes::Monitor(_) => Table::Monitor,
-            TableDataVectorTypes::AlertAir(_) => Table::AlertAir,
-            TableDataVectorTypes::AlertTemp(_) => Table::AlertTemp,
-        }
-    }
-}
-
-
-/// Contenedor polimórfico para **vectores de filas** de base de datos.
-/// Cada variante contiene un `Vec<T>` donde T es un struct `*Row`.
-#[derive(Clone, Debug)]
-pub enum TableDataVectorTypes {
-    Measurement(Vec<Measurement>),
-    Monitor(Vec<Monitor>),
-    AlertAir(Vec<AlertAir>),
-    AlertTemp(Vec<AlertTh>),
-}
-
-
-/// Buffer en memoria para acumular datos antes de insertarlos en la base de datos.
-///
-/// Contiene un vector separado para cada tipo de dato posible. Se utiliza en `dba_insert_task`
-/// para realizar inserciones por lotes.
-#[derive(Default, Debug)] 
-pub struct Vectors {
-    pub measurements: Vec<Measurement>,
-    pub monitors: Vec<Monitor>,
-    pub alert_airs: Vec<AlertAir>,
-    pub alert_temps: Vec<AlertTh>,
-}
-
-
-impl Vectors {
-    /// Inicializa los vectores internos reservando la capacidad especificada.
-    /// Optimiza el rendimiento evitando re-allocations constantes.
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            measurements: Vec::with_capacity(cap),
-            monitors: Vec::with_capacity(cap),
-            alert_airs: Vec::with_capacity(cap),
-            alert_temps: Vec::with_capacity(cap),
-        }
-    }
-
-    /// Verifica si **cualquiera** de los vectores internos ha alcanzado o superado la capacidad límite.
-    /// Esto se usa como disparador (trigger) para guardar en disco.
-    pub fn is_full(&self, cap: usize) -> bool {
-        if self.measurements.len() >= cap {
-            return true;
-        }
-        if self.monitors.len() >= cap {
-            return true;
-        }
-        if self.alert_airs.len() >= cap {
-            return true;
-        }
-        if self.alert_temps.len() >= cap {
-            return true;
-        }
-        false
-    }
-
-    /// Verifica si **alguno** de los vectores está vacío.
+    /// Crea un nuevo contenedor con la capacidad pre-reservada.
     ///
-    /// La lógica es: "si tengo al menos un vector vacío, retorno true".
-    pub fn is_empty(&self) -> bool {
-        if self.measurements.is_empty() {
-            return true;
-        }
-        if self.monitors.is_empty() {
-            return true;
-        }
-        if self.alert_airs.is_empty() {
-            return true;
-        }
-        if self.alert_temps.is_empty() {
-            return true;
-        }
-        false
-    }
-}
-
-
-/// Función auxiliar asíncrona "Fire-and-Forget".
-/// Envía un mensaje por un canal y descarta el resultado (éxito o error).
-async fn send_ignore<T>(tx: &mpsc::Sender<T>, msg: T) {
-    let _ = tx.send(msg).await;
-}
-
-
-/// Máquina de estados para el proceso de sincronización de datos pendientes.
-///
-/// Controla el orden en que se verifican las tablas (`Measurement` -> `Monitor` -> `Alertas`)
-/// para extraer datos cuando se recupera la conexión.
-#[derive(Debug, Clone)]
-pub enum StateFlag {
-    Init,
-    Measurement,
-    Monitor,
-    AlertAir,
-    AlertTh,
-}
-
-
-impl StateFlag {
-    /// Avanza la máquina de estados.
-    ///
-    /// Si `flag` es true (hay datos en la tabla actual), envía una solicitud `Get` y se mantiene en el estado.
-    /// Si `flag` es false (tabla vacía), avanza al siguiente estado/tabla.
-    pub async fn update_state(&mut self, flag: bool, tx: &watch::Sender<DataRequest>) {
-        match self {
-            StateFlag::Init => {
-                if !check_flag(flag, &tx).await {
-                    *self = StateFlag::Measurement;
-                }
-            },
-            StateFlag::Measurement => {
-                if !check_flag(flag, &tx).await {
-                    *self = StateFlag::Monitor;
-                }
-            },
-            StateFlag::Monitor => {
-                if !check_flag(flag, &tx).await {
-                    *self = StateFlag::AlertAir;
-                }
-            }
-            StateFlag::AlertAir => {
-                if !check_flag(flag, &tx).await {
-                    *self = StateFlag::AlertTh;
-                }
-            }
-            StateFlag::AlertTh => {
-                if !check_flag(flag, &tx).await {
-                    if tx.send(DataRequest::NotGet).is_err() {
-                        error!("Error: Receptor no disponible, mensaje descartado");
-                    }
-                }
-                *self = StateFlag::Init;
-            },
-        }
-    }
-}
-
-
-/// Auxiliar para verificar el flag de existencia de datos.
-/// Si `flag` es true, solicita datos (`Get`) al canal.
-async fn check_flag(flag: bool, tx: &watch::Sender<DataRequest>) -> bool {
-    if flag {
-        if tx.send(DataRequest::Get).is_err() {
-            error!("Error: Receptor no disponible, mensaje descartado");
-        }
-        return true;
-    }
-    false
-}
-
-
-/// Representación auxiliar ligera de una Red para operaciones de lectura.
-///
-/// Se utiliza para tomar una "instantánea" (snapshot) de la configuración de red
-/// necesaria para consultar la base de datos sin bloquear el `NetworkManager` principal.
-#[derive(Debug, Clone)]
-pub struct NetworkAux {
-    pub id_network: String,
-    pub topic_data: Topic,
-    pub topic_alert_air: Topic,
-    pub topic_alert_temp: Topic,
-    pub topic_monitor: Topic,
-}
-
-
-impl NetworkAux {
-    /// Crea una nueva instancia auxiliar de red.
-    pub fn new(id_network: String,
-               topic_data: Topic,
-               topic_alert_air: Topic,
-               topic_alert_temp: Topic,
-               topic_monitor: Topic) -> Self {
+    /// Inicializa los vectores internos utilizando `Vec::with_capacity(BATCH_SIZE)`.
+    /// Esto evita realocaciones dinámicas de memoria mientras se llena el buffer,
+    /// mejorando el rendimiento de inserción.
+    pub fn new() -> Self {
         Self {
-            id_network,
-            topic_data,
-            topic_alert_air,
-            topic_alert_temp,
-            topic_monitor
+            measurement: Vec::with_capacity(BATCH_SIZE),
+            alert_air: Vec::with_capacity(BATCH_SIZE),
+            alert_th: Vec::with_capacity(BATCH_SIZE),
+            monitor: Vec::with_capacity(BATCH_SIZE),
         }
     }
+    
+    /// Constructor con parámetros para hacer pop batch.
+    pub fn new_pop(measurement: Vec<Measurement>, 
+                   alert_air: Vec<AlertAir>, 
+                   alert_th: Vec<AlertTh>,
+                   monitor: Vec<Monitor>) -> Self {
+        Self {
+            measurement,
+            alert_air,
+            alert_th,
+            monitor,
+        }
+    }
+    
+    /// Retorna true si todos los vectores están vacíos.
+    pub fn is_empty(&self) -> bool { 
+        self.measurement.is_empty() && 
+            self.alert_air.is_empty() && 
+            self.alert_th.is_empty() && 
+            self.monitor.is_empty()
+    }
+
+    /// Verifica si alguno de los buffers internos ha alcanzado su capacidad máxima.
+    ///
+    /// Este método se utiliza como disparador (Trigger) para realizar el volcado (flush)
+    /// a la base de datos.
+    ///
+    /// # Retorno
+    /// * `true`: Al menos uno de los vectores tiene longitud igual a `BATCH_SIZE`.
+    /// * `false`: Todos los vectores tienen espacio disponible.
+    pub fn is_some_vector_full(&self) -> bool {
+        self.is_measurement_full() || self.is_alert_air_full() ||
+            self.is_alert_th_full() || self.is_monitor_full()
+    }
+
+    fn is_measurement_full(&self) -> bool {
+        self.measurement.len() == BATCH_SIZE
+    }
+    fn is_monitor_full(&self) -> bool {
+        self.monitor.len() == BATCH_SIZE
+    }
+    fn is_alert_air_full(&self) -> bool {
+        self.alert_air.len() == BATCH_SIZE
+    }
+    fn is_alert_th_full(&self) -> bool {
+        self.alert_th.len() == BATCH_SIZE
+    }
+
+    /// Reinicia los buffers sin liberar la memoria asignada.
+    ///
+    /// Establece la longitud de todos los vectores a 0, pero mantiene la capacidad
+    /// reservada en el Heap. Esto permite reutilizar la estructura en el siguiente
+    /// ciclo de acumulación sin costo de asignación de memoria.
+    pub fn clear(&mut self) {
+        self.measurement.clear();
+        self.alert_air.clear();
+        self.alert_th.clear();
+        self.monitor.clear();
+    }
 }
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataRequest { Get, NotGet }

@@ -8,9 +8,9 @@ use chrono::{Utc};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::firmware::domain::{Action, FsmStateFirmware, Phase, StateFirmwareUpdate, UpdateSession};
+use crate::firmware::domain::{Action, FirmwareServiceCommand, FirmwareServiceResponse, FsmStateFirmware, Phase, StateFirmwareUpdate, UpdateSession};
 use crate::firmware::domain::{Event, Transition};
-use crate::message::domain::{FirmwareOk, FirmwareOutcome, Message, Metadata};
+use crate::message::domain::{FirmwareOk, FirmwareOutcome, HubMessage, Metadata, ServerMessage, UpdateFirmware};
 use crate::config::firmware::{OTA_TIMEOUT};
 
 
@@ -18,12 +18,10 @@ use crate::config::firmware::{OTA_TIMEOUT};
 ///
 /// Mantiene un bucle infinito que escucha múltiples canales (Server, Hub, FSM)
 #[instrument(name = "update_firmware", skip(app_context))]
-pub async fn update_firmware_task(tx_to_hub: mpsc::Sender<Message>,
-                                  tx_to_server: mpsc::Sender<Message>,
+pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceResponse>,
                                   tx_to_fsm: mpsc::Sender<Event>,
                                   tx_to_timer: mpsc::Sender<Event>,
-                                  mut rx_from_server: mpsc::Receiver<Message>,
-                                  mut rx_from_hub: mpsc::Receiver<Message>,
+                                  mut rx_msg: mpsc::Receiver<FirmwareServiceCommand>,
                                   mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
                                   app_context: AppContext) {
 
@@ -31,9 +29,9 @@ pub async fn update_firmware_task(tx_to_hub: mpsc::Sender<Message>,
 
     loop {
         tokio::select! {
-            Some(msg_from_server) = rx_from_server.recv() => {
+            Some(msg_from_server) = rx_msg.recv() => {
                 match msg_from_server {
-                    Message::UpdateFirmware(update) => {
+                    FirmwareServiceCommand::Update(update) => {
                         let manager = app_context.net_man.read().await;
                         let id = update.network.clone();
                         if let Some(total) = manager.get_total_hubs_by_network(&id) {
@@ -44,7 +42,7 @@ pub async fn update_firmware_task(tx_to_hub: mpsc::Sender<Message>,
                             );
 
                             session = Some(UpdateSession::new(
-                                Message::UpdateFirmware(update),
+                                ServerMessage::UpdateFirmware(update),
                                 total,
                                 id
                             ));
@@ -55,18 +53,11 @@ pub async fn update_firmware_task(tx_to_hub: mpsc::Sender<Message>,
                             error!("Error: No se encontraron hubs en la red {:?}", id);
                         }
                     },
-                    _ => {},
-                }
-            }
-
-            Some(msg_from_hub) = rx_from_hub.recv() => {
-                match msg_from_hub {
-                    Message::FirmwareOk(firmware) => {
+                    FirmwareServiceCommand::HubResponse(firmware) => {
                         if let Some(ref mut session_ref) = session {
                             handle_message_from_hub(session_ref, &firmware, &tx_to_fsm).await;
                         }
-                    },
-                    _ => {},
+                    }
                 }
             }
 
@@ -77,16 +68,16 @@ pub async fn update_firmware_task(tx_to_hub: mpsc::Sender<Message>,
                             on_entry(state_firm, &mut session, &tx_to_timer).await;
                         },
                         Action::SelectRandomHub => {
-                            handle_select_random(&mut session, &tx_to_hub, &tx_to_fsm, &app_context).await;
+                            handle_select_random(&mut session, &tx_to_core, &tx_to_fsm, &app_context).await;
                         },
                         Action::SendMessageToNetwork => {
-                            handle_send_message_to_network(&mut session, &tx_to_hub).await;
+                            handle_send_message_to_network(&mut session, &tx_to_core).await;
                         },
                         Action::SendMessageOkToServer => {
-                            handle_send_message_outcome(&mut session, &tx_to_server, &app_context).await;
+                            handle_send_message_outcome(&mut session, &tx_to_core, &app_context).await;
                         },
                         Action::SendMessageFailToServer => {
-                            handle_send_message_outcome(&mut session, &tx_to_server, &app_context).await;
+                            handle_send_message_outcome(&mut session, &tx_to_core, &app_context).await;
                         },
                         Action::StopTimer => {
                             if tx_to_timer.send(Event::StopTimer).await.is_err() {
@@ -218,7 +209,7 @@ async fn init_timer_and_update_phase(session: &mut Option<UpdateSession>, tx_to_
 
 /// Selecciona un Hub aleatorio (Canario) y le envía el firmware.
 async fn handle_select_random(session: &mut Option<UpdateSession>,
-                              tx_to_hub: &mpsc::Sender<Message>,
+                              tx_to_core: &mpsc::Sender<FirmwareServiceResponse>,
                               tx_to_fsm: &mpsc::Sender<Event>,
                               app_context: &AppContext) {
 
@@ -232,11 +223,17 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
             );
 
             match session_ref.message.clone() {
-                Message::UpdateFirmware(update) => {
-                    let mut new_update = update.clone();
-                    new_update.metadata.destination_id = id_hub.clone();
-                    let msg = Message::UpdateFirmware(new_update);
-                    if tx_to_hub.send(msg).await.is_err() {
+                ServerMessage::UpdateFirmware(update) => {
+                    
+                    let mut metadata = update.metadata.clone();
+                    metadata.destination_id = id_hub.clone();
+                    
+                    let update_msg = UpdateFirmware {
+                        metadata,
+                        network: update.network,
+                    };
+                    
+                    if tx_to_core.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
                         error!("Error: No se pudo enviar mensaje al Hub canario");
                     }
                 },
@@ -254,15 +251,20 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
 
 /// Envía mensaje Broadcast a toda la red ("all").
 async fn handle_send_message_to_network(session: &mut Option<UpdateSession>,
-                                        tx_to_hub: &mpsc::Sender<Message>) {
+                                        tx_to_hub: &mpsc::Sender<FirmwareServiceResponse>) {
 
     if let Some(session_ref) = session {
         match session_ref.message.clone() {
-            Message::UpdateFirmware(update) => {
-                let mut new_update = update.clone();
-                new_update.metadata.destination_id = "all".to_string();
-                let msg = Message::UpdateFirmware(new_update);
-                if tx_to_hub.send(msg).await.is_err() {
+            ServerMessage::UpdateFirmware(update) => {
+                let mut metadata = update.metadata.clone();
+                metadata.destination_id = "all".to_string();
+                
+                let update_msg = UpdateFirmware {
+                    metadata,
+                    network: update.network.clone(),
+                };
+                
+                if tx_to_hub.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
                     error!("Error: No se pudo enviar mensaje al resto de Hubs (Broadcast Firmware)");
                 }
             },
@@ -274,7 +276,7 @@ async fn handle_send_message_to_network(session: &mut Option<UpdateSession>,
 
 /// Genera y envía el reporte final (Outcome) al servidor.
 async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
-                                     tx_to_server: &mpsc::Sender<Message>,
+                                     tx_to_server: &mpsc::Sender<FirmwareServiceResponse>,
                                      app_context: &AppContext) {
 
     if let Some(session_ref) = session {
@@ -289,16 +291,12 @@ async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
         let network = session_ref.network.clone();
         if session_ref.percentage == 100.00 {
             let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: 100.00 };
-            let msg_outcome = firm_out;
-            let msg = Message::FirmwareOutcome(msg_outcome);
-            if tx_to_server.send(msg).await.is_err() {
+            if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
                 error!("Error: No se pudo enviar FirmwareOutcome Ok al servidor");
             }
         } else {
             let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: session_ref.percentage };
-            let msg_outcome = firm_out;
-            let msg = Message::FirmwareOutcome(msg_outcome);
-            if tx_to_server.send(msg).await.is_err() {
+            if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
                 error!("Error: No se pudo enviar FirmwareOutcome Fail al servidor");
             }
         }

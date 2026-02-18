@@ -20,7 +20,65 @@
 
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::debug;
+use tracing::{debug, error};
+use crate::heartbeat::logic::{heartbeat, run_fsm_heartbeat};
+use crate::message::domain::{ServerMessage};
+use crate::system::domain::InternalEvent;
+
+
+pub struct HeartbeatService {
+    sender: mpsc::Sender<InternalEvent>,
+    receiver: mpsc::Receiver<ServerMessage>,
+}
+
+
+impl HeartbeatService {
+    pub fn new(sender: mpsc::Sender<InternalEvent>,
+               receiver: mpsc::Receiver<ServerMessage>,) -> Self {
+        Self {
+            sender,
+            receiver,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_to_core, mut rx) = mpsc::channel::<InternalEvent>(50);
+        let (tx_to_fsm, rx_from_heartbeat) = mpsc::channel::<Event>(50);
+        let (tx_to_timer, rx_watchdog_heartbeat) = mpsc::channel::<Event>(50);
+        let (tx_msg, rx_from_server) = mpsc::channel::<ServerMessage>(50);
+        let (tx_actions, rx_fsm) = mpsc::channel::<Vec<Action>>(50);
+
+        let heartbeat_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(heartbeat(tx_to_core,
+                               heartbeat_tx_to_fsm,
+                               tx_to_timer,
+                               rx_from_server,
+                               rx_fsm));
+
+        tokio::spawn(run_fsm_heartbeat(tx_actions,
+                                       rx_from_heartbeat));
+
+        let watchdog_tx_to_fsm = tx_to_fsm.clone();
+        tokio::spawn(watchdog_timer_for_heartbeat(watchdog_tx_to_fsm,
+                                                  rx_watchdog_heartbeat));
+
+        loop {
+            tokio::select! {
+                Some(msg) = self.receiver.recv() => {
+                    if tx_msg.send(msg).await.is_err() {
+                        error!("Error: no se pudo enviar mensaje de Heartbeat proveniente del servidor");
+                    }
+                }
+                Some(msg) = rx.recv() => {
+                    if self.sender.send(msg).await.is_err() {
+                        error!("Error: no se pudo enviar el InternalEvent proveniente de heartbeat");
+                    }
+                }
+            }
+        }
+    }
+}
 
 
 /// Estructura principal que mantiene el estado de la FSM del Heartbeat.

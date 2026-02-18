@@ -11,10 +11,10 @@
 //! mensajes periódicos y notificar al resto del sistema vía un canal `watch`.
 
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc};
 use tracing::{error, warn};
 use crate::heartbeat::domain::{Action, Event, FsmHeartbeat, State, Status, Transition};
-use crate::message::domain::Message;
+use crate::message::domain::{ServerMessage};
 use crate::config::heartbeat::*;
 use crate::system::domain::InternalEvent;
 
@@ -32,17 +32,17 @@ use crate::system::domain::InternalEvent;
 /// * `tx_to_timer`: Canal para controlar el temporizador de seguridad (Watchdog).
 /// * `rx_from_server`: Canal por donde llegan los mensajes decodificados gRPC.
 /// * `rx_fsm`: Canal por donde la FSM envía las instrucciones (Acciones) que deben ejecutarse.
-pub async fn heartbeat(tx: watch::Sender<InternalEvent>,
+pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                        tx_to_fsm: mpsc::Sender<Event>,
                        tx_to_timer: mpsc::Sender<Event>,
-                       mut rx_from_server: mpsc::Receiver<Message>,
+                       mut rx_from_server: mpsc::Receiver<ServerMessage>,
                        mut rx_fsm: mpsc::Receiver<Vec<Action>>) {
 
     loop {
         tokio::select! {
             Some(msg) = rx_from_server.recv() => {
                 match msg {
-                    Message::Heartbeat(_) => {
+                    ServerMessage::Heartbeat(_) => {
                         if tx_to_fsm.send(Event::Heartbeat).await.is_err() {
                             error!("Error: No se pudo enviar evento Heartbeat a la FSM heartbeat");
                         }
@@ -67,12 +67,12 @@ pub async fn heartbeat(tx: watch::Sender<InternalEvent>,
                         Action::SendStatusConditional(old_status, new_status) => {
                             if old_status != new_status {
                                 if new_status == Status::Connected {
-                                    if tx.send(InternalEvent::ServerConnected).is_err() {
+                                    if tx.send(InternalEvent::ServerConnected).await.is_err() {
                                         error!("Error: No se pudo distribuir el estado de ServerConnected");
                                     }
                                 }
                                 if new_status == Status::Disconnected {
-                                    if tx.send(InternalEvent::ServerDisconnected).is_err() {
+                                    if tx.send(InternalEvent::ServerDisconnected).await.is_err() {
                                         error!("Error: No se pudo distribuir el estado de ServerDisconnected");
                                     }
                                 }

@@ -107,7 +107,7 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
 ///
 
 pub async fn insert_measurement(pool: &SqlitePool,
-                                data_vec: Vec<Measurement>
+                                data_vec: &Vec<Measurement>
                                ) -> Result<(), sqlx::Error> {
 
     if data_vec.is_empty() {
@@ -123,10 +123,10 @@ pub async fn insert_measurement(pool: &SqlitePool,
     );
 
     query_builder.push_values(data_vec, |mut b, data| {
-        b.push_bind(data.metadata.sender_user_id)
-            .push_bind(data.metadata.destination_id)
+        b.push_bind(data.metadata.sender_user_id.clone())
+            .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
-            .push_bind(data.network)
+            .push_bind(data.network.clone())
             .push_bind(data.pulse_counter)
             .push_bind(data.pulse_max_duration)
             .push_bind(data.temperature)
@@ -137,7 +137,7 @@ pub async fn insert_measurement(pool: &SqlitePool,
 
     let query = query_builder.build();
     query.execute(pool).await?;
-    
+
     Ok(())
 }
 
@@ -172,7 +172,7 @@ pub async fn insert_measurement(pool: &SqlitePool,
 /// - La lógica específica del SQL se delega a [`pop_batch_generic`].
 ///
 
-pub async fn pop_batch_measurement(pool: &SqlitePool, topic: &str) -> Result<Vec<Measurement>, sqlx::Error> {
-    pop_batch_generic(pool, "measurement", topic).await
+pub async fn pop_batch_measurement(pool: &SqlitePool) -> Result<Vec<Measurement>, sqlx::Error> {
+    pop_batch_generic(pool, "measurement").await
 }
 

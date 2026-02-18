@@ -39,8 +39,9 @@
 use std::time::Duration;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{FromRow, SqlitePool};
+use tracing::debug;
 use crate::config::sqlite::{LIMIT, WAIT_FOR};
-use crate::database::domain::{Table, TableDataVector, TableDataVectorTypes};
+use crate::database::domain::{Table, TableDataVector};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_balance_epoch, insert_balance_epoch};
@@ -72,6 +73,10 @@ use crate::network::domain::{HubRow, NetworkRow};
 ///
 #[derive(Clone, Debug)]
 pub struct Repository {
+    /// Repositorio de acceso a datos.
+    ///
+    /// No requiere `Arc` ni `Mutex` externos porque el pool de conexiones de `sqlx`
+    /// ya maneja internamente la concurrencia y el conteo de referencias.
     pool: SqlitePool,
 }
 
@@ -135,82 +140,56 @@ impl Repository {
     /// - El orden de inserción respeta el orden del vector recibido.
     /// - Cada tabla maneja su propia transacción o inserción atómica.
     /// - Si ocurre un error, la operación se aborta y retorna el error.
-    pub async fn insert(&self, tdv: Vec<TableDataVectorTypes>) -> Result<(), sqlx::Error> {
-        for v in tdv {
-            match v {
-                TableDataVectorTypes::Measurement(measurement) => {
-                    insert_measurement(&self.pool, measurement).await?;
-                },
-                TableDataVectorTypes::Monitor(monitor) => {
-                    insert_monitor(&self.pool, monitor).await?;
-                },
-                TableDataVectorTypes::AlertTemp(alert_temp) => {
-                    insert_alert_temp(&self.pool, alert_temp).await?;
-                },
-                TableDataVectorTypes::AlertAir(alert_air) => {
-                    insert_alert_air(&self.pool, alert_air).await?;
-                },
-            }
+    pub async fn insert(&self, tdv: &TableDataVector) -> Result<(), sqlx::Error> {
+        debug!("Debug: insertando batch en base de datos");
+        if !tdv.measurement.is_empty() {
+            insert_measurement(&self.pool, &tdv.measurement).await?;
+        }
+        if !tdv.monitor.is_empty() {
+            insert_monitor(&self.pool, &tdv.monitor).await?;
+        }
+        if !tdv.alert_th.is_empty() {
+            insert_alert_temp(&self.pool, &tdv.alert_th).await?;
+        }
+        if !tdv.alert_air.is_empty() {
+            insert_alert_air(&self.pool, &tdv.alert_air).await?;
         }
         Ok(())
     }
 
-    /// Extrae y elimina un batch de datos de una tabla específica.
-    ///
-    /// # Descripción
-    ///
-    /// Según el valor de [`Table`], invoca la función `pop_batch_*`
-    /// correspondiente y retorna los datos encapsulados en
-    /// [`TableDataVector`].
-    ///
-    /// # Uso típico
-    ///
-    /// - Reenvío de datos pendientes al servidor.
-    /// - Vaciado progresivo de la base local.
-    pub async fn pop_batch(&self, table: Table, topic: &str) -> Result<TableDataVector, sqlx::Error> {
+    /// Extrae y elimina en batch de la base de datos.
+    pub async fn pop_batch(&self) -> Result<TableDataVector, sqlx::Error> {
 
-        let tdv_type = match table {
-            Table::Measurement => {
-                let data = pop_batch_measurement(&self.pool, topic).await?;
-                TableDataVectorTypes::Measurement(data)
-            },
-            Table::Monitor => {
-                let data = pop_batch_monitor(&self.pool, topic).await?;
-                TableDataVectorTypes::Monitor(data)
-            },
-            Table::AlertTemp => {
-                let data = pop_batch_alert_temp(&self.pool, topic).await?;
-                TableDataVectorTypes::AlertTemp(data)
-            },
-            Table::AlertAir => {
-                let data = pop_batch_alert_air(&self.pool, topic).await?;
-                TableDataVectorTypes::AlertAir(data)
-            },
+        let vec_measurement = pop_batch_measurement(&self.pool).await?;
+        let vec_monitor = pop_batch_monitor(&self.pool).await?;
+        let vec_alert_th = pop_batch_alert_temp(&self.pool).await?;
+        let vec_alert_air = pop_batch_alert_air(&self.pool).await?;
 
-            _ => {
-                return Err(sqlx::Error::Protocol("Tipo de tabla no soportado o inválido".into()));
-            }
-        };
-
-        Ok(TableDataVector::new(topic.to_string(), tdv_type))
+        Ok(TableDataVector::new_pop(vec_measurement, vec_alert_air, vec_alert_th, vec_monitor))
     }
 
-    /// Indica si una tabla contiene al menos un registro.
+    /// Indica si al menos una tabla contiene al menos un registro.
     ///
     /// # Uso
     ///
     /// Esta función se utiliza para:
     /// - detectar datos pendientes,
-    /// - sincronizar con el servidor,
     /// - controlar flujos de reenvío.
-    pub async fn has_data(&self, table: Table) -> Result<bool, sqlx::Error> {
-        match table {
-            Table::Measurement | Table::Monitor | Table::AlertTemp | Table::AlertAir => {
-                table_has_data(&self.pool, table.table_name()).await
-            },
-            _ => {
-                Err(sqlx::Error::Protocol("❌ Error: Tipo de tabla no soportado o inválido".into()))
+    pub async fn has_data(&self) -> Result<bool, sqlx::Error> {
+
+        let mut counter_flag = 0;
+
+        for &table in Table::all() {
+            match table_has_data(&self.pool, table.table_name()).await {
+                Ok(true) => counter_flag += 1,
+                Err(e) => return Err(e),
+                _ => {}
             }
+        }
+        if counter_flag > 0 {
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -374,7 +353,6 @@ async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// (no provenir de input externo no validado).
 pub async fn pop_batch_generic<T>(pool: &SqlitePool,
                                   table: &str,
-                                  topic: &str
 ) -> Result<Vec<T>, sqlx::Error>
 where
     T: for<'r> FromRow<'r, sqlx::sqlite::SqliteRow>
@@ -395,7 +373,6 @@ where
     );
 
     let result = sqlx::query_as::<_, T>(&sql)
-        .bind(topic)
         .bind(LIMIT)
         .fetch_all(pool)
         .await?;

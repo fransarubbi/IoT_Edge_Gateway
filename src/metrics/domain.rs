@@ -13,7 +13,49 @@
 use sysinfo::{System, Disks, Networks};
 use std::fs;
 use std::process::Command;
-use crate::message::domain::{Metadata, SystemMetrics};
+use tokio::sync::mpsc;
+use tracing::error;
+use crate::context::domain::AppContext;
+use crate::message::domain::{Metadata, ServerMessage, SystemMetrics};
+use crate::metrics::logic::{metrics_timer, system_metrics, MetricsTimerEvent};
+
+
+pub struct MetricsService {
+    sender: mpsc::Sender<ServerMessage>,
+    context: AppContext,
+}
+
+
+impl MetricsService {
+    pub fn new(sender: mpsc::Sender<ServerMessage>,
+               context: AppContext) -> Self {
+        Self {
+            sender,
+            context
+        }
+    }
+    
+    pub async fn run(self) {
+
+        let (tx_to_server, mut rx_command_from_server) = mpsc::channel::<ServerMessage>(100);
+        let (tx_to_timer, rx_from_metrics) = mpsc::channel::<MetricsTimerEvent>(100);
+        let (tx_to_metrics, rx_from_timer) = mpsc::channel::<MetricsTimerEvent>(100);
+        
+        tokio::spawn(system_metrics(tx_to_server,
+                                    tx_to_timer,
+                                    rx_from_timer,
+                                    self.context.clone()));
+        
+        tokio::spawn(metrics_timer(tx_to_metrics,
+                                   rx_from_metrics));
+        
+        while let Some(msg) = rx_command_from_server.recv().await {
+            if self.sender.send(msg).await.is_err() {
+                error!("Error: no se pudo enviar mensaje SystemMetrics");
+            }
+        }
+    }
+}
 
 
 /// Recolector de estado del sistema.

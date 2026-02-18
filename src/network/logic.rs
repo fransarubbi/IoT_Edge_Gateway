@@ -16,9 +16,11 @@ use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, instrument};
 use crate::context::domain::AppContext;
+use crate::database::domain::DataServiceCommand;
 use crate::database::repository::Repository;
-use crate::message::domain::{ActiveHub, DeleteHub, Message, Metadata, Network as NetworkMsg};
-use crate::network::domain::{HubChanged, HubRow, Network, NetworkAction, NetworkChanged, NetworkManager, NetworkRow, UpdateNetwork};
+use crate::message::domain::{ActiveHub, DeleteHub, HubMessage, Metadata, Network as NetworkMsg, ServerMessage};
+use crate::network::domain::{HubChanged, HubRow, Network, NetworkAction, 
+                             NetworkChanged, NetworkManager, NetworkRow};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::{ErrorType};
 
@@ -71,12 +73,11 @@ pub async fn load_networks(repo: &Repository,
 
 #[instrument(name = "network_admin", skip(app_context))]
 pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
-                          tx_to_dba_insert: mpsc::Sender<UpdateNetwork>,
-                          tx_to_hub: mpsc::Sender<Message>,
-                          tx_to_insert_hub: mpsc::Sender<HubChanged>,
-                          mut rx_from_server: mpsc::Receiver<Message>,
-                          mut rx_from_hub: mpsc::Receiver<Message>,
-                          app_context: AppContext) {
+                           tx_to_hub: mpsc::Sender<HubMessage>,
+                           tx_to_insert_hub: mpsc::Sender<HubChanged>,
+                           mut rx_from_server: mpsc::Receiver<ServerMessage>,
+                           mut rx_from_hub: mpsc::Receiver<HubMessage>,
+                           app_context: AppContext) {
 
     let mut hub_hash_aux : HashMap<String, HashSet<HubRow>> = HashMap::new();
 
@@ -84,7 +85,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
         tokio::select! {
             Some(msg_from_server) = rx_from_server.recv() => {
                 match msg_from_server {
-                    Message::Network(network) => {
+                    ServerMessage::Network(network) => {
                         let action = {
                             let manager = app_context.net_man.read().await;
                             match (manager.networks.get(&network.id_network), network.delete_network) {
@@ -100,25 +101,25 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             continue;
                         }
                         let net_chan = handle_action(app_context.clone(), &network, action).await;
-                        handle_event(&tx_to_insert_network, &tx_to_dba_insert, &tx_to_hub, net_chan, app_context.clone()).await;
+                        handle_event(&tx_to_insert_network, &tx_to_hub, net_chan, app_context.clone()).await;
                     },
-                    Message::FromServerSettings(ref settings) => {
+                    ServerMessage::FromServerSettings(ref settings) => {
                         let id = settings.network.clone();
                         hub_hash_aux.entry(settings.metadata.sender_user_id.clone())
                             .or_default()
                             .insert(settings.clone().cast_settings_to_hub_row(id));
-                        if tx_to_hub.send(msg_from_server).await.is_err() {
+                        if tx_to_hub.send(HubMessage::FromServerSettings(settings.clone())).await.is_err() {
                             error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
                         }
                     },
-                    Message::DeleteHub(ref hub) => {
+                    ServerMessage::DeleteHub(ref hub) => {
                         let id = hub.network.clone();
                         let mut manager = app_context.net_man.write().await;
                         manager.remove_hub(&id, &hub.metadata.destination_id);
                         if tx_to_insert_hub.send(HubChanged::Delete(id)).await.is_err() {
                             error!("Error: No se pudo notificar a network_dba_task que debe eliminar un Hub");
                         }
-                        if tx_to_hub.send(msg_from_server).await.is_err() {
+                        if tx_to_hub.send(HubMessage::DeleteHub(hub.clone())).await.is_err() {
                             error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
                         }
                     }
@@ -128,7 +129,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
             
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 match msg_from_hub {
-                    Message::FromHubSettings(settings) => {
+                    HubMessage::FromHubSettings(settings) => {
                         let id = settings.network.clone();
                         let mut manager = app_context.net_man.write().await;
                         if !manager.search_hub(&id, &settings.metadata.sender_user_id) {
@@ -140,7 +141,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             }
                         }
                     },
-                    Message::FromHubSettingsAck(settings_ok) => {
+                    HubMessage::FromHubSettingsAck(settings_ok) => {
                         let id = settings_ok.network.clone();
                         if let Some(hub_row) = hub_hash_aux.get_mut(&id) {
                             if let Some(row) = hub_row.iter().find(|r| r.metadata.sender_user_id == settings_ok.metadata.sender_user_id) {
@@ -161,7 +162,6 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
 }
 
 
-#[instrument(name = "handle_action", skip(app_context))]
 async fn handle_action(app_context: AppContext, network: &NetworkMsg, action: NetworkAction) -> NetworkChanged {
     let mut manager = app_context.net_man.write().await;
     let net_chan : NetworkChanged = match action {
@@ -198,10 +198,8 @@ async fn handle_action(app_context: AppContext, network: &NetworkMsg, action: Ne
 /// 3. `tx_to_hub`: Canal hacia la tarea (`msg_to_hub`) para que envíe el mensaje
 /// de cambio de actividad de red a los Hubs.
 
-#[instrument(name = "handle_event")]
 async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
-                      tx_to_dba_insert: &mpsc::Sender<UpdateNetwork>,
-                      tx_to_hub: &mpsc::Sender<Message>,
+                      tx_to_hub: &mpsc::Sender<HubMessage>,
                       net_chan: NetworkChanged,
                       app_context: AppContext) {
 
@@ -212,7 +210,7 @@ async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
                 metadata,
                 network: id,
             };
-            if tx_to_hub.send(Message::DeleteHub(delete_hub)).await.is_err() {
+            if tx_to_hub.send(HubMessage::DeleteHub(delete_hub)).await.is_err() {
                 error!("Error: No se pudo enviar mensaje de eliminación de red a los hubs");
             }
         },
@@ -223,7 +221,7 @@ async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
                 network: network.id_network,
                 active: network.active,
             };
-            if tx_to_hub.send(Message::ActiveHub(active_hub)).await.is_err() {
+            if tx_to_hub.send(HubMessage::ActiveHub(active_hub)).await.is_err() {
                 error!("Error: No se pudo enviar mensaje de activación/desactivación de red a los hubs");
             }
         },
@@ -232,9 +230,6 @@ async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
 
     if tx_to_insert_network.send(net_chan).await.is_err() {
         error!("Error: No se pudo enviar NetworkChanged");
-    }
-    if tx_to_dba_insert.send(UpdateNetwork::Changed).await.is_err() {
-        error!("Error: No se pudo enviar UpdateNetwork::Changed");
     }
 }
 
@@ -251,7 +246,6 @@ fn create_metadata(app_context: AppContext) -> Metadata {
 }
 
 
-
 /// Tarea de persistencia de configuración de red.
 ///
 /// Actúa como consumidor de los cambios generados por [`run_network_task`].
@@ -263,35 +257,31 @@ fn create_metadata(app_context: AppContext) -> Metadata {
 /// - **Update:** Actualiza el campo `active` en la tabla `network`.
 /// - **Insert:** Crea un nuevo registro en la tabla `network`.
 
-#[instrument(name = "network_dba", skip(app_context))]
-pub async fn network_dba(mut rx_from_network: mpsc::Receiver<NetworkChanged>,
-                              mut rx_from_network_hub: mpsc::Receiver<HubChanged>,
-                              app_context: AppContext) {
+#[instrument(name = "network_dba", skip(rx_from_network, rx_from_network_hub))]
+pub async fn network_dba(tx: mpsc::Sender<DataServiceCommand>,
+                         mut rx_from_network: mpsc::Receiver<NetworkChanged>,
+                         mut rx_from_network_hub: mpsc::Receiver<HubChanged>) {
 
     loop {
         tokio::select! {
             Some(msg_from_network) = rx_from_network.recv() => {
                 match msg_from_network {
                     NetworkChanged::Delete { id} => {
-                        match app_context.repo.delete_network(&id).await {
-                            Ok(_) => {},
-                            Err(e) => error!("Error eliminando red en base de datos {}", e)
+                        if tx.send(DataServiceCommand::DeleteNetwork(id.clone())).await.is_err() {
+                            error!("Error: no se pudo enviar comando DeleteNetwork");
                         }
-                        match app_context.repo.delete_hub_network(&id).await {
-                            Ok(_) => {},
-                            Err(e) => error!("Error eliminando hubs de la base de datos asociadas a la red: {}. {}", id, e)
+                        if tx.send(DataServiceCommand::DeleteAllHubByNetwork(id)).await.is_err() {
+                            error!("Error: no se pudo enviar comando DeleteNetwork");
                         }
                     },
                     NetworkChanged::Update(network) => {
-                        match app_context.repo.update_network(network).await {
-                            Ok(_) => {},
-                            Err(e) => error!("Error actualizando red en base de datos {}", e)
+                        if tx.send(DataServiceCommand::UpdateNetwork(network)).await.is_err() {
+                            error!("Error: no se pudo enviar comando UpdateNetwork");
                         }
                     },
                     NetworkChanged::Insert(network) => {
-                        match app_context.repo.insert_network(network).await {
-                            Ok(_) => {},
-                            Err(e) => error!("Error eliminando red en base insert {}", e)
+                        if tx.send(DataServiceCommand::NewNetwork(network)).await.is_err() {
+                            error!("Error: no se pudo enviar comando NewNetwork");
                         }
                     },
                 }
@@ -299,22 +289,19 @@ pub async fn network_dba(mut rx_from_network: mpsc::Receiver<NetworkChanged>,
 
             Some(msg_hub_changed) = rx_from_network_hub.recv() => {
                 match msg_hub_changed {
-                    HubChanged::Insert(hub_row) => {
-                        match app_context.repo.insert_hub(hub_row).await {
-                            Ok(_) => {},
-                            Err(e) => { error!("Error insertando hub en la base de datos {}", e); }
+                    HubChanged::Insert(hub) => {
+                        if tx.send(DataServiceCommand::NewHub(hub)).await.is_err() {
+                            error!("Error: no se pudo enviar comando NewHub");
                         }
                     },
                     HubChanged::Delete(id) => {
-                        match app_context.repo.delete_hub(&id).await {
-                            Ok(_) => {},
-                            Err(e) => error!("Error eliminando hub la base de datos {}", e),
+                        if tx.send(DataServiceCommand::DeleteHub(id)).await.is_err() {
+                            error!("Error: no se pudo enviar comando DeleteHub");
                         }
                     },
-                    HubChanged::Update(hub_row) => {
-                        match app_context.repo.update_hub(hub_row).await {
-                            Ok(_) => (),
-                            Err(e) => error!("Error: No se pudo actualizar hub en la base de datos: {}", e),
+                    HubChanged::Update(hub) => {
+                        if tx.send(DataServiceCommand::UpdateHub(hub)).await.is_err() {
+                            error!("Error: no se pudo enviar comando UpdateHub");
                         }
                     }
                 }

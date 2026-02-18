@@ -1,11 +1,96 @@
 use sqlx::{FromRow};
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
-use crate::database::domain::Table;
+use tracing::{error, info, warn};
 use crate::system::domain::System;
 use rand::seq::IteratorRandom;
-use crate::message::domain::{Message,Metadata};
+use tokio::sync::mpsc;
+use crate::context::domain::AppContext;
+use crate::database::domain::DataServiceCommand;
+use crate::message::domain::{HubMessage, Metadata, ServerMessage};
+use crate::network::logic::{network_admin, network_dba};
+
+pub enum NetworkServiceResponse {
+    HubMessage(HubMessage),
+    DataCommand(DataServiceCommand),
+}
+
+
+pub enum NetworkServiceCommand {
+    HubMessage(HubMessage),
+    ServerMessage(ServerMessage),
+}
+
+
+pub struct NetworkService {
+    sender: mpsc::Sender<NetworkServiceResponse>,
+    receiver: mpsc::Receiver<NetworkServiceCommand>,
+    context: AppContext,
+}
+
+
+impl NetworkService {
+    pub fn new(sender: mpsc::Sender<NetworkServiceResponse>,
+               receiver: mpsc::Receiver<NetworkServiceCommand>,
+               context: AppContext) -> Self {
+        Self {
+            sender,
+            receiver,
+            context
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let (tx_to_insert_network, rx_from_network) = mpsc::channel::<NetworkChanged>(50);
+        let (tx_to_core, mut rx_response_admin) = mpsc::channel::<HubMessage>(50);
+        let (tx_to_insert_hub, rx_from_network_hub) = mpsc::channel::<HubChanged>(50);
+        let (tx_server_command, rx_from_server) = mpsc::channel::<ServerMessage>(50);
+        let (tx_hub_command, rx_from_hub) = mpsc::channel::<HubMessage>(50);
+        let (tx_dba_response, mut rx_response_dba) = mpsc::channel::<DataServiceCommand>(50);
+
+        tokio::spawn(network_admin(tx_to_insert_network,
+                                   tx_to_core,
+                                   tx_to_insert_hub,
+                                   rx_from_server,
+                                   rx_from_hub,
+                                   self.context.clone()));
+
+        tokio::spawn(network_dba(tx_dba_response,
+                                 rx_from_network,
+                                 rx_from_network_hub));
+
+        loop {
+            tokio::select! {
+                Some(command) = self.receiver.recv() => {
+                    match command {
+                        NetworkServiceCommand::HubMessage(message) => {
+                            if tx_hub_command.send(message).await.is_err() {
+                                error!("Error: no se pudo enviar HubMessage");
+                            }
+                        },
+                        NetworkServiceCommand::ServerMessage(message) => {
+                            if tx_server_command.send(message).await.is_err() {
+                                error!("Error: no se pudo enviar ServerMessage");
+                            }
+                        }
+                    }
+                }
+                Some(message) = rx_response_admin.recv() => {
+                    if self.sender.send(NetworkServiceResponse::HubMessage(message)).await.is_err() {
+                        error!("Error: no se pudo enviar HubMessage");
+                    }
+                }
+                Some(data_command) = rx_response_dba.recv() => {
+                    if self.sender.send(NetworkServiceResponse::DataCommand(data_command)).await.is_err() {
+                        error!("Error: no se pudo enviar DataServiceCommand");
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 /// Gestor en memoria de las configuraciones de redes y tópicos del sistema.
 ///
@@ -43,6 +128,7 @@ impl NetworkManager {
         let t_handshake = format!("iot/{id_system}/handshake");
         let t_state = format!("iot/{id_system}/state");
         let t_heartbeat = format!("iot/{id_system}/heartbeat");
+        
         Self {
             networks,
             hubs: HashMap::new(),
@@ -152,10 +238,10 @@ impl NetworkManager {
         total_hubs
     }
     
-    pub fn get_topic_to_send_msg_to_hub(&self, msg: &Message) -> Option<Topic> {
+    pub fn get_topic_to_send_msg_to_hub(&self, msg: &HubMessage) -> Option<Topic> {
 
         match msg {
-            Message::UpdateFirmware(firmware) => {
+            HubMessage::UpdateFirmware(firmware) => {
                 let id_net = firmware.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_new_firmware.clone())
@@ -163,7 +249,7 @@ impl NetworkManager {
                     None
                 }
             },
-            Message::FromServerSettings(settings) => {
+            HubMessage::FromServerSettings(settings) => {
                 let id_net = settings.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_new_setting.clone())
@@ -171,7 +257,7 @@ impl NetworkManager {
                     None
                 }
             },
-            Message::FromServerSettingsAck(settings_ack) => {
+            HubMessage::FromServerSettingsAck(settings_ack) => {
                 let id_net = settings_ack.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_setting_ok.clone())
@@ -179,7 +265,7 @@ impl NetworkManager {
                     None
                 }
             },
-            Message::DeleteHub(delete_hub) => {
+            HubMessage::DeleteHub(delete_hub) => {
                 let id_net = delete_hub.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_delete_hub.clone())
@@ -187,7 +273,7 @@ impl NetworkManager {
                     None 
                 }
             },
-            Message::ActiveHub(active_hub) => {
+            HubMessage::ActiveHub(active_hub) => {
                 let id_net = active_hub.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_active_hub.clone())
@@ -195,9 +281,14 @@ impl NetworkManager {
                     None
                 }
             },
-            Message::Heartbeat(_) => {
-                Some(self.topic_heartbeat.clone())
-            },
+            HubMessage::PingToHub(ping) => {
+                let id_net = ping.network.clone();
+                if let Some(n) = self.networks.get(&id_net) {
+                    Some(n.topic_ping_ack.clone())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -286,6 +377,7 @@ pub struct Network {
     pub topic_hub_firmware_ok: Topic,
     pub topic_balance_mode_handshake: Topic,
     pub topic_setting: Topic,
+    pub topic_ping: Topic,
 
     // Tópicos de envío
     pub topic_new_setting: Topic,
@@ -293,6 +385,7 @@ pub struct Network {
     pub topic_setting_ok: Topic,
     pub topic_delete_hub: Topic,
     pub topic_active_hub: Topic,
+    pub topic_ping_ack: Topic,
 
     pub active: bool,
 }
@@ -313,6 +406,8 @@ impl Network {
         let t_setting_ok = format!("iot/{id_network}/new_setting_ok");
         let t_delete_hub = format!("iot/{id_network}/delete_hub");
         let t_active = format!("iot/{id_network}/active");
+        let t_ping = format!("iot/{id_network}/hub/+/ping");
+        let t_ping_ack = format!("iot/{id_network}/ping");
 
         Self {
             id_network,
@@ -330,6 +425,8 @@ impl Network {
             topic_setting_ok: Topic::new(t_setting_ok, 0),
             topic_delete_hub: Topic::new(t_delete_hub, 0),
             topic_active_hub: Topic::new(t_active, 0),
+            topic_ping: Topic::new(t_ping, 1),
+            topic_ping_ack: Topic::new(t_ping_ack, 1),
             active
         }
     }
@@ -381,10 +478,6 @@ pub enum HubChanged {
     Update(HubRow),
     Delete(String),
 }
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpdateNetwork { Changed, NotChanged }
 
 
 #[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
