@@ -48,7 +48,7 @@ use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_bal
 use crate::database::tables::hub::{create_table_hub, delete_hub_according_to_id, delete_hub_according_to_network, get_all_hubs, insert_hub_table, upsert_hub};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
-use crate::database::tables::network::{create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
+use crate::database::tables::network::{count_networks, create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
 use crate::network::domain::{HubRow, NetworkRow};
 
 
@@ -227,6 +227,11 @@ impl Repository {
     /// Se utiliza para poblar la memoria (`NetworkManager`) al iniciar el sistema.
     pub async fn get_all_network(&self) -> Result<Vec<NetworkRow>, sqlx::Error> {
         let rows = get_all_network_data(&self.pool).await?;
+        Ok(rows)
+    }
+    
+    pub async fn get_number_of_networks(&self) -> Result<i64, sqlx::Error> {
+        let rows = count_networks(&self.pool).await?;
         Ok(rows)
     }
 

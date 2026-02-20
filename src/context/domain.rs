@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::network::domain::NetworkManager;
-use crate::quorum::domain::{PFCBPSettings};
+use crate::quorum::domain::{ProtocolSettings};
 use crate::system::domain::System;
 
 
@@ -45,7 +45,7 @@ pub struct AppContext {
     pub system: Arc<System>,
 
     /// Configuración de Quorum.
-    pub quorum: Arc<RwLock<PFCBPSettings>>,
+    pub quorum: Arc<ProtocolSettings>,
 }
 
 
@@ -61,7 +61,7 @@ impl AppContext {
     /// - `quorum`: Configuración del comportamiento del protocolo de balanceo.
     pub fn new(net_man: Arc<RwLock<NetworkManager>>,
                system: Arc<System>,
-               quorum: Arc<RwLock<PFCBPSettings>>) -> Self {
+               quorum: Arc<ProtocolSettings>) -> Self {
 
         Self {
             net_man,

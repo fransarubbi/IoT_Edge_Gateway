@@ -45,7 +45,8 @@ use crate::system::domain::InternalEvent;
 /// sincroniza los buffers locales (crea nuevos para redes nuevas, elimina los de redes borradas).
 
 #[instrument(name = "dba_insert_task", skip(repo))]
-pub async fn dba_insert_task(mut rx_msg: mpsc::Receiver<HubMessage>,
+pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
+                             mut rx_msg: mpsc::Receiver<HubMessage>,
                              mut rx_cmd: mpsc::Receiver<DataCommandInsert>,
                              repo: Repository) {
 
@@ -77,12 +78,32 @@ pub async fn dba_insert_task(mut rx_msg: mpsc::Receiver<HubMessage>,
             Some(command) = rx_cmd.recv() => {
                 match command {
                     DataCommandInsert::InsertNetwork(network) => {
+                        match repo.get_number_of_networks().await {
+                            Ok(networks) => {
+                                if networks == 0 {
+                                    if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
+                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_insert_task");
+                                    }
+                                } 
+                            }
+                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                        }
                         match repo.insert_network(network).await {
                             Ok(_) => {}
                             Err(e) => error!("Error: no se pudo insertar NetworkRow en base de datos. {e}"),
                         }
                     },
                     DataCommandInsert::UpdateNetwork(network) => {
+                        match repo.get_number_of_networks().await {
+                            Ok(networks) => {
+                                if networks == 0 {
+                                    if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
+                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_insert_task");
+                                    }
+                                } 
+                            }
+                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                        }
                         match repo.update_network(network).await {
                             Ok(_) => {}
                             Err(e) => error!("Error: no se pudo actualizar NetworkRow en base de datos. {e}"),
@@ -139,7 +160,8 @@ fn sort_by_vectors(msg: HubMessage, tdv: &mut TableDataVector) {
 // -------------------------------------------------------------------------------------------------
 
 
-pub async fn dba_remove_task(mut rx_cmd: mpsc::Receiver<DataCommandDelete>,
+pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
+                             mut rx_cmd: mpsc::Receiver<DataCommandDelete>,
                              repo: Repository) {
 
     while let Some(msg) = rx_cmd.recv().await {
@@ -148,6 +170,16 @@ pub async fn dba_remove_task(mut rx_cmd: mpsc::Receiver<DataCommandDelete>,
                 match repo.delete_network(&id).await {
                     Ok(_) => {}
                     Err(e) => error!("Error: no se pudo eliminar red con id: {id}. {e}"),
+                }
+                match repo.get_number_of_networks().await {
+                    Ok(networks) => {
+                        if networks == 0 {
+                            if tx.send(DataServiceResponse::NoNetworks).await.is_err() {
+                                error!("Error: no se pudo enviar NoNetworks desde dba_remove_task");
+                            }
+                        }
+                    }
+                    Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
                 }
             },
             DataCommandDelete::DeleteAllHubByNetwork(id) => {
@@ -230,6 +262,34 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             }
                         }
                     },
+                    DataCommandGet::GetTotalOfNetworks => {
+                        match repo.get_number_of_networks().await {
+                            Ok(networks) => {
+                                if networks > 0 {
+                                    if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
+                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_get_task");
+                                    }
+                                } 
+                            }
+                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                        }
+                        match repo.get_all_network().await {
+                            Ok(networks) => {
+                                if tx_to_core.send(DataServiceResponse::BatchNetwork(networks)).await.is_err() {
+                                    error!("Error: no se pudo enviar BatchNetwork desde dba_get_task");
+                                }
+                            }
+                            Err(e) => error!("Error: no se pudo obtener todas las redes de la base de datos. {e}"),
+                        }
+                        match repo.get_all_hubs().await {
+                            Ok(hubs) => {
+                                if tx_to_core.send(DataServiceResponse::BatchHub(hubs)).await.is_err() {
+                                    error!("Error: no se pudo enviar BatchHub desde dba_get_task");
+                                }
+                            }
+                            Err(e) => error!("Error: no se pudo obtener todos los hubs de la base de datos. {e}"),
+                        }
+                    }
                 }
             }
         }

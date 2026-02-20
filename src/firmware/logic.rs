@@ -6,6 +6,7 @@
 
 use chrono::{Utc};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 use crate::context::domain::AppContext;
 use crate::firmware::domain::{Action, FirmwareServiceCommand, FirmwareServiceResponse, FsmStateFirmware, Phase, StateFirmwareUpdate, UpdateSession};
@@ -23,12 +24,17 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
                                   tx_to_timer: mpsc::Sender<Event>,
                                   mut rx_msg: mpsc::Receiver<FirmwareServiceCommand>,
                                   mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
-                                  app_context: AppContext) {
+                                  app_context: AppContext,
+                                  cancel: CancellationToken) {
 
     let mut session : Option<UpdateSession> = None;
 
     loop {
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+
             Some(msg_from_server) = rx_msg.recv() => {
                 match msg_from_server {
                     FirmwareServiceCommand::Update(update) => {
@@ -58,6 +64,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
                             handle_message_from_hub(session_ref, &firmware, &tx_to_fsm).await;
                         }
                     }
+                    _ => {}
                 }
             }
 
@@ -96,22 +103,29 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
 /// Actor que encapsula la Máquina de Estados (FSM).
 /// Mantiene el estado en memoria y procesa eventos secuencialmente.
 pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
-                              mut rx_event: mpsc::Receiver<Event>) {
+                              mut rx_event: mpsc::Receiver<Event>,
+                              cancel: CancellationToken) {
 
     let mut state = FsmStateFirmware::new();
 
-    while let Some(event) = rx_event.recv().await {
-        let transition = state.step(event);
-
-        match transition {
-            Transition::Valid(t) => {
-                state = t.get_change_state();
-                if tx_actions.send(t.get_actions()).await.is_err() {
-                    error!("Error: No se pudo enviar el vector de acciones a update_firmware_task");
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+            Some(event) = rx_event.recv() => {
+                let transition = state.step(event);
+                match transition {
+                    Transition::Valid(t) => {
+                        state = t.get_change_state();
+                        if tx_actions.send(t.get_actions()).await.is_err() {
+                            error!("Error: No se pudo enviar el vector de acciones a update_firmware_task");
+                        }
+                    },
+                    Transition::Invalid(t) => {
+                        warn!("FSM Firmware transición inválida: {}", t.get_invalid());
+                    }
                 }
-            },
-            Transition::Invalid(t) => {
-                warn!("FSM Firmware transición inválida: {}", t.get_invalid());
             }
         }
     }

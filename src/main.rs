@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_context = init_fsm().await?;
 
     let repo = Repository::create_repository(
-        "amqp://guest:guest@localhost:5672"
+        &app_context.system.db_path
     ).await;
 
     let channels = Channels::new(50);
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .core_to_network_service(channels.core_to_network_service)
         .build()?;
 
-    // ===================== SERVICES =====================
+    // ===================== SERVICIOS =====================
 
     let core_handle = tokio::spawn(core.run());
 

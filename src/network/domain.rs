@@ -19,6 +19,13 @@ pub enum NetworkServiceResponse {
 pub enum NetworkServiceCommand {
     HubMessage(HubMessage),
     ServerMessage(ServerMessage),
+    Batch(Batch),
+}
+
+
+pub enum Batch {
+    Network(Vec<NetworkRow>),
+    Hub(Vec<HubRow>),
 }
 
 
@@ -48,12 +55,14 @@ impl NetworkService {
         let (tx_server_command, rx_from_server) = mpsc::channel::<ServerMessage>(50);
         let (tx_hub_command, rx_from_hub) = mpsc::channel::<HubMessage>(50);
         let (tx_dba_response, mut rx_response_dba) = mpsc::channel::<DataServiceCommand>(50);
+        let (tx_command_batch, rx_batch) = mpsc::channel::<Batch>(50);
 
         tokio::spawn(network_admin(tx_to_insert_network,
                                    tx_to_core,
                                    tx_to_insert_hub,
                                    rx_from_server,
                                    rx_from_hub,
+                                   rx_batch,
                                    self.context.clone()));
 
         tokio::spawn(network_dba(tx_dba_response,
@@ -72,6 +81,20 @@ impl NetworkService {
                         NetworkServiceCommand::ServerMessage(message) => {
                             if tx_server_command.send(message).await.is_err() {
                                 error!("Error: no se pudo enviar ServerMessage");
+                            }
+                        },
+                        NetworkServiceCommand::Batch(batch) => {
+                            match batch {
+                                Batch::Network(_) => {
+                                    if tx_command_batch.send(batch).await.is_err() {
+                                        error!("Error: no se pudo enviar BatchNetwork");
+                                    }
+                                }
+                                Batch::Hub(_) => {
+                                    if tx_command_batch.send(batch).await.is_err() {
+                                        error!("Error: no se pudo enviar BatchHub");
+                                    }
+                                }
                             }
                         }
                     }

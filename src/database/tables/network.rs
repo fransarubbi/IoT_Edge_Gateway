@@ -179,3 +179,14 @@ pub async fn upsert_network(pool: &SqlitePool,
 
     Ok(())
 }
+
+
+pub async fn count_networks(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let query = format!("SELECT COUNT(*) FROM {}", "network");
+
+    let count: i64 = sqlx::query_scalar(&query)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(count)
+}

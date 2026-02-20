@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 /// Post-Failure Control and Balancing Protocol
 #[derive(Default, Debug, Deserialize)]
-pub struct PFCBPSettings {
+pub struct ProtocolSettings {
     hello_timeout: u64,
     max_attempts: u64,
     time_between_heartbeats_balance_mode: u64,
@@ -12,21 +12,15 @@ pub struct PFCBPSettings {
 }
 
 
-impl PFCBPSettings {
-    pub fn set_hello_timeout(&mut self, timeout: u64) {
-        self.hello_timeout = timeout;
-    }
-    pub fn set_max_attempts(&mut self, max_attempts: u64) {
-        self.max_attempts = max_attempts;
-    }
-    pub fn set_time_between_heartbeats_balance_mode(&mut self, timeout: u64) {
-        self.time_between_heartbeats_balance_mode = timeout;
-    }
-    pub fn set_time_between_heartbeats_normal(&mut self, timeout: u64) {
-        self.time_between_heartbeats_normal = timeout;
-    }
-    pub fn set_time_between_heartbeats_safe_mode(&mut self, timeout: u64) {
-        self.time_between_heartbeats_safe_mode = timeout;
+impl ProtocolSettings {
+    pub fn new() -> Self {
+        Self {
+            hello_timeout: 30,
+            max_attempts: 14,
+            time_between_heartbeats_balance_mode: 25,
+            time_between_heartbeats_normal: 40,
+            time_between_heartbeats_safe_mode: 60
+        }
     }
 
     pub fn get_hello_timeout(&self) -> u64 {

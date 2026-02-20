@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "iot_broker"
-version = "0.1.0"
+version = "0.18.0"
 dependencies = [
  "chrono",
  "derive_builder",
@@ -1076,6 +1076,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "toml",
  "tonic",
  "tonic-build",

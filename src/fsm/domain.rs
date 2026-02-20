@@ -18,7 +18,9 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 use crate::context::domain::AppContext;
 use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
@@ -38,6 +40,8 @@ pub enum FsmServiceCommand {
     Epoch(u32),
     FromHub(HubMessage),
     FromServer(ServerMessage),
+    CreateRuntime,
+    DeleteRuntime,
 }
 
 
@@ -46,6 +50,16 @@ pub struct FsmService {
     receiver: mpsc::Receiver<FsmServiceCommand>,
     context: AppContext,
 }
+
+
+struct FsmRuntime {
+    handles: Vec<JoinHandle<()>>,
+    cancel_token: CancellationToken,
+    tx_command: mpsc::Sender<FsmServiceCommand>,
+    rx_response: mpsc::Receiver<FsmServiceResponse>,
+    rx_heartbeat_response: mpsc::Receiver<FsmServiceResponse>,
+}
+
 
 
 impl FsmService {
@@ -59,121 +73,170 @@ impl FsmService {
         }
     }
 
-    pub async fn run(mut self) {
+    fn spawn_runtime(&self) -> FsmRuntime {
 
-        let (tx_to_core, mut rx_response) = mpsc::channel::<FsmServiceResponse>(50);
+        let token = CancellationToken::new();
+        let mut handles = Vec::new();
+
+        let (tx_command, rx_command) = mpsc::channel::<FsmServiceCommand>(50);
+        let (tx_to_core, rx_response) = mpsc::channel::<FsmServiceResponse>(50);
         let (tx_to_fsm, rx_event) = mpsc::channel::<Event>(50);
         let (general_tx_to_timer, rx_from_general) = mpsc::channel::<Event>(50);
         let (general_tx_to_heartbeat, rx_heartbeat_from_general) = mpsc::channel::<Action>(50);
-        let (tx_command, rx_command) = mpsc::channel::<FsmServiceCommand>(50);
         let (tx_actions, rx_from_fsm) = mpsc::channel::<Vec<Action>>(50);
         let (tx_to_heartbeat, rx_from_heartbeat_watchdog) = mpsc::channel::<Event>(50);
-        let (heartbeat_tx_to_core, mut rx_heartbeat_response) = mpsc::channel::<FsmServiceResponse>(50);
         let (heartbeat_tx_to_timer, rx_from_heartbeat) = mpsc::channel::<Event>(50);
+        let (heartbeat_tx_to_core, rx_heartbeat_response) = mpsc::channel::<FsmServiceResponse>(50);
 
+        let child_token = token.child_token();
         let general_tx_to_fsm = tx_to_fsm.clone();
-        tokio::spawn(fsm(tx_to_core,
-                         general_tx_to_fsm,
-                         general_tx_to_timer,
-                         general_tx_to_heartbeat,
-                         rx_command,
-                         rx_from_fsm,
-                         self.context.clone()));
+        handles.push(tokio::spawn(fsm(tx_to_core,
+                                      general_tx_to_fsm,
+                                      general_tx_to_timer,
+                                      general_tx_to_heartbeat,
+                                      rx_command,
+                                      rx_from_fsm,
+                                      self.context.clone(),
+                                      child_token)));
 
-        tokio::spawn(run_fsm(tx_actions,
-                             rx_event));
+        let child_token = token.child_token();
+        handles.push(tokio::spawn(run_fsm(tx_actions,
+                                          rx_event,
+                                          child_token)));
 
+        let child_token = token.child_token();
         let timer_tx_to_fsm = tx_to_fsm.clone();
-        tokio::spawn(general_fsm_watchdog_timer(timer_tx_to_fsm,
-                                                rx_from_general));
+        handles.push(tokio::spawn(fsm_watchdog_timer(timer_tx_to_fsm,
+                                                     rx_from_general,
+                                                     child_token)));
 
-        tokio::spawn(heartbeat_generator_timer(tx_to_heartbeat,
-                                               rx_from_heartbeat));
+        let child_token = token.child_token();
+        handles.push(tokio::spawn(heartbeat_generator_timer(tx_to_heartbeat,
+                                                            rx_from_heartbeat,
+                                                            child_token)));
 
-        tokio::spawn(heartbeat_generator(heartbeat_tx_to_core,
-                                         heartbeat_tx_to_timer,
-                                         rx_heartbeat_from_general,
-                                         rx_from_heartbeat_watchdog,
-                                         self.context.clone()));
+        let child_token = token.child_token();
+        handles.push(tokio::spawn(heartbeat_generator(heartbeat_tx_to_core,
+                                                      heartbeat_tx_to_timer,
+                                                      rx_heartbeat_from_general,
+                                                      rx_from_heartbeat_watchdog,
+                                                      self.context.clone(),
+                                                      child_token)));
+
+        FsmRuntime {
+            handles,
+            cancel_token: token,
+            tx_command,
+            rx_response,
+            rx_heartbeat_response,
+        }
+    }
+
+    pub async fn run(mut self) {
+
+        let mut runtime: Option<FsmRuntime> = None;
 
         loop {
-            tokio::select! {
-                Some(cmd) = self.receiver.recv() => {
-                    match cmd {
-                        FsmServiceCommand::Epoch(epoch) => {
-                            if tx_command.send(FsmServiceCommand::Epoch(epoch)).await.is_err() {
-                                error!("Error: no se pudo enviar Epoch a fsm");
-                            }
-                        },
-                        FsmServiceCommand::ErrorEpoch => {
-                            if tx_command.send(FsmServiceCommand::ErrorEpoch).await.is_err() {
-                                error!("Error: no se pudo enviar ErrorEpoch a fsm");
-                            }
-                        },
-                        FsmServiceCommand::FromServer(server_message) => {
-                            if tx_command.send(FsmServiceCommand::FromServer(server_message)).await.is_err() {
-                                error!("Error: no se pudo enviar mensaje FromServer a fsm");
-                            }
-                        },
-                        FsmServiceCommand::FromHub(hub_message) => {
-                            if tx_command.send(FsmServiceCommand::FromHub(hub_message)).await.is_err() {
-                                error!("Error: no se pudo enviar FromHub a fsm");
-                            }
-                        },
-                    }
-                }
-                Some(response) = rx_response.recv() => {
-                    match response {
-                        FsmServiceResponse::GetEpoch => {
-                            if self.sender.send(FsmServiceResponse::GetEpoch).await.is_err() {
-                                error!("Error: no se pudo enviar GetEpoch desde FsmService al Core");
-                            }
-                        },
-                        FsmServiceResponse::NewEpoch(epoch) => {
-                            if self.sender.send(FsmServiceResponse::NewEpoch(epoch)).await.is_err() {
-                                error!("Error: no se pudo enviar NewEpoch desde FsmService al Core");
-                            }
-                        },
-                        FsmServiceResponse::ToHub(hub_message) => {
-                            match hub_message {
-                                HubMessage::HandshakeToHub(handshake) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(handshake))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de HandshakeToHub desde FsmService al Core");
+            match runtime {
+                Some(ref mut rt) => {
+                    tokio::select! {
+                        Some(cmd) = self.receiver.recv() => {
+                            match cmd {
+                                FsmServiceCommand::Epoch(epoch) => {
+                                    if rt.tx_command.send(FsmServiceCommand::Epoch(epoch)).await.is_err() {
+                                        error!("Error: no se pudo enviar Epoch a fsm");
                                     }
                                 },
-                                HubMessage::StateBalanceMode(state) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateBalanceMode(state))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de StateBalanceMode desde FsmService al Core");
+                                FsmServiceCommand::ErrorEpoch => {
+                                    if rt.tx_command.send(FsmServiceCommand::ErrorEpoch).await.is_err() {
+                                        error!("Error: no se pudo enviar ErrorEpoch a fsm");
                                     }
                                 },
-                                HubMessage::PhaseNotification(phase) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::PhaseNotification(phase))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de PhaseNotification desde FsmService al Core");
+                                FsmServiceCommand::FromServer(server_message) => {
+                                    if rt.tx_command.send(FsmServiceCommand::FromServer(server_message)).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje FromServer a fsm");
                                     }
                                 },
-                                HubMessage::StateNormal(state) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateNormal(state))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de StateNormal desde FsmService al Core");
+                                FsmServiceCommand::FromHub(hub_message) => {
+                                    if rt.tx_command.send(FsmServiceCommand::FromHub(hub_message)).await.is_err() {
+                                        error!("Error: no se pudo enviar FromHub a fsm");
                                     }
                                 },
-                                HubMessage::StateSafeMode(state) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateSafeMode(state))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de StateSafeMode desde FsmService al Core");
+                                FsmServiceCommand::DeleteRuntime => {
+                                    if let Some(rt) = runtime.take() {
+                                        rt.cancel_token.cancel();
+                                        for h in rt.handles {
+                                            let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+                                        }
                                     }
-                                },
-                                HubMessage::Ping(msg) => {
-                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Ping(msg))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
-                                    }
-                                },
+                                }
                                 _ => {}
                             }
-                        },
-                        FsmServiceResponse::ToServer(server_message) => {
-                            match server_message {
-                                ServerMessage::HelloWorld(hello) => {
-                                    if self.sender.send(FsmServiceResponse::ToServer(ServerMessage::HelloWorld(hello))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
+                        }
+                        Some(response) = rt.rx_response.recv() => {
+                            match response {
+                                FsmServiceResponse::GetEpoch => {
+                                    if self.sender.send(FsmServiceResponse::GetEpoch).await.is_err() {
+                                        error!("Error: no se pudo enviar GetEpoch desde FsmService al Core");
+                                    }
+                                },
+                                FsmServiceResponse::NewEpoch(epoch) => {
+                                    if self.sender.send(FsmServiceResponse::NewEpoch(epoch)).await.is_err() {
+                                        error!("Error: no se pudo enviar NewEpoch desde FsmService al Core");
+                                    }
+                                },
+                                FsmServiceResponse::ToHub(hub_message) => {
+                                    match hub_message {
+                                        HubMessage::HandshakeToHub(handshake) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(handshake))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de HandshakeToHub desde FsmService al Core");
+                                            }
+                                        },
+                                        HubMessage::StateBalanceMode(state) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateBalanceMode(state))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de StateBalanceMode desde FsmService al Core");
+                                            }
+                                        },
+                                        HubMessage::PhaseNotification(phase) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::PhaseNotification(phase))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de PhaseNotification desde FsmService al Core");
+                                            }
+                                        },
+                                        HubMessage::StateNormal(state) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateNormal(state))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de StateNormal desde FsmService al Core");
+                                            }
+                                        },
+                                        HubMessage::StateSafeMode(state) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::StateSafeMode(state))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de StateSafeMode desde FsmService al Core");
+                                            }
+                                        },
+                                        HubMessage::Ping(msg) => {
+                                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Ping(msg))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
+                                            }
+                                        },
+                                        _ => {}
+                                    }
+                                },
+                                FsmServiceResponse::ToServer(server_message) => {
+                                    match server_message {
+                                        ServerMessage::HelloWorld(hello) => {
+                                            if self.sender.send(FsmServiceResponse::ToServer(ServerMessage::HelloWorld(hello))).await.is_err() {
+                                                error!("Error: no se pudo enviar mensaje de Ping desde FsmService al Core");
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        Some(heartbeat) = rt.rx_heartbeat_response.recv() => {
+                            match heartbeat {
+                                FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat)) => {
+                                    if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat))).await.is_err() {
+                                        error!("Error: no se pudo enviar Heartbeat desde FsmService al Core");
                                     }
                                 }
                                 _ => {}
@@ -181,14 +244,16 @@ impl FsmService {
                         }
                     }
                 }
-                Some(heartbeat) = rx_heartbeat_response.recv() => {
-                    match heartbeat {
-                        FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat)) => {
-                            if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat))).await.is_err() {
-                                error!("Error: no se pudo enviar Heartbeat desde FsmService al Core");
-                            }
+                None => {
+                    if let Some(cmd) = self.receiver.recv().await {
+                        match cmd {
+                            FsmServiceCommand::CreateRuntime => {
+                                if runtime.is_none() {
+                                    runtime = Some(self.spawn_runtime());
+                                }
+                            },
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
@@ -913,8 +978,9 @@ fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
-pub async fn general_fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
-                                        mut cmd_rx: mpsc::Receiver<Event>) {
+pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
+                                mut cmd_rx: mpsc::Receiver<Event>,
+                                cancel: CancellationToken) {
     loop {
         let duration = match cmd_rx.recv().await {
             Some(Event::InitTimer(d)) => d,
@@ -925,6 +991,9 @@ pub async fn general_fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
 
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
             _ = sleep(duration) => {
                 // El tiempo se agotó
                 let _ = tx_to_fsm.send(Event::Timeout).await;
@@ -1729,8 +1798,9 @@ mod tests {
         let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let token = CancellationToken::new();
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Iniciar timer con duración corta
@@ -1749,7 +1819,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Iniciar timer
@@ -1772,7 +1843,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Ejecutar 3 ciclos de timer
@@ -1791,7 +1863,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Enviar StopTimer sin InitTimer primero (debe ignorarse)
@@ -1810,7 +1883,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         let handle = tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Cerrar canal de comandos
@@ -1829,7 +1903,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Enviar evento inválido
@@ -1851,7 +1926,8 @@ mod tests {
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            general_fsm_watchdog_timer(tx_to_fsm, rx_cmd).await;
+            let token = CancellationToken::new();
+            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
         });
 
         // Iniciar timer

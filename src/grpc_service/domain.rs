@@ -37,7 +37,7 @@ impl GrpcService {
         let (tx_to_core, mut rx_from_grpc) = mpsc::channel::<InternalEvent>(50);
         let (tx, rx) = mpsc::channel::<EdgeUpload>(50);
 
-        tokio::spawn(remote_grpc(tx_to_core, rx, self.context.clone()));
+        tokio::spawn(grpc(tx_to_core, rx, self.context.clone()));
         
         loop {
             tokio::select! {
@@ -100,7 +100,7 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 }
 
 
-async fn remote_grpc(tx: mpsc::Sender<InternalEvent>,
+async fn grpc(tx: mpsc::Sender<InternalEvent>,
                      mut rx_outbound: mpsc::Receiver<EdgeUpload>,
                      app_context: AppContext) {
 

@@ -19,35 +19,9 @@ use crate::context::domain::AppContext;
 use crate::database::domain::DataServiceCommand;
 use crate::database::repository::Repository;
 use crate::message::domain::{ActiveHub, DeleteHub, HubMessage, Metadata, Network as NetworkMsg, ServerMessage};
-use crate::network::domain::{HubChanged, HubRow, Network, NetworkAction, 
-                             NetworkChanged, NetworkManager, NetworkRow};
+use crate::network::domain::{Batch, HubChanged, HubRow, Network, NetworkAction, NetworkChanged, NetworkManager, NetworkRow};
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 use crate::system::domain::{ErrorType};
-
-
-/// Carga las redes y los hubs desde la base de datos, al Network Manager.
-pub async fn load_networks(repo: &Repository,
-                           net_man: &Arc<RwLock<NetworkManager>>,
-                           ) -> Result<(), ErrorType> {
-
-    let hubs_row_vec = repo.get_all_hubs().await?;
-    let networks_row_vec = repo.get_all_network().await?;
-    let mut manager = net_man.write().await;
-
-    for networks_row in networks_row_vec {
-        let network = networks_row.cast_to_network();
-        manager.add_network(network);
-    }
-
-    for hubs_row in hubs_row_vec {
-        let net_id = hubs_row.network_id.clone();
-        let hub = hubs_row.cast_to_hub();
-        manager.add_hub(net_id, hub);
-    }
-
-    info!("Estado cargado: {} redes procesadas.", manager.networks.len());
-    Ok(())
-}
 
 
 /// Tarea principal de procesamiento de actualizaciones de red.
@@ -77,10 +51,11 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                            tx_to_insert_hub: mpsc::Sender<HubChanged>,
                            mut rx_from_server: mpsc::Receiver<ServerMessage>,
                            mut rx_from_hub: mpsc::Receiver<HubMessage>,
+                           mut rx_batch: mpsc::Receiver<Batch>,
                            app_context: AppContext) {
 
     let mut hub_hash_aux : HashMap<String, HashSet<HubRow>> = HashMap::new();
-
+    
     loop {
         tokio::select! {
             Some(msg_from_server) = rx_from_server.recv() => {
@@ -155,6 +130,28 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         }
                     },
                     _ => {},
+                }
+            }
+            
+            Some(batch) = rx_batch.recv() => {
+                match batch {
+                    Batch::Network(networks) => {
+                        let mut manager = app_context.net_man.write().await;
+                        for networks_row in networks {
+                            let network = networks_row.cast_to_network();
+                            manager.add_network(network);
+                        }
+                        info!("Info: estado cargado, {} redes en sistema", manager.networks.len());
+                    }
+                    Batch::Hub(hubs) => {
+                        let mut manager = app_context.net_man.write().await;
+                        for hubs_row in hubs {
+                            let net_id = hubs_row.network_id.clone();
+                            let hub = hubs_row.cast_to_hub();
+                            manager.add_hub(net_id, hub);
+                        }
+                        info!("Info: estado cargado, {} hubs en sistema", manager.get_total_hubs());
+                    }
                 }
             }
         }

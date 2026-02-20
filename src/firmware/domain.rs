@@ -13,16 +13,22 @@
 use std::cmp::PartialEq;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 use crate::context::domain::AppContext;
 use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
+use crate::fsm::domain::{fsm_watchdog_timer, FsmServiceCommand, FsmServiceResponse};
+use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
 use crate::message::domain::{FirmwareOk, HubMessage, ServerMessage, UpdateFirmware};
 
 
 pub enum FirmwareServiceCommand {
     Update(UpdateFirmware),
     HubResponse(FirmwareOk),
+    CreateRuntime,
+    DeleteRuntime,
 }
 
 
@@ -39,6 +45,14 @@ pub struct FirmwareService {
 }
 
 
+struct FirmwareRuntime {
+    handles: Vec<JoinHandle<()>>,
+    cancel_token: CancellationToken,
+    tx_msg: mpsc::Sender<FirmwareServiceCommand>,
+    rx_response: mpsc::Receiver<FirmwareServiceResponse>,
+}
+
+
 impl FirmwareService {
     pub fn new(sender: mpsc::Sender<FirmwareServiceResponse>,
                receiver: mpsc::Receiver<FirmwareServiceCommand>,
@@ -50,58 +64,100 @@ impl FirmwareService {
         }
     }
 
-    pub async fn run(mut self) {
+    fn spawn_runtime(&self) -> FirmwareRuntime {
 
-        let (tx_response, mut rx_response) = mpsc::channel::<FirmwareServiceResponse>(50);
+        let token = CancellationToken::new();
+        let mut handles = Vec::new();
+
+        let (tx_response, rx_response) = mpsc::channel::<FirmwareServiceResponse>(50);
         let (tx_to_fsm, fsm_rx_from_update_task) = mpsc::channel::<Event>(50);
         let (tx_to_timer, timer_rx_from_update_task) = mpsc::channel::<Event>(50);
         let (tx_msg, rx_msg) = mpsc::channel::<FirmwareServiceCommand>(50);
         let (tx_to_update_task, rx_from_fsm) = mpsc::channel::<Vec<Action>>(50);
 
+        let child_token = token.child_token();
         let update_tx_to_fsm = tx_to_fsm.clone();
-        tokio::spawn(update_firmware_task(tx_response,
+        handles.push(tokio::spawn(update_firmware_task(tx_response,
                                           update_tx_to_fsm,
                                           tx_to_timer,
                                           rx_msg,
                                           rx_from_fsm,
-                                          self.context.clone()));
+                                          self.context.clone(), child_token)));
 
-        tokio::spawn(run_fsm_firmware(tx_to_update_task,
-                                      fsm_rx_from_update_task));
+        let child_token = token.child_token();
+        handles.push(tokio::spawn(run_fsm_firmware(tx_to_update_task,
+                                      fsm_rx_from_update_task, child_token)));
 
+        let child_token = token.child_token();
         let timer_tx_to_fsm = tx_to_fsm.clone();
-        tokio::spawn(firmware_watchdog_timer(timer_tx_to_fsm,
-                                             timer_rx_from_update_task));
+        handles.push(tokio::spawn(firmware_watchdog_timer(timer_tx_to_fsm,
+                                             timer_rx_from_update_task, child_token)));
 
+        FirmwareRuntime {
+            handles,
+            cancel_token: token,
+            tx_msg,
+            rx_response
+        }
+    }
+
+    pub async fn run(mut self) {
+        
+        let mut runtime: Option<FirmwareRuntime> = None;
+        
         loop {
-            tokio::select! {
-                Some(cmd) = self.receiver.recv() => {
-                    match cmd {
-                        FirmwareServiceCommand::Update(update) => {
-                            if tx_msg.send(FirmwareServiceCommand::Update(update)).await.is_err() {
-                                error!("Error: no se pudo enviar comando Update a update_firmware_task");
+            match runtime {
+                Some(ref mut rt) => {
+                    tokio::select! {
+                        Some(cmd) = self.receiver.recv() => {
+                            match cmd {
+                                FirmwareServiceCommand::Update(update) => {
+                                    if rt.tx_msg.send(FirmwareServiceCommand::Update(update)).await.is_err() {
+                                        error!("Error: no se pudo enviar comando Update a update_firmware_task");
+                                    }
+                                },
+                                FirmwareServiceCommand::HubResponse(response) => {
+                                    if rt.tx_msg.send(FirmwareServiceCommand::HubResponse(response)).await.is_err() {
+                                        error!("Error: no se pudo enviar mensaje HubResponse a update_firmware_task");
+                                    }
+                                },
+                                FirmwareServiceCommand::DeleteRuntime => {
+                                    if let Some(rt) = runtime.take() {
+                                        rt.cancel_token.cancel();
+                                        for h in rt.handles {
+                                            let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+                                        }
+                                    }
+                                },
+                                _ => {}
                             }
-                        },
-                        FirmwareServiceCommand::HubResponse(response) => {
-                            if tx_msg.send(FirmwareServiceCommand::HubResponse(response)).await.is_err() {
-                                error!("Error: no se pudo enviar mensaje HubResponse a update_firmware_task");
+                        }
+                        Some(response) = rt.rx_response.recv() => {
+                            match response {
+                                FirmwareServiceResponse::HubCommand(response) => {
+                                    if self.sender.send(FirmwareServiceResponse::HubCommand(response)).await.is_err() {
+                                        error!("Error: no se pudo enviar respuesta HubCommand al Core");
+                                    }
+                                },
+                                FirmwareServiceResponse::ServerAck(response) => {
+                                    if self.sender.send(FirmwareServiceResponse::ServerAck(response)).await.is_err() {
+                                        error!("Error: no se pudo enviar respuesta ServerAck al Core");
+                                    }
+                                },
                             }
                         }
                     }
                 }
-
-                Some(response) = rx_response.recv() => {
-                    match response {
-                        FirmwareServiceResponse::HubCommand(response) => {
-                            if self.sender.send(FirmwareServiceResponse::HubCommand(response)).await.is_err() {
-                                error!("Error: no se pudo enviar respuesta HubCommand al Core");
-                            }
-                        },
-                        FirmwareServiceResponse::ServerAck(response) => {
-                            if self.sender.send(FirmwareServiceResponse::ServerAck(response)).await.is_err() {
-                                error!("Error: no se pudo enviar respuesta ServerAck al Core");
-                            }
-                        },
+                None => {
+                    if let Some(cmd) = self.receiver.recv().await {
+                        match cmd {
+                            FirmwareServiceCommand::CreateRuntime => {
+                                if runtime.is_none() {
+                                    runtime = Some(self.spawn_runtime());
+                                }
+                            },
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -418,7 +474,8 @@ fn compute_on_entry(old: &FsmStateFirmware, new: &FsmStateFirmware) -> Action {
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
 async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
-                                mut cmd_rx: mpsc::Receiver<Event>) {
+                                mut cmd_rx: mpsc::Receiver<Event>,
+                                cancel: CancellationToken) {
     loop {
         // Estado IDLE: Esperar comando de inicio
         let duration = match cmd_rx.recv().await {
@@ -430,6 +487,9 @@ async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
 
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
             _ = sleep(duration) => {
                 // El tiempo se agotó
                 let _ = tx_to_fsm.send(Event::Timeout).await;

@@ -19,6 +19,7 @@
 use chrono::Utc;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 use crate::config::fsm::PERCENTAGE;
 use crate::context::domain::AppContext;
@@ -48,7 +49,8 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                   tx_to_heartbeat: mpsc::Sender<Action>,
                                   mut rx_command: mpsc::Receiver<FsmServiceCommand>,
                                   mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
-                                  app_context: AppContext) {
+                                  app_context: AppContext,
+                                  cancel: CancellationToken) {
 
     info!("Info: iniciando tarea fsm_general_channels");
     let mut current_epoch: u32 = 0;
@@ -56,6 +58,10 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
 
     loop {
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+
             Some(msg) = rx_command.recv() => {
                 match msg {
                     FsmServiceCommand::FromHub(hub_msg) => {
@@ -141,6 +147,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                             error!("Error: no se pudo enviar comando NewEpoch");
                         }
                     }
+                    _ => {}
                 }
             }
 
@@ -267,9 +274,8 @@ async fn handle_action(action: Action,
 async fn on_entry_init(app_context: &AppContext,
                        tx_to_timer: &mpsc::Sender<Event>,
                        tx_to_core: &mpsc::Sender<FsmServiceResponse>) {
-
-    let manager = app_context.quorum.read().await;
-    let duration = Duration::from_secs(manager.get_hello_timeout());
+    
+    let duration = Duration::from_secs(app_context.quorum.get_hello_timeout());
     init_timer(tx_to_timer, duration).await;
 
     let metadata = build_metadata(app_context, "Server0");
@@ -344,10 +350,8 @@ async fn on_entry_out_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
 async fn quorum_algorithm(session: &mut UpdateSession,
                           tx_to_fsm: &mpsc::Sender<Event>,
                           app_context: &AppContext) {
-
-    let manager = app_context.quorum.read().await;
-    let max_attempts = manager.get_max_attempts();
-    drop(manager);
+    
+    let max_attempts = app_context.quorum.get_max_attempts();
 
     if session.get_total_attempts() > max_attempts as f64 {
         if tx_to_fsm.send(Event::NotApproveNotAttempts).await.is_err() {
@@ -560,15 +564,25 @@ async fn on_entry_safe_mode(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
 /// * `rx_event`: Canal de entrada de eventos (triggers).
 #[instrument(name = "run_fsm", skip(rx_event))]
 pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
-                     mut rx_event: mpsc::Receiver<Event>) {
+                     mut rx_event: mpsc::Receiver<Event>,
+                     cancel: CancellationToken) {
 
     info!("Info: iniciando tarea fsm");
     let mut state = FsmState::new();
 
     handle_transition(state.step(Event::Start), &mut state, &tx_actions).await;
 
-    while let Some(event) = rx_event.recv().await {
-        handle_transition(state.step(event), &mut state, &tx_actions).await;
+    loop {
+        tokio::select! {
+
+            _ = cancel.cancelled() => {
+                break;
+            }
+
+            Some(event) = rx_event.recv() => {
+                handle_transition(state.step(event), &mut state, &tx_actions).await;
+            }
+        }
     }
 }
 
@@ -579,7 +593,8 @@ pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
 /// que fuerza el envío de un nuevo latido.
 #[instrument(name = "heartbeat_to_send_watchdog_timer", skip(cmd_rx))]
 pub async fn heartbeat_generator_timer(tx_to_heartbeat: mpsc::Sender<Event>,
-                                       mut cmd_rx: mpsc::Receiver<Event>) {
+                                       mut cmd_rx: mpsc::Receiver<Event>,
+                                       cancel: CancellationToken) {
 
     loop {
         let duration = match cmd_rx.recv().await {
@@ -590,6 +605,9 @@ pub async fn heartbeat_generator_timer(tx_to_heartbeat: mpsc::Sender<Event>,
         };
 
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
             _ = sleep(duration) => {
                 if tx_to_heartbeat.send(Event::Timeout).await.is_err() {
                     error!("Error: no se pudo enviar evento Timeout");
@@ -612,7 +630,8 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                  tx_to_timer: mpsc::Sender<Event>,
                                  mut rx_from_fsm: mpsc::Receiver<Action>,
                                  mut cmd_rx: mpsc::Receiver<Event>,
-                                 app_context: AppContext) {
+                                 app_context: AppContext,
+                                 cancel: CancellationToken) {
     enum HeartbeatState {
         BalanceMode,
         Normal,
@@ -624,26 +643,29 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
 
     loop {
         tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+
             Some(action) = rx_from_fsm.recv() => {
-                let manager = app_context.quorum.read().await;
                 match action {
                     Action::SendHeartbeatMessagePhase => {
                         beat = HeartbeatState::BalanceMode;
-                        let duration = manager.get_time_between_heartbeats_balance_mode();
+                        let duration = app_context.quorum.get_time_between_heartbeats_balance_mode();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
                             error!("Error: no se pudo enviar evento InitTimer");
                         }
                     },
                     Action::SendHeartbeatMessageNormal => {
                         beat = HeartbeatState::Normal;
-                        let duration = manager.get_time_between_heartbeats_normal();
+                        let duration = app_context.quorum.get_time_between_heartbeats_normal();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
                             error!("Error: no se pudo enviar evento InitTimer");
                         }
                     },
                     Action::SendHeartbeatMessageSafeMode => {
                         beat = HeartbeatState::SafeMode;
-                        let duration = manager.get_time_between_heartbeats_safe_mode();
+                        let duration = app_context.quorum.get_time_between_heartbeats_safe_mode();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
                             error!("Error: no se pudo enviar evento InitTimer");
                         }
@@ -659,11 +681,10 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
 
             Some(Event::Timeout) = cmd_rx.recv() => {
                 send_heartbeat(&tx_to_core, &app_context).await;
-                let manager = app_context.quorum.read().await;
                 let duration = match beat {
-                    HeartbeatState::BalanceMode => Duration::from_secs(manager.get_time_between_heartbeats_balance_mode()),
-                    HeartbeatState::Normal => Duration::from_secs(manager.get_time_between_heartbeats_normal()),
-                    HeartbeatState::SafeMode => Duration::from_secs(manager.get_time_between_heartbeats_safe_mode()),
+                    HeartbeatState::BalanceMode => Duration::from_secs(app_context.quorum.get_time_between_heartbeats_balance_mode()),
+                    HeartbeatState::Normal => Duration::from_secs(app_context.quorum.get_time_between_heartbeats_normal()),
+                    HeartbeatState::SafeMode => Duration::from_secs(app_context.quorum.get_time_between_heartbeats_safe_mode()),
                     HeartbeatState::None => continue,
                 };
                 if tx_to_timer.send(Event::InitTimer(duration)).await.is_err() {
