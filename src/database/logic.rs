@@ -20,6 +20,7 @@
 
 use tokio::sync::{mpsc};
 use tokio::time::{interval, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 use crate::config::sqlite::{FLUSH_INTERVAL};
 use crate::message::domain::{HubMessage, ServerStatus};
@@ -48,7 +49,8 @@ use crate::system::domain::InternalEvent;
 pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                              mut rx_msg: mpsc::Receiver<HubMessage>,
                              mut rx_cmd: mpsc::Receiver<DataCommandInsert>,
-                             repo: Repository) {
+                             repo: Repository,
+                             shutdown: CancellationToken) {
 
     info!("Info: iniciando tarea dba_insert_task");
 
@@ -58,6 +60,11 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
 
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido dba_insert_task");
+                break;
+            }
+            
             Some(msg_from_dba) = rx_msg.recv() => {
                 debug!("Debug: mensaje HubMessage entrante a dba_insert_task");
                 sort_by_vectors(msg_from_dba, &mut tdv);
@@ -89,7 +96,11 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                         match repo.insert_network(network).await {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
+                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                }
+                            }
                             Err(e) => error!("Error: no se pudo insertar NetworkRow en base de datos. {e}"),
                         }
                     },
@@ -105,7 +116,11 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                         match repo.update_network(network).await {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
+                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                }
+                            }
                             Err(e) => error!("Error: no se pudo actualizar NetworkRow en base de datos. {e}"),
                         }
                     },
@@ -162,38 +177,52 @@ fn sort_by_vectors(msg: HubMessage, tdv: &mut TableDataVector) {
 
 pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
                              mut rx_cmd: mpsc::Receiver<DataCommandDelete>,
-                             repo: Repository) {
+                             repo: Repository,
+                             shutdown: CancellationToken) {
 
-    while let Some(msg) = rx_cmd.recv().await {
-        match msg {
-            DataCommandDelete::DeleteNetwork(id) => {
-                match repo.delete_network(&id).await {
-                    Ok(_) => {}
-                    Err(e) => error!("Error: no se pudo eliminar red con id: {id}. {e}"),
-                }
-                match repo.get_number_of_networks().await {
-                    Ok(networks) => {
-                        if networks == 0 {
-                            if tx.send(DataServiceResponse::NoNetworks).await.is_err() {
-                                error!("Error: no se pudo enviar NoNetworks desde dba_remove_task");
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido dba_remove_task");
+                break;
+            }
+            
+            Some(msg) = rx_cmd.recv() => {
+                match msg {
+                    DataCommandDelete::DeleteNetwork(id) => {
+                        match repo.delete_network(&id).await {
+                            Ok(_) => {
+                                if tx.send(DataServiceResponse::NetworksUpdated).await.is_err() {
+                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_remove_task");
+                                }
                             }
+                            Err(e) => error!("Error: no se pudo eliminar red con id: {id}. {e}"),
                         }
-                    }
-                    Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                        match repo.get_number_of_networks().await {
+                            Ok(networks) => {
+                                if networks == 0 {
+                                    if tx.send(DataServiceResponse::NoNetworks).await.is_err() {
+                                        error!("Error: no se pudo enviar NoNetworks desde dba_remove_task");
+                                    }
+                                }
+                            }
+                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                        }
+                    },
+                    DataCommandDelete::DeleteAllHubByNetwork(id) => {
+                        match repo.delete_hub_network(&id).await {
+                            Ok(_) => {}
+                            Err(e) => error!("Error: no se pudo eliminar todos los hub de la red con id: {id}. {e}"),
+                        }
+                    },
+                    DataCommandDelete::DeleteHub(id) => {
+                        match repo.delete_hub(&id).await {
+                            Ok(_) => {}
+                            Err(e) => error!("Error: no se pudo eliminar hub con id: {id}. {e}"),
+                        }
+                    },
                 }
-            },
-            DataCommandDelete::DeleteAllHubByNetwork(id) => {
-                match repo.delete_hub_network(&id).await {
-                    Ok(_) => {}
-                    Err(e) => error!("Error: no se pudo eliminar todos los hub de la red con id: {id}. {e}"),
-                }
-            },
-            DataCommandDelete::DeleteHub(id) => {
-                match repo.delete_hub(&id).await {
-                    Ok(_) => {}
-                    Err(e) => error!("Error: no se pudo eliminar hub con id: {id}. {e}"),
-                }
-            },
+            }
         }
     }
 }
@@ -216,7 +245,8 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
 pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                           mut rx_from_core: mpsc::Receiver<InternalEvent>,
                           mut rx_from: mpsc::Receiver<DataCommandGet>,
-                          repo: Repository) {
+                          repo: Repository,
+                          shutdown: CancellationToken) {
 
     info!("Info: iniciando tarea dba_get_task");
 
@@ -225,6 +255,11 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
 
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido dba_get_task");
+                break;
+            }
+            
             Some(internal) = rx_from_core.recv() => {
                 match internal {
                     InternalEvent::ServerConnected => {

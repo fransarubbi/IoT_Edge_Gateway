@@ -14,7 +14,8 @@ use sysinfo::{System, Disks, Networks};
 use std::fs;
 use std::process::Command;
 use tokio::sync::mpsc;
-use tracing::error;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use crate::context::domain::AppContext;
 use crate::message::domain::{Metadata, ServerMessage, SystemMetrics};
 use crate::metrics::logic::{metrics_timer, system_metrics, MetricsTimerEvent};
@@ -35,7 +36,7 @@ impl MetricsService {
         }
     }
     
-    pub async fn run(self) {
+    pub async fn run(self, shutdown: CancellationToken) {
 
         let (tx_to_server, mut rx_command_from_server) = mpsc::channel::<ServerMessage>(100);
         let (tx_to_timer, rx_from_metrics) = mpsc::channel::<MetricsTimerEvent>(100);
@@ -44,14 +45,24 @@ impl MetricsService {
         tokio::spawn(system_metrics(tx_to_server,
                                     tx_to_timer,
                                     rx_from_timer,
-                                    self.context.clone()));
+                                    self.context.clone(),
+                                    shutdown.clone()));
         
         tokio::spawn(metrics_timer(tx_to_metrics,
-                                   rx_from_metrics));
-        
-        while let Some(msg) = rx_command_from_server.recv().await {
-            if self.sender.send(msg).await.is_err() {
-                error!("Error: no se pudo enviar mensaje SystemMetrics");
+                                   rx_from_metrics,
+                                   shutdown.clone()));
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido Core");
+                    break;
+                }
+                Some(msg) = rx_command_from_server.recv() => {
+                    if self.sender.send(msg).await.is_err() {
+                        error!("Error: no se pudo enviar mensaje SystemMetrics");
+                    }
+                }
             }
         }
     }

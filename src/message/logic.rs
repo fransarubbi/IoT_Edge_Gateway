@@ -10,11 +10,12 @@
 //! - **Downlink (Bajada):** Recibir comandos del servidor, traducirlos y enviarlos al Hub o a la gestión de redes.
 //! - **Control:** Gestionar mensajes de estado (Handshakes, Heartbeats) generados por la FSM.
 
-
+use chrono::Utc;
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc};
-use tracing::{error, instrument, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, instrument, warn};
 use crate::context::domain::AppContext;
 use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata,
                              UpdateFirmware, DeleteHub, Settings, SettingOk, Network,
@@ -24,7 +25,7 @@ use crate::database::domain::{TableDataVector};
 use crate::grpc;
 use crate::grpc::{edge_download, EdgeUpload, EdgeDownload,
                   FirmwareOutcome, SettingOk as SettOk,
-                  Settings as Sett, SystemMetrics};
+                  Settings as Sett, SystemMetrics, HelloWorld as Hello};
 use crate::grpc::edge_upload::Payload;
 use crate::network::domain::{NetworkManager};
 use crate::system::domain::{InternalEvent, System};
@@ -52,11 +53,17 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
                         mut rx_internal: mpsc::Receiver<InternalEvent>,
                         mut rx_server_msg: mpsc::Receiver<ServerMessage>,
                         mut rx: mpsc::Receiver<MessageServiceCommand>,
-                        app_context: AppContext) {
+                        app_context: AppContext, 
+                        shutdown: CancellationToken) {
 
     let mut state = LocalStatus::Connected;
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido msg_to_hub");
+                break;
+            }
+            
             Some(internal) = rx_internal.recv() => {
                 match internal {
                     InternalEvent::LocalConnected => state = LocalStatus::Connected,
@@ -176,15 +183,21 @@ fn resolve_fsm_topic(manager: &NetworkManager,
 /// 3.  **Datos/Alertas/Monitores:** Se enrutan dinámicamente mediante [`route_message`]:
 ///     - Si hay conexión -> Al Servidor.
 ///     - Si NO hay conexión -> A la Base de Datos (`dba_task`).
-
+#[instrument(name = "msg_from_hub", skip(rx))]
 pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
                           tx_to_msg_to_server: mpsc::Sender<ServerMessage>,
                           tx_to_msg_to_hub: mpsc::Sender<InternalEvent>,
-                          mut rx: mpsc::Receiver<MessageServiceCommand>) {
+                          mut rx: mpsc::Receiver<MessageServiceCommand>, 
+                          shutdown: CancellationToken) {
 
     let mut state: ServerStatus = ServerStatus::Connected;
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido msg_from_hub");
+                break;
+            }
+            
             Some(msg) = rx.recv() => {
                 match msg {
                     MessageServiceCommand::Internal(internal) => {
@@ -276,15 +289,21 @@ pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
 ///
 /// Utiliza `get_topic_to_send_msg_from_hub` para transformar el tópico local en un tópico global
 /// con identidad de Edge.
-
+#[instrument(name = "msg_to_server", skip(rx_from_hub, rx, app_context))]
 pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
                            mut rx_from_hub: mpsc::Receiver<ServerMessage>,
                            mut rx: mpsc::Receiver<MessageServiceCommand>,
-                           app_context: AppContext) {
+                           app_context: AppContext, 
+                           shutdown: CancellationToken) {
 
     let mut state = ServerStatus::Connected;
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido msg_to_server");
+                break;
+            }
+            
             Some(msg) = rx.recv() => {
                 match msg {
                     MessageServiceCommand::Internal(internal) => {
@@ -319,6 +338,22 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
                             }
                         }
                     },
+                    MessageServiceCommand::GenerateHelloWorld => {
+                        let metadata = Metadata {
+                            sender_user_id: app_context.system.id_edge.clone(),
+                            destination_id: "Server0".to_string(),
+                            timestamp: Utc::now().timestamp(),
+                        };
+                        let hello = HelloWorld {
+                            metadata,
+                            hello: true
+                        };
+                        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::HelloWorld(hello), app_context.system.id_edge.clone()) {
+                            if tx_to_server.send(proto_msg).await.is_err() {
+                                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -342,6 +377,18 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
 fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<EdgeUpload> {
 
     let payload = match msg {
+        ServerMessage::HelloWorld(hello) => {
+           Some(Payload::HelloWorld(
+               Hello {
+                   metadata: Some(grpc::Metadata {
+                       sender_user_id: hello.metadata.sender_user_id,
+                       destination_id: hello.metadata.destination_id,
+                       timestamp: hello.metadata.timestamp,
+                   }),
+                   hello: hello.hello,
+               }
+           ))
+        },
         ServerMessage::FromHubSettings(hub_settings) => {
             Some(Payload::Settings(
                 Sett {
@@ -544,24 +591,34 @@ async fn process_batch(batch: TableDataVector,
 /// Recibe eventos crudos del servidor y los clasifica en:
 /// - Mensajes de negocio (`IncomingMessage`): Deserializa y enruta al Hub o Gestor de Redes.
 /// - Eventos de conexión (`ServerConnected/Disconnected`): Notifica a DBA y Hub.
-
+#[instrument(name = "msg_from_server", skip(rx))]
 pub async fn msg_from_server(tx: mpsc::Sender<ServerMessage>,
                              tx_to_msg_to_hub: mpsc::Sender<ServerMessage>,
-                             mut rx: mpsc::Receiver<MessageServiceCommand>) {
+                             mut rx: mpsc::Receiver<MessageServiceCommand>, 
+                             shutdown: CancellationToken) {
 
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            MessageServiceCommand::Internal(internal) => {
-                match internal {
-                    InternalEvent::IncomingGrpc(edge_download) => {
-                        handle_grpc_message(edge_download,
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido msg_from_server");
+                break;
+            }
+            
+            Some(msg) = rx.recv() => {
+                match msg {
+                    MessageServiceCommand::Internal(internal) => {
+                        match internal {
+                            InternalEvent::IncomingGrpc(edge_download) => {
+                                handle_grpc_message(edge_download,
                                             &tx,
                                             &tx_to_msg_to_hub).await;
-                    },
+                            },
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 }
             }
-            _ => {}
         }
     }
 }

@@ -17,12 +17,14 @@
 
 
 use tokio::sync::mpsc;
-use tracing::error;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use crate::database::domain::{DataServiceCommand, DataServiceResponse};
 use crate::firmware::domain::{FirmwareServiceCommand, FirmwareServiceResponse};
 use crate::fsm::domain::{FsmServiceCommand, FsmServiceResponse};
 use crate::grpc::EdgeUpload;
-use crate::message::domain::{HubMessage, MessageServiceCommand, MessageServiceResponse, SerializedMessage, ServerMessage};
+use crate::message::domain::{HubMessage, MessageServiceCommand, MessageServiceResponse, ServerMessage};
+use crate::mqtt::domain::MqttServiceCommand;
 use crate::network::domain::{Batch, NetworkServiceCommand, NetworkServiceResponse};
 use crate::system::domain::InternalEvent;
 
@@ -46,7 +48,7 @@ pub struct Core {
     core_to_message_service: mpsc::Sender<MessageServiceCommand>,
     core_from_metrics_service: mpsc::Receiver<ServerMessage>,
     core_from_mqtt_service: mpsc::Receiver<InternalEvent>,
-    core_to_mqtt_service: mpsc::Sender<SerializedMessage>,
+    core_to_mqtt_service: mpsc::Sender<MqttServiceCommand>,
     core_from_network_service: mpsc::Receiver<NetworkServiceResponse>,
     core_to_network_service: mpsc::Sender<NetworkServiceCommand>
 }
@@ -73,7 +75,7 @@ pub struct CoreBuilder {
     core_to_message_service: Option<mpsc::Sender<MessageServiceCommand>>,
     core_from_metrics_service: Option<mpsc::Receiver<ServerMessage>>,
     core_from_mqtt_service: Option<mpsc::Receiver<InternalEvent>>,
-    core_to_mqtt_service: Option<mpsc::Sender<SerializedMessage>>,
+    core_to_mqtt_service: Option<mpsc::Sender<MqttServiceCommand>>,
     core_from_network_service: Option<mpsc::Receiver<NetworkServiceResponse>>,
     core_to_network_service: Option<mpsc::Sender<NetworkServiceCommand>>,
 }
@@ -146,7 +148,7 @@ impl CoreBuilder {
         self.core_from_mqtt_service = Some(ch);
         self
     }
-    pub fn core_to_mqtt_service(mut self, ch: mpsc::Sender<SerializedMessage>) -> Self {
+    pub fn core_to_mqtt_service(mut self, ch: mpsc::Sender<MqttServiceCommand>) -> Self {
         self.core_to_mqtt_service = Some(ch);
         self
     }
@@ -217,14 +219,22 @@ impl Core {
     /// | **MessageService** | `ServerMessage` | FirmwareService/NetworkService/HeartbeatService/FsmService | Procesar mensajes provenientes del Server |
     /// | **MetricsService** | `ServerMessage` | MessageService | Enviar telemetría al servidor |
     /// | **NetworkService** | `DataCommand` | DataService | CRUD de redes/hubs en base de datos |
-    pub async fn run(mut self) {
-        
+    pub async fn run(mut self, shutdown: CancellationToken) {
+
         if self.core_to_data_service.send(DataServiceCommand::GetTotalOfNetworks).await.is_err() {
             error!("Error: no se pudo enviar comando GetTotalOfNetworks desde Core");
         }
 
+        if self.core_to_message_service.send(MessageServiceCommand::GenerateHelloWorld).await.is_err() {
+            error!("Error: no se pudo enviar comando GenerateHelloWorld desde Core");
+        }
+
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido Core");
+                    break;
+                }
                 Some(response) = self.core_from_data_service.recv() => {
                     match response {
                         DataServiceResponse::Batch(batch) => {
@@ -266,6 +276,11 @@ impl Core {
                         DataServiceResponse::BatchHub(hubs) => {
                             if self.core_to_network_service.send(NetworkServiceCommand::Batch(Batch::Hub(hubs))).await.is_err() {
                                 error!("Error: no se pudo enviar BatchHub desde Core");
+                            }
+                        },
+                        DataServiceResponse::NetworksUpdated => {
+                            if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksUpdated).await.is_err() {
+                                error!("Error: no se pudo enviar NetworksUpdated desde Core");
                             }
                         }
                     }
@@ -429,7 +444,7 @@ impl Core {
                             }
                         },
                         MessageServiceResponse::Serialized(serialized) => {
-                            if self.core_to_mqtt_service.send(serialized).await.is_err() {
+                            if self.core_to_mqtt_service.send(MqttServiceCommand::Serialized(serialized)).await.is_err() {
                                 error!("Error: no se pudo enviar Serialized desde Core");
                             }
                         }
@@ -492,6 +507,11 @@ impl Core {
                                 _ => {}
                             }
                         }
+                        NetworkServiceResponse::NetworksReady => {
+                            if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksReady).await.is_err() {
+                                error!("Error: no se pudo enviar NetworksReady desde Core");
+                            }
+                        },
                     }
                 }
             }

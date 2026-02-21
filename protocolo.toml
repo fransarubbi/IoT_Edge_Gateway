@@ -1,0 +1,5 @@
+[protocolo]
+max_attempts = 14
+time_between_heartbeats_balance_mode = 20
+time_between_heartbeats_normal = 50
+time_between_heartbeats_safe_mode = 60

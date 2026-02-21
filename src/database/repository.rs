@@ -39,9 +39,9 @@
 use std::time::Duration;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{FromRow, SqlitePool};
-use tracing::debug;
+use tracing::{debug, error};
 use crate::config::sqlite::{LIMIT, WAIT_FOR};
-use crate::database::domain::{Table, TableDataVector};
+use crate::database::domain::{TableDataVector};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_balance_epoch, insert_balance_epoch};
@@ -118,7 +118,7 @@ impl Repository {
             match Self::new(path).await {
                 Ok(repo) => return repo,
                 Err(e) => {
-                    log::error!("Error inicializando repo: {:?}", e);
+                    error!("Error: no se pudo inicializar repo: {:?}", e);
                     tokio::time::sleep(Duration::from_secs(WAIT_FOR)).await;
                 }
             }
@@ -166,31 +166,6 @@ impl Repository {
         let vec_alert_air = pop_batch_alert_air(&self.pool).await?;
 
         Ok(TableDataVector::new_pop(vec_measurement, vec_alert_air, vec_alert_th, vec_monitor))
-    }
-
-    /// Indica si al menos una tabla contiene al menos un registro.
-    ///
-    /// # Uso
-    ///
-    /// Esta función se utiliza para:
-    /// - detectar datos pendientes,
-    /// - controlar flujos de reenvío.
-    pub async fn has_data(&self) -> Result<bool, sqlx::Error> {
-
-        let mut counter_flag = 0;
-
-        for &table in Table::all() {
-            match table_has_data(&self.pool, table.table_name()).await {
-                Ok(true) => counter_flag += 1,
-                Err(e) => return Err(e),
-                _ => {}
-            }
-        }
-        if counter_flag > 0 {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
     }
 
     
@@ -383,18 +358,4 @@ where
         .await?;
 
     Ok(result)
-}
-
-
-/// Indica si una tabla contiene al menos un registro.
-///
-/// # Implementación
-///
-/// Utiliza una consulta mínima (`SELECT 1 LIMIT 1`)
-/// para reducir carga de I/O y latencia.
-async fn table_has_data(pool: &SqlitePool, table: &str) -> Result<bool, sqlx::Error> {
-    // Usamos comillas dobles por seguridad
-    let sql = format!("SELECT 1 FROM \"{table}\" LIMIT 1");
-    let row = sqlx::query(&sql).fetch_optional(pool).await?;
-    Ok(row.is_some())
 }

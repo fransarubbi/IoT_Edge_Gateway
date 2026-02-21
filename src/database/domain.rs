@@ -8,7 +8,8 @@
 
 
 use tokio::sync::{mpsc};
-use tracing::error;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use crate::config::sqlite::BATCH_SIZE;
 use crate::database::logic::{dba_get_task, dba_insert_task, dba_remove_task};
 use crate::database::repository::Repository;
@@ -45,6 +46,7 @@ pub enum DataServiceResponse {
     ErrorEpoch,
     NoNetworks,
     ThereAreNetworks,
+    NetworksUpdated,
 }
 
 
@@ -91,7 +93,7 @@ impl DataService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_core, mut rx_response_from_insert) = mpsc::channel::<DataServiceResponse>(50);
         let (tx_response, mut rx_response) = mpsc::channel::<DataServiceResponse>(50);
@@ -106,21 +108,28 @@ impl DataService {
                         tx_to_core,
                         rx_msg,
                         rx_command_insert,
-                        self.repo.clone()));
+                        self.repo.clone(),
+                        shutdown.clone()));
 
         tokio::spawn(dba_get_task(
                         tx_response,
                         rx_internal,
                         rx_command_get,
-                        self.repo.clone()));
+                        self.repo.clone(),
+                        shutdown.clone()));
 
         tokio::spawn(dba_remove_task(
                         tx_response_from_dba,
                         rx_command_delete,
-                        self.repo.clone()));
+                        self.repo.clone(),
+                        shutdown.clone()));
 
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido DataService");
+                    break;
+                }
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
                         DataServiceCommand::Hub(hub_msg) => {
@@ -205,43 +214,6 @@ impl DataService {
                 }
             }
         }
-    }
-}
-
-
-/// Enumeración de las tablas existentes en la base de datos SQLite para
-/// persistencia de datos.
-/// Utilizada para operaciones genéricas y mapeo de tópicos.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Table {
-    Measurement,
-    Monitor,
-    AlertAir,
-    AlertTemp,
-    Error,
-}
-
-
-impl Table {
-    /// Devuelve el nombre exacto de la tabla en SQL.
-    pub fn table_name(&self) -> &'static str {
-        match self {
-            Table::Measurement => "measurement",
-            Table::Monitor => "monitor",
-            Table::AlertAir => "alert_air",
-            Table::AlertTemp => "alert_temp",
-            _ => "error",
-        }
-    }
-
-    /// Retorna una lista estática de todas las tablas válidas.
-    pub fn all() -> &'static [Table] {
-        &[
-            Table::Measurement,
-            Table::Monitor,
-            Table::AlertAir,
-            Table::AlertTemp
-        ]
     }
 }
 

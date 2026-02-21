@@ -4,7 +4,6 @@ use serde::Deserialize;
 /// Post-Failure Control and Balancing Protocol
 #[derive(Default, Debug, Deserialize)]
 pub struct ProtocolSettings {
-    hello_timeout: u64,
     max_attempts: u64,
     time_between_heartbeats_balance_mode: u64,
     time_between_heartbeats_normal: u64,
@@ -13,19 +12,7 @@ pub struct ProtocolSettings {
 
 
 impl ProtocolSettings {
-    pub fn new() -> Self {
-        Self {
-            hello_timeout: 30,
-            max_attempts: 14,
-            time_between_heartbeats_balance_mode: 25,
-            time_between_heartbeats_normal: 40,
-            time_between_heartbeats_safe_mode: 60
-        }
-    }
-
-    pub fn get_hello_timeout(&self) -> u64 {
-        self.hello_timeout
-    }
+    
     pub fn get_max_attempts(&self) -> u64 {
         self.max_attempts
     }

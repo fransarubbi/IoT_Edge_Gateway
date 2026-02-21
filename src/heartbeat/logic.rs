@@ -12,7 +12,8 @@
 
 
 use tokio::sync::{mpsc};
-use tracing::{error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, instrument, warn};
 use crate::heartbeat::domain::{Action, Event, FsmHeartbeat, State, Status, Transition};
 use crate::message::domain::{ServerMessage};
 use crate::config::heartbeat::*;
@@ -32,14 +33,21 @@ use crate::system::domain::InternalEvent;
 /// * `tx_to_timer`: Canal para controlar el temporizador de seguridad (Watchdog).
 /// * `rx_from_server`: Canal por donde llegan los mensajes decodificados gRPC.
 /// * `rx_fsm`: Canal por donde la FSM envía las instrucciones (Acciones) que deben ejecutarse.
+#[instrument(name = "heartbeat", skip(rx_from_server, rx_fsm))]
 pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                        tx_to_fsm: mpsc::Sender<Event>,
                        tx_to_timer: mpsc::Sender<Event>,
                        mut rx_from_server: mpsc::Receiver<ServerMessage>,
-                       mut rx_fsm: mpsc::Receiver<Vec<Action>>) {
+                       mut rx_fsm: mpsc::Receiver<Vec<Action>>,
+                       shutdown: CancellationToken) {
 
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido heartbeat");
+                break;
+            }
+
             Some(msg) = rx_from_server.recv() => {
                 match msg {
                     ServerMessage::Heartbeat(_) => {
@@ -101,23 +109,34 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
 ///
 /// * `tx_actions`: Canal para enviar las acciones resultantes (Side Effects) al orquestador.
 /// * `rx_from_server`: Canal de entrada de eventos (Heartbeats recibidos, Timeouts del timer).
+#[instrument(name = "run_fsm_heartbeat", skip(rx_from_heartbeat))]
 pub async fn run_fsm_heartbeat(tx_actions: mpsc::Sender<Vec<Action>>,
-                               mut rx_from_heartbeat: mpsc::Receiver<Event>) {
+                               mut rx_from_heartbeat: mpsc::Receiver<Event>,
+                               shutdown: CancellationToken) {
 
     let mut state = FsmHeartbeat::new();
 
-    while let Some(event) = rx_from_heartbeat.recv().await {
-        let transition = state.step(event);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido run_fsm_heartbeat");
+                break;
+            }
 
-        match transition {
-            Transition::Valid(valid) => {
-                state = valid.get_change_state();
-                if tx_actions.send(valid.get_actions()).await.is_err() {
-                    error!("Error: No se pudo enviar la acción a heartbeat");
+            Some(event) = rx_from_heartbeat.recv() => {
+                let transition = state.step(event);
+
+                match transition {
+                    Transition::Valid(valid) => {
+                        state = valid.get_change_state();
+                        if tx_actions.send(valid.get_actions()).await.is_err() {
+                            error!("Error: no se pudo enviar la acción a heartbeat");
+                        }
+                    },
+                    Transition::Invalid(invalid) => {
+                        warn!("Warning: FSM Heartbeat transición inválida: {}", invalid.get_invalid());
+                    }
                 }
-            },
-            Transition::Invalid(invalid) => {
-                warn!("Warning: FSM Heartbeat transición inválida: {}", invalid.get_invalid());
             }
         }
     }

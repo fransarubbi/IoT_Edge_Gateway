@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
 use crate::message::domain::{HubMessage, ServerMessage};
@@ -132,7 +132,7 @@ impl FsmService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
 
         let mut runtime: Option<FsmRuntime> = None;
 
@@ -140,6 +140,16 @@ impl FsmService {
             match runtime {
                 Some(ref mut rt) => {
                     tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            info!("Info: shutdown recibido FsmService");
+                            if let Some(rt) = runtime.take() {
+                                rt.cancel_token.cancel();
+                                for h in rt.handles {
+                                    let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+                                }
+                            }
+                            break;
+                        }
                         Some(cmd) = self.receiver.recv() => {
                             match cmd {
                                 FsmServiceCommand::Epoch(epoch) => {
@@ -245,14 +255,21 @@ impl FsmService {
                     }
                 }
                 None => {
-                    if let Some(cmd) = self.receiver.recv().await {
-                        match cmd {
-                            FsmServiceCommand::CreateRuntime => {
-                                if runtime.is_none() {
-                                    runtime = Some(self.spawn_runtime());
-                                }
-                            },
-                            _ => {}
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            info!("Info: Shutdown recibido FsmService");
+                            break;
+                        }
+                        
+                        Some(cmd) = self.receiver.recv() => {
+                            match cmd {
+                                FsmServiceCommand::CreateRuntime => {
+                                    if runtime.is_none() {
+                                        runtime = Some(self.spawn_runtime());
+                                    }
+                                },
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -269,8 +286,6 @@ impl FsmService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StateGlobal {
     Start,
-    /// **Inicialización:** Arranque, handshake inicial con el servidor y configuración.
-    Init,
     /// **Modo de Balanceo:** Fase crítica de negociación distribuida. El dispositivo
     /// intenta sincronizarse con sus hubs, verificar quórum y establecer su rol.
     BalanceMode,
@@ -279,14 +294,6 @@ pub enum StateGlobal {
     /// **Modo Seguro:** Estado de fallo o emergencia. El dispositivo entra aquí tras errores críticos
     /// (DB corrupta, fallo de consenso repetido) para evitar operaciones inseguras.
     SafeMode,
-}
-
-
-/// Sub-estados para la fase de inicialización (`StateGlobal::Init`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubStateInit {
-    HelloWorld,
-    WaitConfirmation,
 }
 
 
@@ -336,7 +343,6 @@ pub enum SubStatePhase {
 #[derive(Debug, Clone)]
 pub struct FsmState {
     global: StateGlobal,
-    init: Option<SubStateInit>,
     balance: Option<SubStateBalanceMode>,
     quorum: Option<SubStateQuorum>,
     phase: Option<SubStatePhase>,
@@ -394,7 +400,6 @@ pub enum Action {
     SendHeartbeatMessageNormal,
     StopSendHeartbeatMessagePhase,
     StopSendHeartbeatMessageSafeMode,
-    OnEntryInit(SubStateInit),
     OnEntryBalance(SubStateBalanceMode),
     OnEntryQuorum(SubStateQuorum),
     OnEntryPhase(SubStatePhase),
@@ -507,7 +512,6 @@ impl FsmState {
     pub fn new() -> Self {
         Self {
             global: StateGlobal::Start,
-            init: None,
             balance: None,
             quorum: None,
             phase: None,
@@ -518,7 +522,6 @@ impl FsmState {
     fn step_inner(&self, event: Event) -> Transition {
         match self.global {
             StateGlobal::Start => self.step_start(event),
-            StateGlobal::Init => self.step_init(event),
             StateGlobal::BalanceMode => self.step_balance_mode(event),
             StateGlobal::SafeMode => self.step_safe_mode(event),
             _ => {
@@ -534,12 +537,12 @@ impl FsmState {
         match (&self.global, event) {
             (StateGlobal::Start, Event::Start) => {
                 let mut next_fsm = self.clone();
-                next_fsm.global = StateGlobal::Init;
-                next_fsm.init = Some(SubStateInit::HelloWorld);
+                next_fsm.global = StateGlobal::BalanceMode;
+                next_fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
 
                 let valid = TransitionValid {
                     change_state: next_fsm,
-                    actions: vec![Action::OnEntryInit(SubStateInit::HelloWorld)],
+                    actions: vec![Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)],
                 };
                 Transition::Valid(valid)
             }
@@ -549,29 +552,6 @@ impl FsmState {
                 };
                 Transition::Invalid(invalid)
             },
-        }
-    }
-
-    /// Maneja transiciones cuando el estado global es `Init`.
-    fn step_init(&self, event: Event) -> Transition {
-        match (&self.init, &event) {
-            (Some(SubStateInit::HelloWorld), Event::WaitOk) => {
-                let next_fsm = self.clone();
-                state_hello_world_event_wait_ok(next_fsm)
-            },
-            (Some(SubStateInit::HelloWorld), Event::Timeout) => {
-                let next_fsm = self.clone();
-                state_hello_world_event_timeout(next_fsm)
-            },
-            (Some(SubStateInit::WaitConfirmation), Event::Timeout) => {
-                let next_fsm = self.clone();
-                state_wait_confirmation_event_timeout(next_fsm)
-            },
-            (Some(SubStateInit::WaitConfirmation), Event::WaitOk) => {
-                let next_fsm = self.clone();
-                state_wait_confirmation_event_wait(next_fsm)
-            },
-            _ => invalid()
         }
     }
 
@@ -693,57 +673,6 @@ impl FsmState {
 
 // --- Funciones auxiliares de transición ---
 // Cada una define un cambio atómico de estado.
-
-/// Transición: HelloWorld -> InitBalanceMode
-fn state_hello_world_event_wait_ok(mut next_fsm: FsmState) -> Transition {
-    next_fsm.global = StateGlobal::BalanceMode;
-    next_fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
-    next_fsm.init = None;
-
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![Action::StopTimer],
-    };
-    Transition::Valid(valid)
-}
-
-
-fn state_hello_world_event_timeout(mut next_fsm: FsmState) -> Transition {
-    next_fsm.init = Some(SubStateInit::WaitConfirmation);
-
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![],
-    };
-    Transition::Valid(valid)
-}
-
-
-/// Transición: WaitConfirmation -> HelloWorld
-fn state_wait_confirmation_event_timeout(mut next_fsm: FsmState) -> Transition {
-    next_fsm.init = Some(SubStateInit::HelloWorld);
-
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![],
-    };
-    Transition::Valid(valid)
-}
-
-
-/// Transición: WaitConfirmation -> BalanceMode.
-fn state_wait_confirmation_event_wait(mut next_fsm: FsmState) -> Transition {
-    next_fsm.global = StateGlobal::BalanceMode;
-    next_fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
-    next_fsm.init = None;
-
-    let valid = TransitionValid {
-        change_state: next_fsm,
-        actions: vec![Action::StopTimer],
-    };
-    Transition::Valid(valid)
-}
-
 
 /// Retorna una transición inválida genérica para Init.
 fn invalid() -> Transition {
@@ -938,12 +867,6 @@ fn state_out_handshake_event_timeout(mut next_fsm: FsmState) -> Transition {
 fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
     let mut actions = Vec::new();
 
-    if old.init != new.init {
-        if let Some(s) = &new.init {
-            actions.push(Action::OnEntryInit(s.clone()));
-        }
-    }
-
     if old.balance != new.balance {
         if let Some(s) = &new.balance {
             actions.push(Action::OnEntryBalance(s.clone()));
@@ -978,6 +901,7 @@ fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
+#[instrument(name = "fsm_watchdog_timer", skip(cmd_rx))]
 pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                                 mut cmd_rx: mpsc::Receiver<Event>,
                                 cancel: CancellationToken) {
@@ -992,6 +916,7 @@ pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
             _ = cancel.cancelled() => {
+                info!("Info: shutdown recibido fsm_watchdog_timer");
                 break;
             }
             _ = sleep(duration) => {
@@ -1046,7 +971,6 @@ mod tests {
     fn test_nuevo_fsm_estado_inicial() {
         let fsm = FsmState::new();
         assert_eq!(fsm.global, StateGlobal::Start);
-        assert_eq!(fsm.init, None);
         assert_eq!(fsm.balance, None);
         assert_eq!(fsm.quorum, None);
         assert_eq!(fsm.phase, None);
@@ -1063,9 +987,9 @@ mod tests {
         let new_fsm = valid.get_change_state();
         let actions = valid.get_actions();
 
-        assert_eq!(new_fsm.global, StateGlobal::Init);
-        assert_eq!(new_fsm.init, Some(SubStateInit::HelloWorld));
-        assert!(contains_action(&actions, &Action::OnEntryInit(SubStateInit::HelloWorld)));
+        assert_eq!(new_fsm.global, StateGlobal::BalanceMode);
+        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
+        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)));
     }
 
     #[test]
@@ -1087,95 +1011,6 @@ mod tests {
                 _ => panic!("Se esperaba transición inválida para evento en Start"),
             }
         }
-    }
-
-    // ===== Tests para StateGlobal::Init - SubStateInit::HelloWorld =====
-
-    #[test]
-    fn test_hello_world_evento_wait_ok() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Init;
-        fsm.init = Some(SubStateInit::HelloWorld);
-
-        let transition = fsm.step(Event::WaitOk);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
-        assert_eq!(new_fsm.init, None);
-        assert!(contains_action(&actions, &Action::StopTimer));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)));
-    }
-
-    #[test]
-    fn test_hello_world_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Init;
-        fsm.init = Some(SubStateInit::HelloWorld);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::Init);
-        assert_eq!(new_fsm.init, Some(SubStateInit::WaitConfirmation));
-        assert!(contains_action(&actions, &Action::OnEntryInit(SubStateInit::WaitConfirmation)));
-    }
-
-    #[test]
-    fn test_hello_world_eventos_invalidos() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Init;
-        fsm.init = Some(SubStateInit::HelloWorld);
-
-        let eventos_invalidos = vec![
-            Event::BalanceEpochOk,
-            Event::ApproveQuorum,
-            Event::Start,
-        ];
-
-        for evento in eventos_invalidos {
-            let transition = fsm.step(evento);
-            transition.unwrap_invalid();
-        }
-    }
-
-    // ===== Tests para StateGlobal::Init - SubStateInit::WaitConfirmation =====
-
-    #[test]
-    fn test_wait_confirmation_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Init;
-        fsm.init = Some(SubStateInit::WaitConfirmation);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::Init);
-        assert_eq!(new_fsm.init, Some(SubStateInit::HelloWorld));
-        assert!(contains_action(&actions, &Action::OnEntryInit(SubStateInit::HelloWorld)));
-    }
-
-    #[test]
-    fn test_wait_confirmation_evento_wait_ok() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Init;
-        fsm.init = Some(SubStateInit::WaitConfirmation);
-
-        let transition = fsm.step(Event::WaitOk);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
-        assert_eq!(new_fsm.init, None);
-        assert!(contains_action(&actions, &Action::StopTimer));
     }
 
     // ===== Tests para StateGlobal::BalanceMode - SubStateBalanceMode::InitBalanceMode =====
@@ -1519,13 +1354,8 @@ mod tests {
     fn test_secuencia_completa_exitosa_path_in() {
         let mut fsm = FsmState::new();
 
-        // Start -> Init.HelloWorld
+        // Start -> BalanceMode.InitBalanceMode
         fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::Init);
-        assert_eq!(fsm.init, Some(SubStateInit::HelloWorld));
-
-        // Init.HelloWorld -> BalanceMode.InitBalanceMode
-        fsm = fsm.step(Event::WaitOk).unwrap_valid().get_change_state();
         assert_eq!(fsm.global, StateGlobal::BalanceMode);
         assert_eq!(fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
 
@@ -1564,26 +1394,6 @@ mod tests {
         // CheckQuorumOut -> Normal
         fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
         assert_eq!(fsm.global, StateGlobal::Normal);
-    }
-
-    #[test]
-    fn test_secuencia_init_con_retry() {
-        let mut fsm = FsmState::new();
-
-        // Start -> Init.HelloWorld
-        fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-
-        // HelloWorld -> WaitConfirmation (timeout)
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.init, Some(SubStateInit::WaitConfirmation));
-
-        // WaitConfirmation -> HelloWorld (timeout again)
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.init, Some(SubStateInit::HelloWorld));
-
-        // HelloWorld -> BalanceMode (finalmente WaitOk)
-        fsm = fsm.step(Event::WaitOk).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::BalanceMode);
     }
 
     #[test]
@@ -1639,11 +1449,8 @@ mod tests {
     fn test_secuencia_fallo_a_safe_mode_desde_init() {
         let mut fsm = FsmState::new();
 
-        // Start -> Init
+        // Start -> BalanceMode
         fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-
-        // Init -> BalanceMode
-        fsm = fsm.step(Event::WaitOk).unwrap_valid().get_change_state();
 
         // InitBalanceMode -> SafeMode (BalanceEpochNotOk)
         fsm = fsm.step(Event::BalanceEpochNotOk).unwrap_valid().get_change_state();
@@ -1712,17 +1519,6 @@ mod tests {
 
         let actions = compute_on_entry(&fsm1, &fsm2);
         assert_eq!(actions.len(), 0);
-    }
-
-    #[test]
-    fn test_on_entry_cambio_init() {
-        let fsm1 = FsmState::new();
-        let mut fsm2 = FsmState::new();
-        fsm2.init = Some(SubStateInit::HelloWorld);
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 1);
-        assert!(contains_action(&actions, &Action::OnEntryInit(SubStateInit::HelloWorld)));
     }
 
     #[test]
@@ -1956,42 +1752,38 @@ mod tests {
         // 1. Start
         assert_eq!(fsm.global, StateGlobal::Start);
 
-        // 2. Start -> Init.HelloWorld
+        // 2. Start -> BalanceMode.InitBalanceMode
         fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::Init);
-        assert_eq!(fsm.init, Some(SubStateInit::HelloWorld));
-
-        // 3. HelloWorld -> BalanceMode.InitBalanceMode
-        fsm = fsm.step(Event::WaitOk).unwrap_valid().get_change_state();
         assert_eq!(fsm.global, StateGlobal::BalanceMode);
+        assert_eq!(fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
 
-        // 4. InitBalanceMode -> InHandshake
+        // 3. InitBalanceMode -> InHandshake
         fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
         assert_eq!(fsm.balance, Some(SubStateBalanceMode::InHandshake));
 
-        // 5. InHandshake -> Quorum.CheckQuorumIn
+        // 4. InHandshake -> Quorum.CheckQuorumIn
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
         assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
 
-        // 6. CheckQuorumIn -> Phase.Alert (aprobado en primer intento)
+        // 5. CheckQuorumIn -> Phase.Alert (aprobado en primer intento)
         fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
         assert_eq!(fsm.phase, Some(SubStatePhase::Alert));
 
-        // 7-9. Ciclo completo de Phases: Alert -> Data -> Monitor
+        // 6-8. Ciclo completo de Phases: Alert -> Data -> Monitor
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
         assert_eq!(fsm.balance, Some(SubStateBalanceMode::OutHandshake));
 
-        // 10. OutHandshake -> Quorum.CheckQuorumOut
+        // 9. OutHandshake -> Quorum.CheckQuorumOut
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
         assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
 
-        // 11. CheckQuorumOut -> Normal (éxito final)
+        // 10. CheckQuorumOut -> Normal (éxito final)
         fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
         assert_eq!(fsm.global, StateGlobal::Normal);
 
-        // 12. Normal no acepta más eventos
+        // 11. Normal no acepta más eventos
         let invalid = fsm.step(Event::Timeout).unwrap_invalid();
         assert!(invalid.get_invalid().contains("Normal"));
     }
@@ -2002,7 +1794,6 @@ mod tests {
 
         // Llegar a CheckQuorumIn
         fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::WaitOk).unwrap_valid().get_change_state();
         fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
         fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
 
@@ -2025,7 +1816,6 @@ mod tests {
         // Camino 1: Desde InitBalanceMode
         let mut fsm1 = FsmState::new();
         fsm1 = fsm1.step(Event::Start).unwrap_valid().get_change_state();
-        fsm1 = fsm1.step(Event::WaitOk).unwrap_valid().get_change_state();
         fsm1 = fsm1.step(Event::BalanceEpochNotOk).unwrap_valid().get_change_state();
         assert_eq!(fsm1.global, StateGlobal::SafeMode);
 
@@ -2044,35 +1834,5 @@ mod tests {
         fsm3.quorum = Some(SubStateQuorum::CheckQuorumOut);
         fsm3 = fsm3.step(Event::NotApproveNotAttempts).unwrap_valid().get_change_state();
         assert_eq!(fsm3.global, StateGlobal::SafeMode);
-    }
-
-    #[test]
-    fn test_verificacion_acciones_generadas_en_flujo() {
-        let mut fsm = FsmState::new();
-
-        // Start -> Init debe generar OnEntryInit
-        let t = fsm.step(Event::Start);
-        let valid = t.unwrap_valid();
-        assert!(contains_action(&valid.get_actions(), &Action::OnEntryInit(SubStateInit::HelloWorld)));
-        fsm = valid.get_change_state();
-
-        // HelloWorld -> BalanceMode debe generar StopTimer y OnEntry
-        let t = fsm.step(Event::WaitOk);
-        let valid = t.unwrap_valid();
-        assert!(contains_action(&valid.get_actions(), &Action::StopTimer));
-        assert!(contains_action(&valid.get_actions(), &Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)));
-        fsm = valid.get_change_state();
-
-        // Completar flujo hasta Monitor
-        fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-
-        // Monitor -> OutHandshake debe generar StopSendHeartbeatMessagePhase
-        let t = fsm.step(Event::Timeout);
-        let valid = t.unwrap_valid();
-        assert!(contains_action(&valid.get_actions(), &Action::StopSendHeartbeatMessagePhase));
     }
 }

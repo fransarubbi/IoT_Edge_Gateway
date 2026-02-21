@@ -20,7 +20,8 @@
 
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, instrument};
 use crate::heartbeat::logic::{heartbeat, run_fsm_heartbeat};
 use crate::message::domain::{ServerMessage};
 use crate::system::domain::InternalEvent;
@@ -41,7 +42,7 @@ impl HeartbeatService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_core, mut rx) = mpsc::channel::<InternalEvent>(50);
         let (tx_to_fsm, rx_from_heartbeat) = mpsc::channel::<Event>(50);
@@ -54,17 +55,25 @@ impl HeartbeatService {
                                heartbeat_tx_to_fsm,
                                tx_to_timer,
                                rx_from_server,
-                               rx_fsm));
+                               rx_fsm,
+                               shutdown.clone()));
 
         tokio::spawn(run_fsm_heartbeat(tx_actions,
-                                       rx_from_heartbeat));
+                                       rx_from_heartbeat,
+                                       shutdown.clone()));
 
         let watchdog_tx_to_fsm = tx_to_fsm.clone();
         tokio::spawn(watchdog_timer_for_heartbeat(watchdog_tx_to_fsm,
-                                                  rx_watchdog_heartbeat));
+                                                  rx_watchdog_heartbeat,
+                                                  shutdown.clone()));
 
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido HeartbeatService");
+                    break;
+                }
+                
                 Some(msg) = self.receiver.recv() => {
                     if tx_msg.send(msg).await.is_err() {
                         error!("Error: no se pudo enviar mensaje de Heartbeat proveniente del servidor");
@@ -371,8 +380,10 @@ fn compute_on_entry(old: &FsmHeartbeat, new: &FsmHeartbeat) -> Action {
 /// # Argumentos
 /// * `tx_to_fsm`: Canal para notificar el Timeout a la FSM.
 /// * `cmd_rx`: Canal para recibir órdenes (`InitTimer`, `StopTimer`).
+#[instrument(name = "watchdog_timer_for_heartbeat", skip(cmd_rx))]
 pub async fn watchdog_timer_for_heartbeat(tx_to_fsm: mpsc::Sender<Event>,
-                                          mut cmd_rx: mpsc::Receiver<Event>) {
+                                          mut cmd_rx: mpsc::Receiver<Event>,
+                                          shutdown: CancellationToken) {
     loop {
         let duration = match cmd_rx.recv().await {
             Some(Event::InitTimer(d)) => d,
@@ -382,6 +393,10 @@ pub async fn watchdog_timer_for_heartbeat(tx_to_fsm: mpsc::Sender<Event>,
         };
 
         tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("Info: shutdown recibido watchdog_timer_for_heartbeat");
+                break;
+            }
             _ = sleep(duration) => {
                 // El tiempo se agotó
                 let _ = tx_to_fsm.send(Event::Timeout).await;
@@ -974,8 +989,9 @@ mod tests {
         let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let shutdown_token = CancellationToken::new();    
         tokio::spawn(async move {
-            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd).await;
+            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
 
         // Iniciar timer
@@ -993,8 +1009,9 @@ mod tests {
         let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let shutdown_token = CancellationToken::new();
         tokio::spawn(async move {
-            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd).await;
+            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
 
         // Iniciar timer
@@ -1016,8 +1033,9 @@ mod tests {
         let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let shutdown_token = CancellationToken::new();
         tokio::spawn(async move {
-            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd).await;
+            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
 
         for _ in 0..3 {
@@ -1034,8 +1052,9 @@ mod tests {
         let (tx_to_fsm, _rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let shutdown_token = CancellationToken::new();
         tokio::spawn(async move {
-            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd).await;
+            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
 
         // Enviar StopTimer sin InitTimer primero (debe ignorarse)
@@ -1053,8 +1072,9 @@ mod tests {
         let (tx_to_fsm, _rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
+        let shutdown_token = CancellationToken::new();
         let handle = tokio::spawn(async move {
-            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd).await;
+            watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
 
         // Cerrar canal

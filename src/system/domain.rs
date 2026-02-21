@@ -14,7 +14,6 @@ use thiserror::Error;
 use tracing_subscriber::{fmt, EnvFilter};
 use crate::grpc::EdgeDownload;
 use crate::mqtt::domain::PayloadTopic;
-use crate::network::domain::{NetworkRow};
 
 
 /// Representación inmutable de la identidad y configuración base del dispositivo Edge.
@@ -29,24 +28,19 @@ pub struct System {
     /// Dirección (IP o Hostname) del servidor central.
     pub host_server: String,
 
+    /// Puerto del servidor central.
+    pub host_port: String,
+
     /// Dirección (IP o Hostname) local del dispositivo.
     pub host_local: String,
 
+    /// Common Name del certificado TLS, usado en la configuración de gRPC.
+    pub cn: String,
+
     /// Ruta relativa al archivo de base de datos SQLite (ej. `./data/edge.db`).
     pub db_path: String,
-}
 
-
-impl System {
-    /// Crea una nueva instancia de la configuración del sistema.
-    pub fn new(id_edge: String, host_server: String, host_local: String, db_path: String) -> Self {
-        Self {
-            id_edge,
-            host_server,
-            host_local,
-            db_path,
-        }
-    }
+    pub buffer_size: usize,
 }
 
 
@@ -73,6 +67,9 @@ pub enum ErrorType {
 
     #[error("{0}")]
     SystemFile(String),
+
+    #[error("{0}")]
+    ProtocolFile(String),
 
     #[error("Error de lectura/escritura (IO)")]
     Io(#[from] io::Error),
@@ -136,16 +133,6 @@ pub struct Certs {
     pub cafile: PathBuf,
     pub certfile: PathBuf,
     pub keyfile: PathBuf,
-}
-
-
-/// Estructura DTO (Data Transfer Object) para la carga inicial de redes.
-///
-/// Representa el contenido deserializado de un archivo de configuración (toml)
-/// que contiene la lista de redes predefinidas.
-#[derive(Debug, Deserialize)]
-pub struct NetworksFile {
-    pub networks: Vec<NetworkRow>,
 }
 
 

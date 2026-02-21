@@ -1,12 +1,43 @@
+//! # Módulo de Canales de Comunicación (Wiring)
+//!
+//! Este módulo centraliza la creación y gestión de todos los canales asíncronos (`mpsc`)
+//! utilizados para la comunicación interna del sistema.
+//!
+//! En una arquitectura basada en actores o un patrón mediador (donde un `Core` central enruta
+//! los mensajes), instanciar los canales de forma individual en el `main` puede resultar
+//! caótico. Esta estructura actúa como una "placa base" (motherboard) virtual que crea
+//! todos los pares `(Sender, Receiver)` necesarios antes de inyectarlos en sus respectivos
+//! hilos o tareas de Tokio.
+//!
+//! ## Convención de Nomenclatura
+//! Para evitar confusiones sobre la dirección del flujo de datos, los canales siguen un
+//! estricto patrón de nombres:
+//! * `[origen]_to_[destino]`: Representa el extremo emisor (`Sender`).
+//! * `[destino]_from_[origen]`: Representa el extremo receptor (`Receiver`).
+//!
+//! Los canales se agrupan en pares bidireccionales por cada subsistema (excepto métricas,
+//! que es unidireccional por naturaleza).
+
+
 use tokio::sync::mpsc;
+use tracing::info;
 use crate::database::domain::{DataServiceCommand, DataServiceResponse};
 use crate::firmware::domain::{FirmwareServiceCommand, FirmwareServiceResponse};
 use crate::fsm::domain::{FsmServiceCommand, FsmServiceResponse};
 use crate::grpc::EdgeUpload;
-use crate::message::domain::{MessageServiceCommand, MessageServiceResponse, SerializedMessage, ServerMessage};
+use crate::message::domain::{MessageServiceCommand, MessageServiceResponse, ServerMessage};
+use crate::mqtt::domain::MqttServiceCommand;
 use crate::network::domain::{NetworkServiceCommand, NetworkServiceResponse};
 use crate::system::domain::InternalEvent;
 
+
+/// Contenedor maestro de todos los canales MPSC del sistema.
+///
+/// Esta estructura almacena temporalmente los extremos de transmisión y recepción
+/// de cada servicio. Durante la fase de inicialización de la aplicación (el "wiring"),
+/// esta estructura se consume, y cada campo es movido (moved) a su respectiva
+/// tarea (ej. el `Core` toma todos los campos `core_*`, mientras que cada servicio
+/// toma sus respectivos `*_to_core` y `*_from_core`).
 pub struct Channels {
     pub data_service_to_core: mpsc::Sender<DataServiceResponse>,
     pub core_from_data_service: mpsc::Receiver<DataServiceResponse>,
@@ -50,8 +81,8 @@ pub struct Channels {
     pub mqtt_service_to_core: mpsc::Sender<InternalEvent>,
     pub core_from_mqtt_service: mpsc::Receiver<InternalEvent>,
 
-    pub core_to_mqtt_service: mpsc::Sender<SerializedMessage>,
-    pub mqtt_service_from_core: mpsc::Receiver<SerializedMessage>,
+    pub core_to_mqtt_service: mpsc::Sender<MqttServiceCommand>,
+    pub mqtt_service_from_core: mpsc::Receiver<MqttServiceCommand>,
 
     pub network_service_to_core: mpsc::Sender<NetworkServiceResponse>,
     pub core_from_network_service: mpsc::Receiver<NetworkServiceResponse>,
@@ -62,10 +93,25 @@ pub struct Channels {
 
 
 impl Channels {
-    
-    /// Crea una nueva instancia de Channels inicializando todos los canales MPSC.
-    /// `buffer_size` determina la capacidad de la cola de cada canal (backpressure).
+
+    /// Inicializa y enlaza todos los canales requeridos por el sistema.
+    ///
+    /// Esta función agrupa la creación repetitiva de canales MPSC, asegurando que todos
+    /// se instancien con la misma política de encolamiento. Utiliza canales "bounded" (limitados)
+    /// para prevenir el agotamiento de memoria en caso de cuellos de botella.
+    ///
+    /// # Argumentos
+    ///
+    /// * `buffer_size` - Capacidad máxima de mensajes en espera para CADA canal.
+    ///   Si la cola se llena, la tarea que intente hacer `send().await` se bloqueará
+    ///   (aplicando backpressure) hasta que el receptor consuma mensajes.
+    ///
+    /// # Retorno
+    /// Retorna una instancia completa de `Channels` con todos los extremos conectados.
     pub fn new(buffer_size: usize) -> Self {
+
+        info!("Info: creando canales del sistema");
+
         // 1. Data Service
         let (data_s2c_tx, data_s2c_rx) = mpsc::channel(buffer_size);
         let (data_c2s_tx, data_c2s_rx) = mpsc::channel(buffer_size);

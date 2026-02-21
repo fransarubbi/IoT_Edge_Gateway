@@ -32,6 +32,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
+                info!("Info: shutdown recibido update_firmware_task");
                 break;
             }
 
@@ -102,6 +103,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
 
 /// Actor que encapsula la Máquina de Estados (FSM).
 /// Mantiene el estado en memoria y procesa eventos secuencialmente.
+#[instrument(name = "run_fsm_firmware", skip(rx_event))]
 pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
                               mut rx_event: mpsc::Receiver<Event>,
                               cancel: CancellationToken) {
@@ -111,6 +113,7 @@ pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
+                info!("Info: shutdown recibido run_fsm_firmware");
                 break;
             }
             Some(event) = rx_event.recv() => {

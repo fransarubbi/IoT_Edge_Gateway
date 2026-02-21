@@ -17,7 +17,8 @@
 use serde::{Serialize, Deserialize};
 use sqlx::FromRow;
 use tokio::sync::mpsc;
-use tracing::{error};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use crate::context::domain::AppContext;
 use crate::database::domain::TableDataVector;
 use crate::grpc::EdgeUpload;
@@ -35,6 +36,7 @@ pub enum MessageServiceResponse {
 
 
 pub enum MessageServiceCommand {
+    GenerateHelloWorld,
     Internal(InternalEvent),
     Batch(TableDataVector),
     ToHub(HubMessage),
@@ -60,7 +62,7 @@ impl MessageService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_mqtt_local, mut rx_to_mqtt_service) = mpsc::channel::<SerializedMessage>(100);
         let (tx_to_msg_to_hub, rx_internal) = mpsc::channel::<InternalEvent>(100);
@@ -78,24 +80,33 @@ impl MessageService {
                                 rx_internal,
                                 rx_server_msg,
                                 rx_command_to_hub,
-                                self.context.clone()));
+                                self.context.clone(),
+                                shutdown.clone()));
 
         tokio::spawn(msg_from_hub(tx_response_from_hub,
                                   tx_from_hub_to_server,
                                   tx_to_msg_to_hub,
-                                  rx_command_from_hub));
+                                  rx_command_from_hub,
+                                  shutdown.clone()));
 
         tokio::spawn(msg_to_server(tx_to_server,
                                    rx_from_hub,
                                    rx_command_to_server,
-                                   self.context.clone()));
+                                   self.context.clone(),
+                                   shutdown.clone()));
 
         tokio::spawn(msg_from_server(tx_from_server,
                                      tx_server_to_msg_to_hub,
-                                     rx_command_from_server));
+                                     rx_command_from_server,
+                                     shutdown.clone()));
 
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido MessageService");
+                    break;
+                }
+                
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
                         MessageServiceCommand::Internal(internal) => {
@@ -251,6 +262,11 @@ impl MessageService {
                                     }
                                 },
                                 _ => {}
+                            }
+                        },
+                        MessageServiceCommand::GenerateHelloWorld => {
+                            if tx_command_to_server.send(cmd).await.is_err() {
+                                error!("Error: no se pudo enviar GenerateHelloWorld a msg_to_server");
                             }
                         }
                     }
@@ -413,8 +429,8 @@ impl Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
     pub metadata: Metadata,
+    pub flag: String,
     pub balance_epoch: u32,
-    pub duration: u32,
 }
 
 

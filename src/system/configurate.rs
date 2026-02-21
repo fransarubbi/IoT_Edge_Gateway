@@ -39,6 +39,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::system::domain::{ErrorType, Flag, System};
 use tracing::{info, error, instrument};
+use crate::config::files::{PROTOCOL_TOML_PATH, SYSTEM_TOML_PATH};
 use crate::context::domain::AppContext;
 use crate::network::domain::{NetworkManager};
 use crate::quorum::domain::ProtocolSettings;
@@ -85,33 +86,33 @@ pub fn configurate_system(event: &Flag) -> Result<(), ErrorType> {
 
 fn mosquitto_service_inactive_flow() -> Result<(), ErrorType> {
     match activate_service() {
-        Ok(_) => info!("Éxito: Servicio mosquitto activado correctamente"),
+        Ok(_) => info!("Éxito: servicio mosquitto activado correctamente"),
         Err(e) => {
-            error!("Error: Systemctl falló al activar mosquitto. {}", e);
+            error!("Error: systemctl falló al activar mosquitto. {e}");
             return Err(e);
         }
     }
 
     match create_mosquitto_conf() {
-        Ok(_) => info!("Éxito: Archivo de configuración de mosquitto creado correctamente"),
+        Ok(_) => info!("Éxito: archivo de configuración de mosquitto creado correctamente"),
         Err(e) => {
-            error!("Error: No se pudo crear el archivo de configuración de mosquitto. {}", e);
+            error!("Error: no se pudo crear el archivo de configuración de mosquitto. {e}");
             return Err(e);
         }
     }
 
     match create_mtls_config_file() {
-        Ok(_) => info!("Éxito: Archivo de configuración de mTLS creado correctamente"),
+        Ok(_) => info!("Éxito: archivo de configuración de mTLS creado correctamente"),
         Err(e) => {
-            error!("Error: No se pudo crear el archivo de configuración de mTLS. {}", e);
+            error!("Error: no se pudo crear el archivo de configuración de mTLS. {e}");
             return Err(e);
         }
     }
 
     match restart_service() {
-        Ok(_) => info!("Éxito: Servicio mosquitto reiniciado correctamente"),
+        Ok(_) => info!("Éxito: servicio mosquitto reiniciado correctamente"),
         Err(e) => {
-            error!("Error: Systemctl falló al reiniciar mosquitto. {}", e);
+            error!("Error: systemctl falló al reiniciar mosquitto. {e}");
             return Err(e);
         }
     }
@@ -121,25 +122,25 @@ fn mosquitto_service_inactive_flow() -> Result<(), ErrorType> {
 
 fn mosquitto_conf_flow() -> Result<(), ErrorType> {
     match create_mosquitto_conf() {
-        Ok(_) => info!("Éxito: Archivo de configuración de mosquitto creado correctamente"),
+        Ok(_) => info!("Éxito: archivo de configuración de mosquitto creado correctamente"),
         Err(e) => {
-            error!("Error: No se pudo crear el archivo de configuración de mosquitto. {}", e);
+            error!("Error: no se pudo crear el archivo de configuración de mosquitto. {e}");
             return Err(e);
         }
     }
 
     match create_mtls_config_file() {
-        Ok(_) => info!("Éxito: Archivo de configuración de mTLS creado correctamente"),
+        Ok(_) => info!("Éxito: archivo de configuración de mTLS creado correctamente"),
         Err(e) => {
-            error!("Error: No se pudo crear el archivo de configuración de mTLS. {}", e);
+            error!("Error: no se pudo crear el archivo de configuración de mTLS. {e}");
             return Err(e);
         }
     }
 
     match restart_service() {
-        Ok(_) => info!("Éxito: Servicio mosquitto reiniciado correctamente"),
+        Ok(_) => info!("Éxito: servicio mosquitto reiniciado correctamente"),
         Err(e) => {
-            error!("Error: Systemctl falló al reiniciar mosquitto. {}", e);
+            error!("Error: systemctl falló al reiniciar mosquitto. {e}");
             return Err(e);
         }
     }
@@ -149,17 +150,17 @@ fn mosquitto_conf_flow() -> Result<(), ErrorType> {
 
 fn mtls_conf_flow() -> Result<(), ErrorType> {
     match create_mtls_config_file() {
-        Ok(_) => info!("Éxito: Archivo de configuración de mTLS creado correctamente"),
+        Ok(_) => info!("Éxito: archivo de configuración de mTLS creado correctamente"),
         Err(e) => {
-            error!("Error: No se pudo crear el archivo de configuración de mTLS. {}", e);
+            error!("Error: no se pudo crear el archivo de configuración de mTLS. {e}");
             return Err(e);
         }
     }
 
     match restart_service() {
-        Ok(_) => info!("Éxito: Servicio mosquitto reiniciado correctamente"),
+        Ok(_) => info!("Éxito: servicio mosquitto reiniciado correctamente"),
         Err(e) => {
-            error!("Error: Systemctl falló al reiniciar mosquitto. {}", e);
+            error!("Error: systemctl falló al reiniciar mosquitto. {e}");
             return Err(e);
         }
     }
@@ -309,12 +310,12 @@ tls_version tlsv1.2
 cafile_broker /etc/mosquitto/certs_broker/ca_local.crt
 certfile_broker /etc/mosquitto/certs_broker/mosquitto.crt
 keyfile_broker /etc/mosquitto/certs_broker/mosquitto.key
-cafile_edge_local /etc/mosquitto/certs_edge_local/ca_edge_local.crt
-certfile_edge_local /etc/mosquitto/certs_edge_local/edge_local.crt
-keyfile_edge_local /etc/mosquitto/certs_edge_local/edge_local.key
-cafile_edge_remote /etc/mosquitto/certs_edge_remote/ca_edge_remote.crt
-certfile_edge_remote /etc/mosquitto/certs_edge_remote/edge_remote.crt
-keyfile_edge_remote /etc/mosquitto/certs_edge_remote/edge_remote.key
+cafile_edge_local /etc/mosquitto/certs_edge_mqtt/ca_edge_mqtt.crt
+certfile_edge_local /etc/mosquitto/certs_edge_mqtt/edge_mqtt.crt
+keyfile_edge_local /etc/mosquitto/certs_edge_mqtt/edge_mqtt.key
+cafile_edge_remote /etc/mosquitto/certs_edge_grpc/ca_edge_grpc.crt
+certfile_edge_remote /etc/mosquitto/certs_edge_grpc/edge_grpc.crt
+keyfile_edge_remote /etc/mosquitto/certs_edge_grpc/edge_grpc.key
 require_certificate true
 use_identity_as_username true
 allow_anonymous false
@@ -408,15 +409,19 @@ fn chown_root(path: &str) -> Result<(), ErrorType> {
 /// etc/edge/files/protocol.toml
 ///
 
-pub async fn initializing_system() -> Result<AppContext, ErrorType> {
+pub fn initializing_system() -> Result<AppContext, ErrorType> {
 
-    let system = match load_system_toml(Path::new("/etc/edge/files/system.toml")) {
+    let system = match load_system_toml(Path::new(SYSTEM_TOML_PATH)) {
         Ok(system) => system,
         Err(e) => return Err(e),
     };
     let system = Arc::new(system);
 
-    let protocol = Arc::new(ProtocolSettings::new());
+    let protocol = match load_protocol_toml(Path::new(PROTOCOL_TOML_PATH)) {
+        Ok(system) => system,
+        Err(e) => return Err(e),
+    };
+    let protocol = Arc::new(protocol);
     let net_man = Arc::new(RwLock::new(NetworkManager::new_empty(&system)));
     Ok(AppContext::new(net_man, system, protocol))
 }
@@ -446,5 +451,34 @@ fn load_system_toml(path: &Path) -> Result<System, ErrorType> {
     toml::from_str(&content)
         .map_err(|_| ErrorType::SystemFile(
             "Error: Archivo TOML de configuración es inválido".into()
+        ))
+}
+
+
+/// Carga los datos del archivo `protocol.toml`
+///
+/// Lee los datos del archivo `protocol.toml`, el cual tiene los campos que necesita
+/// la estructura `PFCBPSettings` para funcionar.
+///
+/// # Retorno
+///
+/// - `PFCBPSettings` si finaliza con éxito.
+/// - `ErrorType` si falla o no puede ejecutarse.
+///
+/// # Requisitos del file system
+///
+/// El archivo toml en: `etc/edge/files/protocol.toml`
+///
+
+fn load_protocol_toml(path: &Path) -> Result<ProtocolSettings, ErrorType> {
+
+    let content = fs::read_to_string(path)
+        .map_err(|_| ErrorType::ProtocolFile(
+            "Error: No se pudo leer el archivo de protocolo".into()
+        ))?;
+
+    toml::from_str(&content)
+        .map_err(|_| ErrorType::ProtocolFile(
+            "Error: Archivo TOML de protocolo es inválido".into()
         ))
 }

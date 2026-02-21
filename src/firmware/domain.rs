@@ -16,11 +16,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
-use crate::fsm::domain::{fsm_watchdog_timer, FsmServiceCommand, FsmServiceResponse};
-use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
 use crate::message::domain::{FirmwareOk, HubMessage, ServerMessage, UpdateFirmware};
 
 
@@ -101,7 +99,7 @@ impl FirmwareService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
         
         let mut runtime: Option<FirmwareRuntime> = None;
         
@@ -109,6 +107,16 @@ impl FirmwareService {
             match runtime {
                 Some(ref mut rt) => {
                     tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            info!("Info: shutdown recibido FirmwareService");
+                            if let Some(rt) = runtime.take() {
+                                rt.cancel_token.cancel();
+                                for h in rt.handles {
+                                    let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+                                }
+                            }
+                            break;
+                        }
                         Some(cmd) = self.receiver.recv() => {
                             match cmd {
                                 FirmwareServiceCommand::Update(update) => {
@@ -149,14 +157,21 @@ impl FirmwareService {
                     }
                 }
                 None => {
-                    if let Some(cmd) = self.receiver.recv().await {
-                        match cmd {
-                            FirmwareServiceCommand::CreateRuntime => {
-                                if runtime.is_none() {
-                                    runtime = Some(self.spawn_runtime());
-                                }
-                            },
-                            _ => {}
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            info!("Info: shutdown recibido FirmwareService");
+                            break;
+                        }
+                        
+                        Some(cmd) = self.receiver.recv() => {
+                            match cmd {
+                                FirmwareServiceCommand::CreateRuntime => {
+                                    if runtime.is_none() {
+                                        runtime = Some(self.spawn_runtime());
+                                    }
+                                },
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -473,6 +488,7 @@ fn compute_on_entry(old: &FsmStateFirmware, new: &FsmStateFirmware) -> Action {
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
+#[instrument(name = "firmware_watchdog_timer", skip(cmd_rx))]
 async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                                 mut cmd_rx: mpsc::Receiver<Event>,
                                 cancel: CancellationToken) {
@@ -488,6 +504,7 @@ async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
             _ = cancel.cancelled() => {
+                info!("Info: shutdown recibido firmware_watchdog_timer");
                 break;
             }
             _ = sleep(duration) => {

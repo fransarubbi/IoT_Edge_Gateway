@@ -5,6 +5,7 @@ use tracing::{error, info, warn};
 use crate::system::domain::System;
 use rand::seq::IteratorRandom;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use crate::context::domain::AppContext;
 use crate::database::domain::DataServiceCommand;
 use crate::message::domain::{HubMessage, Metadata, ServerMessage};
@@ -13,6 +14,7 @@ use crate::network::logic::{network_admin, network_dba};
 pub enum NetworkServiceResponse {
     HubMessage(HubMessage),
     DataCommand(DataServiceCommand),
+    NetworksReady,
 }
 
 
@@ -47,10 +49,10 @@ impl NetworkService {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_insert_network, rx_from_network) = mpsc::channel::<NetworkChanged>(50);
-        let (tx_to_core, mut rx_response_admin) = mpsc::channel::<HubMessage>(50);
+        let (tx_to_core, mut rx_response_admin) = mpsc::channel::<NetworkServiceResponse>(50);
         let (tx_to_insert_hub, rx_from_network_hub) = mpsc::channel::<HubChanged>(50);
         let (tx_server_command, rx_from_server) = mpsc::channel::<ServerMessage>(50);
         let (tx_hub_command, rx_from_hub) = mpsc::channel::<HubMessage>(50);
@@ -63,14 +65,20 @@ impl NetworkService {
                                    rx_from_server,
                                    rx_from_hub,
                                    rx_batch,
-                                   self.context.clone()));
+                                   self.context.clone(),
+                                   shutdown.clone()));
 
         tokio::spawn(network_dba(tx_dba_response,
                                  rx_from_network,
-                                 rx_from_network_hub));
+                                 rx_from_network_hub,
+                                 shutdown.clone()));
 
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("Info: shutdown recibido NetworkService");
+                    break;
+                }
                 Some(command) = self.receiver.recv() => {
                     match command {
                         NetworkServiceCommand::HubMessage(message) => {
@@ -99,9 +107,9 @@ impl NetworkService {
                         }
                     }
                 }
-                Some(message) = rx_response_admin.recv() => {
-                    if self.sender.send(NetworkServiceResponse::HubMessage(message)).await.is_err() {
-                        error!("Error: no se pudo enviar HubMessage");
+                Some(response) = rx_response_admin.recv() => {
+                    if self.sender.send(response).await.is_err() {
+                        error!("Error: no se pudo enviar NetworkServiceResponse");
                     }
                 }
                 Some(data_command) = rx_response_dba.recv() => {
@@ -145,22 +153,6 @@ impl NetworkManager {
     /// Crea una nueva instancia vacía del gestor.
     /// Los tópicos de handshake y state son globales, independientes de la red.
     /// Por ende tienen un path definido. Siempre es `iot/id_edge/handshake` o `iot/id_edge/state`
-    /// Ademas el QoS es 1. Esto significa `AtLeastOnce`.
-    pub fn new(system: &System, networks: HashMap<String, Network>) -> Self {
-        let id_system = system.id_edge.clone();
-        let t_handshake = format!("iot/{id_system}/handshake");
-        let t_state = format!("iot/{id_system}/state");
-        let t_heartbeat = format!("iot/{id_system}/heartbeat");
-        
-        Self {
-            networks,
-            hubs: HashMap::new(),
-            topic_handshake: Topic::new(t_handshake, 1),
-            topic_state: Topic::new(t_state, 1),
-            topic_heartbeat: Topic::new(t_heartbeat, 0),
-        }
-    }
-
     pub fn new_empty(system: &System) -> Self {
         let id_system = system.id_edge.clone();
         let t_handshake = format!("iot/{id_system}/handshake");
@@ -206,11 +198,6 @@ impl NetworkManager {
         } else {
             warn!("El Hub ya existía en esta red, fue ignorado.");
         }
-    }
-
-    /// Eliminar todos los Hubs asociados a una red.
-    pub fn remove_hub_network(&mut self, id: &str) {
-        self.hubs.remove(id);
     }
 
     /// Eliminar un Hub específico de una red.
@@ -313,43 +300,6 @@ impl NetworkManager {
                 }
             }
             _ => None,
-        }
-    }
-
-    /// Extrae el ID de la red de un tópico si esta existe en el gestor.
-    ///
-    /// # Ejemplo
-    /// `iot/sala7/nodo1` -> Retorna `Some("sala7")` si "sala7" está en `networks`.
-    pub fn extract_net_id(&self, topic_in: &str) -> Option<String> {
-        let mut iter = topic_in.split('/');
-        let net = iter.nth(1)?; // Obtiene el segundo elemento
-
-        if self.networks.contains_key(net) {
-            Some(net.to_string())
-        } else {
-            None
-        }
-    }
-}
-
-
-fn topic_matches(pattern: &str, topic: &str) -> bool {
-    let mut p_iter = pattern.split('/');
-    let mut t_iter = topic.split('/');
-
-    loop {
-        match (p_iter.next(), t_iter.next()) {
-            // Caso 1: Ambos tienen un segmento para comparar
-            (Some(p), Some(t)) => {
-                if p != "+" && p != t {
-                    return false; // No coinciden y no es comodín
-                }
-            },
-            // Caso 2: Ambos terminaron al mismo tiempo (son iguales)
-            (None, None) => return true,
-
-            // Caso 3: Uno terminó y el otro no (Longitudes diferentes)
-            _ => return false,
         }
     }
 }
