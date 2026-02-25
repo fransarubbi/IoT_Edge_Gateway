@@ -1013,7 +1013,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "iot_broker"
+name = "iot_edge_gateway"
 version = "0.19.0"
 dependencies = [
  "chrono",

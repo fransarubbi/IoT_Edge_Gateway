@@ -27,9 +27,9 @@ pub mod grpc_service {
     pub const TLS_CERT_TIMEOUT_SECS: u64 = 10;
     pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
     pub const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
-    pub const CA_EDGE_GRPC : &str = "/etc/mosquitto/certs_edge_grpc/ca_edge_grpc.crt";
-    pub const CRT_EDGE_GRPC : &str = "/etc/mosquitto/certs_edge_remote/edge_remote.crt";
-    pub const KEY_EDGE_GRPC : &str = "/etc/mosquitto/certs_edge_remote/edge_remote.key";
+    pub const CA_EDGE_GRPC : &str = "/etc/mosquitto/certs/root.crt";
+    pub const CRT_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge.crt";
+    pub const KEY_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge.key";
 }
 
 pub mod heartbeat {
@@ -42,7 +42,7 @@ pub mod mqtt_service {
     pub const BUFFER_SIZE: usize = 1000;
     pub const MTLS_PORT: u16 = 8883;
     pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
-    pub const CA_EDGE_MQTT : &str = "/etc/mosquitto/certs_edge_mqtt/ca_edge_mqtt.crt";
-    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs_edge_mqtt/edge_mqtt.crt";
-    pub const KEY_EDGE_MQTT : &str = "/etc/mosquitto/certs_edge_mqtt/edge_mqtt.key";
+    pub const CA_EDGE_MQTT : &str = "/etc/mosquitto/certs/root.crt";
+    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge.crt";
+    pub const KEY_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge.key";
 }

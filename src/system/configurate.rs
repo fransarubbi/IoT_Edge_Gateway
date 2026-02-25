@@ -307,15 +307,9 @@ fn create_mtls_config_file() -> Result<(), ErrorType> {
     let text = r#"# Configuracion para IoT Edge Gateway
 listener 8883
 tls_version tlsv1.2
-cafile_broker /etc/mosquitto/certs_broker/ca_local.crt
-certfile_broker /etc/mosquitto/certs_broker/mosquitto.crt
-keyfile_broker /etc/mosquitto/certs_broker/mosquitto.key
-cafile_edge_local /etc/mosquitto/certs_edge_mqtt/ca_edge_mqtt.crt
-certfile_edge_local /etc/mosquitto/certs_edge_mqtt/edge_mqtt.crt
-keyfile_edge_local /etc/mosquitto/certs_edge_mqtt/edge_mqtt.key
-cafile_edge_remote /etc/mosquitto/certs_edge_grpc/ca_edge_grpc.crt
-certfile_edge_remote /etc/mosquitto/certs_edge_grpc/edge_grpc.crt
-keyfile_edge_remote /etc/mosquitto/certs_edge_grpc/edge_grpc.key
+cafile /etc/mosquitto/certs/root.crt
+certfile /etc/mosquitto/certs/edge.crt
+keyfile /etc/mosquitto/certs/edge.key
 require_certificate true
 use_identity_as_username true
 allow_anonymous false
@@ -458,11 +452,11 @@ fn load_system_toml(path: &Path) -> Result<System, ErrorType> {
 /// Carga los datos del archivo `protocol.toml`
 ///
 /// Lee los datos del archivo `protocol.toml`, el cual tiene los campos que necesita
-/// la estructura `PFCBPSettings` para funcionar.
+/// la estructura `ProtocolSettings` para funcionar.
 ///
 /// # Retorno
 ///
-/// - `PFCBPSettings` si finaliza con éxito.
+/// - `ProtocolSettings` si finaliza con éxito.
 /// - `ErrorType` si falla o no puede ejecutarse.
 ///
 /// # Requisitos del file system
