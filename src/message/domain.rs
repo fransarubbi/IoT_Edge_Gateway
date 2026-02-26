@@ -21,14 +21,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use crate::context::domain::AppContext;
 use crate::database::domain::TableDataVector;
-use crate::grpc::EdgeUpload;
+use crate::grpc::{FromEdge};
 use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
 use crate::network::domain::HubRow;
 use crate::system::domain::InternalEvent;
 
 
 pub enum MessageServiceResponse {
-    EdgeUpload(EdgeUpload),
+    EdgeUpload(FromEdge),
     Serialized(SerializedMessage),
     FromHub(HubMessage),
     FromServer(ServerMessage),
@@ -69,7 +69,7 @@ impl MessageService {
         let (tx_command_to_hub, rx_command_to_hub) = mpsc::channel::<MessageServiceCommand>(100);
         let (tx_command_from_hub, rx_command_from_hub) = mpsc::channel::<MessageServiceCommand>(100);
         let (tx_response_from_hub, mut rx_response_from_hub) = mpsc::channel::<HubMessage>(100);
-        let (tx_to_server, mut rx_response_to_server) = mpsc::channel::<EdgeUpload>(100);
+        let (tx_to_server, mut rx_response_to_server) = mpsc::channel::<FromEdge>(100);
         let (tx_command_to_server, rx_command_to_server) = mpsc::channel::<MessageServiceCommand>(100);
         let (tx_from_server, mut rx_response_from_server) = mpsc::channel::<ServerMessage>(100);
         let (tx_server_to_msg_to_hub, rx_server_msg) = mpsc::channel::<ServerMessage>(100);

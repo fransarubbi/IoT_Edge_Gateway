@@ -1,6 +1,6 @@
 [package]
 name = "iot_edge_gateway"
-version = "0.19.0"
+version = "0.19.1"
 edition = "2024"
 
 [dependencies]
@@ -23,9 +23,10 @@ log = "0.4"
 chrono = "0.4"
 rand = "0.8"
 sysinfo = "0.33" # Ajustado a versión compatible común
+rustls = { version = "0.23", features = ["ring"] }
 
 # Base de Datos
-sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "macros"] }
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "macros"] }
 
 # Logging
 tracing = "0.1"

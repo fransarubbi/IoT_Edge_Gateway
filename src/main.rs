@@ -42,6 +42,8 @@ use crate::system::fsm::init_fsm;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    
     init_tracing();
 
     let app_context = init_fsm().await?;

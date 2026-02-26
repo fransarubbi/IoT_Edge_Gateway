@@ -23,10 +23,10 @@ use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metad
                              MessageServiceCommand, ServerMessage, HubMessage};
 use crate::database::domain::{TableDataVector};
 use crate::grpc;
-use crate::grpc::{edge_download, EdgeUpload, EdgeDownload,
+use crate::grpc::{to_edge, FromEdge, ToEdge,
                   FirmwareOutcome, SettingOk as SettOk,
                   Settings as Sett, SystemMetrics, HelloWorld as Hello};
-use crate::grpc::edge_upload::Payload;
+use crate::grpc::from_edge::Payload;  
 use crate::network::domain::{NetworkManager};
 use crate::system::domain::{InternalEvent, System};
 
@@ -290,7 +290,7 @@ pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
 /// Utiliza `get_topic_to_send_msg_from_hub` para transformar el tópico local en un tópico global
 /// con identidad de Edge.
 #[instrument(name = "msg_to_server", skip(rx_from_hub, rx, app_context))]
-pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
+pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
                            mut rx_from_hub: mpsc::Receiver<ServerMessage>,
                            mut rx: mpsc::Receiver<MessageServiceCommand>,
                            app_context: AppContext, 
@@ -374,7 +374,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<EdgeUpload>,
 }
 
 
-fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<EdgeUpload> {
+fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEdge> {
 
     let payload = match msg {
         ServerMessage::HelloWorld(hello) => {
@@ -528,10 +528,10 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<EdgeUp
 
 fn generate_edge_upload(payload: Option<Payload>,
                         edge_id: String
-                       ) -> Option<EdgeUpload> {
+                       ) -> Option<FromEdge> {
 
     if let Some(p) = payload {
-        Some(EdgeUpload {
+        Some(FromEdge {
             edge_id,
             payload: Some(p),
         })
@@ -543,7 +543,7 @@ fn generate_edge_upload(payload: Option<Payload>,
 
 /// Itera sobre un vector de datos históricos y los envía uno a uno.
 async fn process_batch(batch: TableDataVector,
-                       tx: &mpsc::Sender<EdgeUpload>,
+                       tx: &mpsc::Sender<FromEdge>,
                        system: &System
 ) -> Result<(), ()> {
 
@@ -624,13 +624,13 @@ pub async fn msg_from_server(tx: mpsc::Sender<ServerMessage>,
 }
 
 
-async fn handle_grpc_message(proto_msg: EdgeDownload,
+async fn handle_grpc_message(proto_msg: ToEdge,
                              tx: &mpsc::Sender<ServerMessage>,
                              tx_to_msg_to_hub: &mpsc::Sender<ServerMessage>) {
 
     if let Some(payload) = proto_msg.payload {
         match payload {
-            edge_download::Payload::UpdateFirmware(update_firmware) => {
+            to_edge::Payload::UpdateFirmware(update_firmware) => {
                 let msg = UpdateFirmware {
                     metadata: extract_metadata(update_firmware.metadata),
                     network: update_firmware.network,
@@ -639,7 +639,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje UpdateFirmware a firmware");
                 }
             },
-            edge_download::Payload::Settings(settings) => {
+            to_edge::Payload::Settings(settings) => {
                 let msg = Settings {
                     metadata: extract_metadata(settings.metadata),
                     network: settings.network,
@@ -654,7 +654,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje a network");
                 }
             },
-            edge_download::Payload::DeleteHub(delete) => {
+            to_edge::Payload::DeleteHub(delete) => {
                 let msg = DeleteHub {
                     metadata: extract_metadata(delete.metadata),
                     network: delete.network,
@@ -663,7 +663,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje a network");
                 }
             },
-            edge_download::Payload::SettingOk(setting_ok) => {
+            to_edge::Payload::SettingOk(setting_ok) => {
                 let msg = SettingOk {
                     metadata: extract_metadata(setting_ok.metadata),
                     network: setting_ok.network,
@@ -673,7 +673,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje al hub");
                 }
             },
-            edge_download::Payload::Network(network) => {
+            to_edge::Payload::Network(network) => {
                 let msg = Network {
                     metadata: extract_metadata(network.metadata),
                     id_network: network.id_network,
@@ -685,7 +685,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje a network");
                 }
             },
-            edge_download::Payload::Heartbeat(heartbeat) => {
+            to_edge::Payload::Heartbeat(heartbeat) => {
                 let msg = HeartbeatMsg {
                     metadata: extract_metadata(heartbeat.metadata),
                     beat: true,
@@ -694,7 +694,7 @@ async fn handle_grpc_message(proto_msg: EdgeDownload,
                     error!("Error: No se pudo enviar mensaje a heartbeat");
                 }
             },
-            edge_download::Payload::HelloWorld(hello_ack) => {
+            to_edge::Payload::HelloWorld(hello_ack) => {
                 let msg = HelloWorld {
                     metadata: extract_metadata(hello_ack.metadata),
                     hello: hello_ack.hello,

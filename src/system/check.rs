@@ -63,20 +63,10 @@
 //! /etc/mosquitto/
 //! ├── mosquitto.conf
 //! │
-//! ├── certs_broker/
-//! │   ├── ca_local.crt
-//! │   ├── mosquitto.crt
-//! │   └── mosquitto.key
-//! │
-//! │── certs_edge_local/
-//! │   ├── ca_edge_local.crt
-//! │   ├── edge_local.crt
-//! │   └── edge_local.key
-//! │
-//! │── certs_edge_remote/
-//! │   ├── ca_edge_remote.crt
-//! │   ├── edge_remote.crt
-//! │   └── edge_remote.key
+//! ├── certs/
+//! │   ├── root.crt
+//! │   ├── edge.crt
+//! │   └── edge.key
 //! │
 //! └── conf.d/
 //!     └── mtls.conf
@@ -85,12 +75,10 @@
 use fs::metadata;
 use which::which;
 use std::process::Command;
-use std::net::TcpStream;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::time::Duration;
 use crate::system::domain::{Certs, ErrorType, MtlsConfig};
 use tracing::{info, error, instrument};
 
@@ -145,7 +133,7 @@ pub fn check_system_config() -> Result<(), ErrorType> {
         },
     }
 
-    match mosquitto_listening("127.0.0.1:8883") {
+    match mosquitto_listening("localhost:8883") {
         Ok(_) => info!("Éxito: El servicio de sistema mosquitto está escuchando"),
         Err(e) => {
             error!("Error: El servicio de sistema mosquitto no está escuchando. {}", e);
@@ -174,7 +162,10 @@ pub fn check_system_config() -> Result<(), ErrorType> {
 
     match validate_certificate_files(&cfg) {
         Ok(_) => info!("Éxito: Los certificados mTLS son correctos"),
-        Err(e) => error!("{}", e),
+        Err(e) => {
+            error!("{}", e);
+            return Err(e);
+        }
     }
 
     Ok(())
@@ -248,10 +239,37 @@ fn service_active(service_name: &str) -> Result<(), ErrorType>  {
 /// Su objetivo es únicamente comprobar que el broker está escuchando.
 
 fn mosquitto_listening(address: &str) -> Result<(), ErrorType> {
-    let timeout = Duration::from_secs(1);
-    let addr = address.parse().map_err(|_| ErrorType::Generic)?;
-    TcpStream::connect_timeout(&addr, timeout)?;
-    Ok(())
+    use std::process::Command;
+
+    // Extraer el puerto del address (ej: "localhost:8883")
+    let port = address
+        .split(':')
+        .nth(1)
+        .ok_or(ErrorType::Generic)?;
+
+    // Ejecutar `ss -ltn`
+    let output = Command::new("ss")
+        .arg("-ltn")
+        .output()
+        .map_err(|_| ErrorType::Generic)?;
+
+    if !output.status.success() {
+        return Err(ErrorType::Generic);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Buscar línea que contenga :<puerto>
+    for line in stdout.lines() {
+        let line = line.trim();
+
+        // Debe estar en estado LISTEN y contener el puerto exacto
+        if line.starts_with("LISTEN") && line.contains(&format!(":{}", port)) {
+            return Ok(());
+        }
+    }
+
+    Err(ErrorType::Generic)
 }
 
 
@@ -385,9 +403,7 @@ fn validate_mtls_conf(path: &Path) -> Result<MtlsConfig, ErrorType> {
     let mut cfg = MtlsConfig {
         listener: None,
         tls_version: None,
-        broker: Certs::default(),
-        edge_local: Certs::default(),
-        edge_remote: Certs::default(),
+        certs: Certs::default(),
         require_certificate: false,
         use_identity_as_username: false,
         allow_anonymous: true,
@@ -404,9 +420,7 @@ fn validate_mtls_conf(path: &Path) -> Result<MtlsConfig, ErrorType> {
         return Err(ErrorType::MtlsConfig("Error: versión TLS inválida".into()));
     }
 
-    validate_certificate_set(&cfg.broker, "broker")?;
-    validate_certificate_set(&cfg.edge_local, "edge_local")?;
-    validate_certificate_set(&cfg.edge_remote, "edge_remote")?;
+    validate_certificate_set(&cfg.certs)?;
 
     if !(cfg.require_certificate
         && cfg.use_identity_as_username
@@ -470,19 +484,9 @@ fn scan_mtls_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> 
             ("tls_version", Some(p)) => cfg.tls_version = Some(p.to_string()),
 
             // Broker
-            ("cafile_broker", Some(p)) => cfg.broker.cafile = PathBuf::from(p),
-            ("certfile_broker", Some(p)) => cfg.broker.certfile = PathBuf::from(p),
-            ("keyfile_broker", Some(p)) => cfg.broker.keyfile = PathBuf::from(p),
-
-            // Edge local
-            ("cafile_edge_local", Some(p)) => cfg.edge_local.cafile = PathBuf::from(p),
-            ("certfile_edge_local", Some(p)) => cfg.edge_local.certfile = PathBuf::from(p),
-            ("keyfile_edge_local", Some(p)) => cfg.edge_local.keyfile = PathBuf::from(p),
-
-            // Edge remoto
-            ("cafile_edge_remote", Some(p)) => cfg.edge_remote.cafile = PathBuf::from(p),
-            ("certfile_edge_remote", Some(p)) => cfg.edge_remote.certfile = PathBuf::from(p),
-            ("keyfile_edge_remote", Some(p)) => cfg.edge_remote.keyfile = PathBuf::from(p),
+            ("cafile", Some(p)) => cfg.certs.cafile = PathBuf::from(p),
+            ("certfile", Some(p)) => cfg.certs.certfile = PathBuf::from(p),
+            ("keyfile", Some(p)) => cfg.certs.keyfile = PathBuf::from(p),
 
             ("require_certificate", Some("true")) => cfg.require_certificate = true,
             ("use_identity_as_username", Some("true")) => cfg.use_identity_as_username = true,
@@ -518,9 +522,7 @@ fn scan_mtls_config(path: &Path, cfg: &mut MtlsConfig) -> Result<(), ErrorType> 
 /// No valida relaciones criptográficas, solo propiedades del filesystem.
 
 fn validate_certificate_files(cfg: &MtlsConfig) -> Result<(), ErrorType> {
-    validate_certificate_set(&cfg.broker, "broker")?;
-    validate_certificate_set(&cfg.edge_local, "edge_local")?;
-    validate_certificate_set(&cfg.edge_remote, "edge_remote")?;
+    validate_certificate_set(&cfg.certs)?;
     Ok(())
 }
 
@@ -601,30 +603,21 @@ fn check_cert_file(path: &Path, is_private_key: bool) -> Result<(), ErrorType> {
 /// Esta función garantiza que el conjunto puede ser usado
 /// de forma segura por un cliente o broker mTLS.
 
-fn validate_certificate_set(certs: &Certs, label: &str) -> Result<(), ErrorType> {
+fn validate_certificate_set(certs: &Certs) -> Result<(), ErrorType> {
     check_cert_file(&certs.cafile, false)?;
     check_cert_file(&certs.certfile, false)?;
     check_cert_file(&certs.keyfile, true)?;
 
     if certs.cafile == certs.certfile {
-        return Err(ErrorType::MtlsConfig(format!(
-            "Error: CA y cert iguales en {}",
-            label
-        )));
+        return Err(ErrorType::MtlsConfig("Error: CA y cert son iguales".into()));
     }
 
     if certs.certfile.extension() != Some("crt".as_ref()) {
-        return Err(ErrorType::MtlsConfig(format!(
-            "Error: extensión cert inválida en {}",
-            label
-        )));
+        return Err(ErrorType::MtlsConfig("Error: extensión cert inválida".into()));
     }
 
     if certs.keyfile.extension() != Some("key".as_ref()) {
-        return Err(ErrorType::MtlsConfig(format!(
-            "Error: extensión key inválida en {}",
-            label
-        )));
+        return Err(ErrorType::MtlsConfig("Error: extensión key inválida".into()));
     }
 
     Ok(())

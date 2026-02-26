@@ -9,22 +9,22 @@ use tracing::{error, info, warn};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use crate::context::domain::AppContext;
-use crate::grpc::{EdgeDownload, EdgeUpload};
-use crate::grpc::iot_service_client::IotServiceClient;
+use crate::grpc::{ToEdge, FromEdge};
+use crate::grpc::edge_service_client::EdgeServiceClient;
 use crate::system::domain::{InternalEvent, ErrorType};
 use crate::config::grpc_service::*;
 
 
 pub struct GrpcService {
     sender: mpsc::Sender<InternalEvent>,
-    receiver: mpsc::Receiver<EdgeUpload>,
+    receiver: mpsc::Receiver<FromEdge>,
     context: AppContext,
 }
 
 
 impl GrpcService {
     pub fn new(sender: mpsc::Sender<InternalEvent>,
-               receiver: mpsc::Receiver<EdgeUpload>,
+               receiver: mpsc::Receiver<FromEdge>,
                context: AppContext) -> Self {
         Self {
             sender,
@@ -36,7 +36,7 @@ impl GrpcService {
     pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_core, mut rx_from_grpc) = mpsc::channel::<InternalEvent>(50);
-        let (tx, rx) = mpsc::channel::<EdgeUpload>(50);
+        let (tx, rx) = mpsc::channel::<FromEdge>(50);
 
         tokio::spawn(grpc(tx_to_core, rx, self.context.clone(), shutdown.clone()));
         
@@ -68,8 +68,8 @@ impl GrpcService {
 enum StateClient {
     Init,
     Work {
-        tx_session: mpsc::Sender<EdgeUpload>,
-        inbound_stream: tonic::Streaming<EdgeDownload>,
+        tx_session: mpsc::Sender<FromEdge>,
+        inbound_stream: tonic::Streaming<ToEdge>,
     },
     Error,
 }
@@ -110,7 +110,7 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 
 
 async fn grpc(tx: mpsc::Sender<InternalEvent>,
-              mut rx_outbound: mpsc::Receiver<EdgeUpload>,
+              mut rx_outbound: mpsc::Receiver<FromEdge>,
               app_context: AppContext,
               shutdown: CancellationToken) {
 
@@ -130,12 +130,12 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         match result {
                             Ok(channel) => {
                                 // Crear cliente con compresión
-                                let mut grpc_client = IotServiceClient::new(channel)
+                                let mut grpc_client = EdgeServiceClient::new(channel)
                                     .send_compressed(CompressionEncoding::Gzip)
                                     .accept_compressed(CompressionEncoding::Gzip);
 
                                 // Configurar stream bidireccional
-                                let (tx_session, rx_session) = mpsc::channel::<EdgeUpload>(100);
+                                let (tx_session, rx_session) = mpsc::channel::<FromEdge>(100);
                                 let request = Request::new(ReceiverStream::new(rx_session));
 
                                 match grpc_client.connect_stream(request).await {

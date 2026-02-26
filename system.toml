@@ -1,8 +1,7 @@
-[sistema]
 id_edge = "rasp-edge-01"
 host_server = "miserver.com"
 host_port = "50051"
-cn = "servidor-router-grpc"
 host_local = "localhost"
-db_path = "/etc/edge/database"
+cn = "servidor-router-grpc"
+db_path = "/etc/edge/database.db"
 buffer_size = 50

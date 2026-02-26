@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing_subscriber::{fmt, EnvFilter};
-use crate::grpc::EdgeDownload;
+use crate::grpc::ToEdge;
 use crate::mqtt::domain::PayloadTopic;
 
 
@@ -105,7 +105,7 @@ pub enum InternalEvent {
     LocalConnected,
     LocalDisconnected,
     IncomingMessage(PayloadTopic),
-    IncomingGrpc(EdgeDownload),
+    IncomingGrpc(ToEdge),
 }
 
 
@@ -117,9 +117,7 @@ pub enum InternalEvent {
 pub struct MtlsConfig {
     pub listener: Option<u16>,
     pub tls_version: Option<String>,
-    pub broker: Certs,
-    pub edge_local: Certs,
-    pub edge_remote: Certs,
+    pub certs: Certs,
     pub require_certificate: bool,
     pub use_identity_as_username: bool,
     pub allow_anonymous: bool,

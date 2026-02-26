@@ -24,7 +24,7 @@ use tracing::info;
 use crate::database::domain::{DataServiceCommand, DataServiceResponse};
 use crate::firmware::domain::{FirmwareServiceCommand, FirmwareServiceResponse};
 use crate::fsm::domain::{FsmServiceCommand, FsmServiceResponse};
-use crate::grpc::EdgeUpload;
+use crate::grpc::FromEdge;
 use crate::message::domain::{MessageServiceCommand, MessageServiceResponse, ServerMessage};
 use crate::mqtt::domain::MqttServiceCommand;
 use crate::network::domain::{NetworkServiceCommand, NetworkServiceResponse};
@@ -60,8 +60,8 @@ pub struct Channels {
     pub grpc_service_to_core: mpsc::Sender<InternalEvent>,
     pub core_from_grpc_service: mpsc::Receiver<InternalEvent>,
 
-    pub core_to_grpc_service: mpsc::Sender<EdgeUpload>,
-    pub grpc_service_from_core: mpsc::Receiver<EdgeUpload>,
+    pub core_to_grpc_service: mpsc::Sender<FromEdge>,
+    pub grpc_service_from_core: mpsc::Receiver<FromEdge>,
 
     pub heartbeat_service_to_core: mpsc::Sender<InternalEvent>,
     pub core_from_heartbeat_service: mpsc::Receiver<InternalEvent>,

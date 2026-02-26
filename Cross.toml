@@ -1,0 +1,8 @@
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y curl unzip",
+    "curl -sSL https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip -o protoc.zip",
+    "unzip -o protoc.zip -d /usr/local",
+    "rm protoc.zip"
+]

@@ -437,15 +437,21 @@ pub fn initializing_system() -> Result<AppContext, ErrorType> {
 ///
 
 fn load_system_toml(path: &Path) -> Result<System, ErrorType> {
-    let content = fs::read_to_string(path)
-        .map_err(|_| ErrorType::SystemFile(
-            "Error: No se pudo leer el archivo de configuración".into()
-        ))?;
-
-    toml::from_str(&content)
-        .map_err(|_| ErrorType::SystemFile(
-            "Error: Archivo TOML de configuración es inválido".into()
+    let content = fs::read_to_string(path).map_err(|e| {
+        ErrorType::SystemFile(format!(
+            "Error al leer la configuración en '{}': {}",
+            path.display(),
+            e
         ))
+    })?;
+
+    toml::from_str(&content).map_err(|e| {
+        ErrorType::SystemFile(format!(
+            "Error de sintaxis en el TOML de configuración '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }
 
 
@@ -466,13 +472,19 @@ fn load_system_toml(path: &Path) -> Result<System, ErrorType> {
 
 fn load_protocol_toml(path: &Path) -> Result<ProtocolSettings, ErrorType> {
 
-    let content = fs::read_to_string(path)
-        .map_err(|_| ErrorType::ProtocolFile(
-            "Error: No se pudo leer el archivo de protocolo".into()
-        ))?;
-
-    toml::from_str(&content)
-        .map_err(|_| ErrorType::ProtocolFile(
-            "Error: Archivo TOML de protocolo es inválido".into()
+    let content = fs::read_to_string(path).map_err(|e| {
+        ErrorType::SystemFile(format!(
+            "Error al leer la configuración en '{}': {}",
+            path.display(),
+            e
         ))
+    })?;
+
+    toml::from_str(&content).map_err(|e| {
+        ErrorType::SystemFile(format!(
+            "Error de sintaxis en el TOML de configuración '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }

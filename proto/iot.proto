@@ -3,16 +3,16 @@ syntax = "proto3";
 package grpc;
 
 
-service IotService {
+service EdgeService {
   // Streaming Bidireccional
-  rpc ConnectStream(stream EdgeUpload) returns (stream EdgeDownload);
+  rpc ConnectStream(stream FromEdge) returns (stream ToEdge);
 }
 
 
 // =================
 // CARRIL DE SUBIDA
 // =================
-message EdgeUpload {
+message FromEdge {
   string edge_id = 1;
   oneof payload {
     Measurement measurement = 2;
@@ -31,7 +31,7 @@ message EdgeUpload {
 // =================
 // CARRIL DE BAJADA
 // =================
-message EdgeDownload {
+message ToEdge {
   string edge_id = 1;
   oneof payload {
     SettingOk setting_ok = 2;

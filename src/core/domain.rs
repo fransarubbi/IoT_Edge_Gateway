@@ -22,7 +22,7 @@ use tracing::{error, info};
 use crate::database::domain::{DataServiceCommand, DataServiceResponse};
 use crate::firmware::domain::{FirmwareServiceCommand, FirmwareServiceResponse};
 use crate::fsm::domain::{FsmServiceCommand, FsmServiceResponse};
-use crate::grpc::EdgeUpload;
+use crate::grpc::FromEdge;
 use crate::message::domain::{HubMessage, MessageServiceCommand, MessageServiceResponse, ServerMessage};
 use crate::mqtt::domain::MqttServiceCommand;
 use crate::network::domain::{Batch, NetworkServiceCommand, NetworkServiceResponse};
@@ -41,7 +41,7 @@ pub struct Core {
     core_from_fsm_service: mpsc::Receiver<FsmServiceResponse>,
     core_to_fsm_service: mpsc::Sender<FsmServiceCommand>,
     core_from_grpc_service: mpsc::Receiver<InternalEvent>,
-    core_to_grpc_service: mpsc::Sender<EdgeUpload>,
+    core_to_grpc_service: mpsc::Sender<FromEdge>,
     core_from_heartbeat_service: mpsc::Receiver<InternalEvent>,
     core_to_heartbeat_service: mpsc::Sender<ServerMessage>,
     core_from_message_service: mpsc::Receiver<MessageServiceResponse>,
@@ -68,7 +68,7 @@ pub struct CoreBuilder {
     core_from_fsm_service: Option<mpsc::Receiver<FsmServiceResponse>>,
     core_to_fsm_service: Option<mpsc::Sender<FsmServiceCommand>>,
     core_from_grpc_service: Option<mpsc::Receiver<InternalEvent>>,
-    core_to_grpc_service: Option<mpsc::Sender<EdgeUpload>>,
+    core_to_grpc_service: Option<mpsc::Sender<FromEdge>>,
     core_from_heartbeat_service: Option<mpsc::Receiver<InternalEvent>>,
     core_to_heartbeat_service: Option<mpsc::Sender<ServerMessage>>,
     core_from_message_service: Option<mpsc::Receiver<MessageServiceResponse>>,
@@ -116,7 +116,7 @@ impl CoreBuilder {
         self.core_from_grpc_service = Some(ch);
         self
     }
-    pub fn core_to_grpc_service(mut self, ch: mpsc::Sender<EdgeUpload>) -> Self {
+    pub fn core_to_grpc_service(mut self, ch: mpsc::Sender<FromEdge>) -> Self {
         self.core_to_grpc_service = Some(ch);
         self
     }
