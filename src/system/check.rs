@@ -65,6 +65,7 @@
 //! │
 //! ├── certs/
 //! │   ├── root.crt
+//! │   ├── edge_fullchain.crt
 //! │   ├── edge.crt
 //! │   └── edge.key
 //! │

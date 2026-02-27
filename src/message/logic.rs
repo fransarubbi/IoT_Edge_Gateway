@@ -1,14 +1,19 @@
-//! Módulo de Lógica de Mensajería.
+//! Módulo de Lógica de Mensajería y Enrutamiento (Router/Switchboard).
 //!
-//! Este módulo actúa como el "Switchboard" del sistema.
-//! Se encarga de enrutar mensajes entre los distintos componentes (Hub, Servidor, Base de Datos, FSM)
-//! y de realizar las transformaciones necesarias (serialización, mapeo de tópicos, QoS).
+//! Este módulo es el núcleo de comunicaciones del Edge Gateway. Actúa como un "Switchboard"
+//! o enrutador central que conecta los nodos físicos (Hubs vía MQTT) con la nube (Servidor vía gRPC),
+//! pasando por la máquina de estados local (FSM) y la persistencia de datos (DB).
 //!
-//! # Responsabilidades
+//! # Responsabilidades Principales
 //!
-//! - **Uplink (Subida):** Recibir datos del Hub local, decidir si enviarlos al servidor o guardarlos en DB (según conectividad).
-//! - **Downlink (Bajada):** Recibir comandos del servidor, traducirlos y enviarlos al Hub o a la gestión de redes.
-//! - **Control:** Gestionar mensajes de estado (Handshakes, Heartbeats) generados por la FSM.
+//! - **Uplink Local (`msg_from_hub`):** Recibe telemetría MQTT (MessagePack), la deserializa y
+//!   decide si enviarla a la nube en tiempo real o a la base de datos si no hay conexión.
+//! - **Downlink Local (`msg_to_hub`):** Recibe comandos internos o remotos, los serializa a
+//!   MessagePack y los publica en el broker MQTT local hacia los Hubs.
+//! - **Uplink Remoto (`msg_to_server`):** Convierte los mensajes del dominio a estructuras Protobuf
+//!   y los transmite al servidor central a través de gRPC.
+//! - **Downlink Remoto (`msg_from_server`):** Recibe instrucciones gRPC de la nube, las traduce
+//!   al modelo de dominio y las distribuye a la FSM o a los Hubs.
 
 use chrono::Utc;
 use rmp_serde::{from_slice, to_vec};
@@ -17,10 +22,7 @@ use tokio::sync::{mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata,
-                             UpdateFirmware, DeleteHub, Settings, SettingOk, Network,
-                             Heartbeat as HeartbeatMsg, HelloWorld,
-                             MessageServiceCommand, ServerMessage, HubMessage};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse};
 use crate::database::domain::{TableDataVector};
 use crate::grpc;
 use crate::grpc::{to_edge, FromEdge, ToEdge,
@@ -33,23 +35,23 @@ use crate::system::domain::{InternalEvent, System};
 
 /// Gestor de mensajes salientes hacia el Hub (Downlink Local).
 ///
-/// Esta tarea centraliza todo lo que debe ser enviado al broker MQTT local para consumo de los nodos.
+/// Centraliza todo el tráfico que debe ser publicado en el broker MQTT local para
+/// que los dispositivos finales (Hubs) lo consuman.
 ///
 /// # Fuentes de Mensajes
 ///
-/// 1.  **FSM (`rx_from_fsm`):** Mensajes de control generados internamente.
-/// 2.  **Servidor (`rx_from_server`):** Comandos remotos (Settings, Firmware) que deben bajar al Hub.
-/// 3.  **Red (`rx_from_network`):** Notificaciones de estado de red (Active/Inactive).
+/// 1.  **FSM (`rx`):** Mensajes de control generados internamente (Handshakes, Heartbeats, Ping).
+/// 2.  **Servidor (`rx_server_msg`):** Comandos remotos (Settings, acks) provenientes de la nube.
+/// 3.  **Red (`rx_internal`):** Notificaciones de conexión/desconexión del broker MQTT local.
 ///
-/// # Lógica Principal
+/// # Lógica de Procesamiento
 ///
-/// - Verifica constantemente el estado de conexión con el broker local (`LocalStatus`).
-/// - Si está desconectado, descarta los mensajes con un `warn`.
-/// - Resuelve dinámicamente el tópico de destino y QoS utilizando el [`NetworkManager`].
-/// - Serializa los mensajes a bytes (MessagePack/JSON) antes de enviarlos a la capa de transporte MQTT.
-
+/// - Monitorea el estado de la conexión local. Si está desconectado, los mensajes se descartan
+///   para evitar desbordar colas.
+/// - Resuelve dinámicamente el `topic`, `QoS` y flag de `Retain` a través del `NetworkManager`.
+/// - Llama a la función genérica `send` para serializar en **MessagePack** y despachar a la capa MQTT.
 #[instrument(name = "msg_to_hub", skip(app_context))]
-pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
+pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
                         mut rx_internal: mpsc::Receiver<InternalEvent>,
                         mut rx_server_msg: mpsc::Receiver<ServerMessage>,
                         mut rx: mpsc::Receiver<MessageServiceCommand>,
@@ -135,7 +137,10 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<SerializedMessage>,
 }
 
 
-/// Extrae tópico, QoS y flag Retain para mensajes generados por la FSM.
+/// Extrae el tópico MQTT, el nivel QoS y la bandera Retain específicos para mensajes de estado y control (FSM).
+///
+/// Mensajes críticos como los cambios de estado operativos (`StateBalanceMode`, `StateNormal`)
+/// se publican con el flag `Retain = true` para que los dispositivos nuevos los reciban al conectar.
 fn resolve_fsm_topic(manager: &NetworkManager,
                      msg: &HubMessage
 ) -> Option<(String, u8, bool)> {
@@ -174,17 +179,17 @@ fn resolve_fsm_topic(manager: &NetworkManager,
 
 /// Procesador de mensajes entrantes del Hub (Uplink Local).
 ///
-/// Recibe datos crudos (`PayloadTopic`) desde el broker local, los deserializa y decide su destino.
+/// Actúa como la primera línea de procesamiento para los datos que llegan desde la red de sensores
+/// a través de MQTT. Realiza la deserialización desde MessagePack y enruta según el estado de la conexión externa.
 ///
-/// # Flujo de Decisión
+/// # Reglas de Enrutamiento (Store and Forward Core)
 ///
-/// 1.  **Handshakes:** Se envían siempre a la FSM para gestión de estado.
-/// 2.  **Settings:** Se envían al servidor solo si hay conexión (`Connected`).
-/// 3.  **Datos/Alertas/Monitores:** Se enrutan dinámicamente mediante [`route_message`]:
-///     - Si hay conexión -> Al Servidor.
-///     - Si NO hay conexión -> A la Base de Datos (`dba_task`).
+/// 1.  Si el servidor externo está **Conectado**, reenvía la telemetría (Reports, Monitors, Alerts)
+///     directamente al módulo `msg_to_server`.
+/// 2.  Si el servidor externo está **Desconectado**, enruta la telemetría hacia `tx` (Canal general)
+///     donde será interceptada por la base de datos (`dba_insert_task`) para almacenamiento temporal.
 #[instrument(name = "msg_from_hub", skip(rx))]
-pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
+pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                           tx_to_msg_to_server: mpsc::Sender<ServerMessage>,
                           tx_to_msg_to_hub: mpsc::Sender<InternalEvent>,
                           mut rx: mpsc::Receiver<MessageServiceCommand>, 
@@ -249,7 +254,7 @@ pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
                                             _ => {}
                                         }
                                     } else {
-                                        if tx.send(decoded).await.is_err() {
+                                        if tx.send(MessageServiceResponse::FromHub(decoded)).await.is_err() {
                                             error!("Error: no se pudo enviar el mensaje FromHub");
                                         }
                                     }
@@ -275,22 +280,18 @@ pub async fn msg_from_hub(tx: mpsc::Sender<HubMessage>,
 // -------------------------------------------------------------------------------------------------
 
 
-/// Gestor de mensajes salientes hacia el Servidor (Uplink Remoto).
+/// Gestor de mensajes salientes hacia el Servidor (Uplink Remoto vía gRPC).
 ///
-/// Centraliza el envío de datos a la nube, gestionando tanto el flujo en tiempo real como los datos
-/// recuperados de la base de datos.
+/// Recolecta mensajes del dominio, los transforma al modelo Protobuf (gRPC) y los encola
+/// para su envío hacia la nube.
 ///
-/// # Fuentes
+/// # Flujos de Datos Procesados
 ///
-/// - **Hub (`rx_from_hub`):** Datos en tiempo real que pasaron el filtro de conexión en `msg_from_hub`.
-/// - **DB (`rx_from_dba_batch`):** Lotes de datos históricos recuperados tras una desconexión.
-///
-/// # Funcionalidad
-///
-/// Utiliza `get_topic_to_send_msg_from_hub` para transformar el tópico local en un tópico global
-/// con identidad de Edge.
+/// - **Tiempo Real (`rx_from_hub`):** Datos recién llegados que pasaron el filtro de conexión.
+/// - **Datos Históricos (`Batch`):** Lotes de información extraídos de SQLite tras recuperar conexión.
+/// - **Comandos Internos:** Mensajes como `HelloWorld` para establecer sesión en la nube.
 #[instrument(name = "msg_to_server", skip(rx_from_hub, rx, app_context))]
-pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
+pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                            mut rx_from_hub: mpsc::Receiver<ServerMessage>,
                            mut rx: mpsc::Receiver<MessageServiceCommand>,
                            app_context: AppContext, 
@@ -319,22 +320,22 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
                     },
                     MessageServiceCommand::Batch(batch) => {
                         if matches!(state, ServerStatus::Disconnected) {
-                            warn!("Warning: Mensaje del hub descartado, servidor desconectado");
+                            warn!("Warning: mensaje del hub descartado, servidor desconectado");
                             continue;
                         }
                         match process_batch(batch, &tx_to_server, &app_context.system).await {
                             Ok(_) => {},
-                            Err(_) => error!("Error: Fallo en envío de batch al cliente gRPC"),
+                            Err(_) => error!("Error: fallo en envío de batch al cliente gRPC"),
                         }
                     },
                     MessageServiceCommand::ToServer(server_message) => {
                         if matches!(state, ServerStatus::Disconnected) {
-                            warn!("Warning: Mensaje del hub descartado, servidor desconectado");
+                            warn!("Warning: mensaje del hub descartado, servidor desconectado");
                             continue;
                         }
                         if let Some(proto_msg) = convert_to_proto_upload(server_message, app_context.system.id_edge.clone()) {
-                            if tx_to_server.send(proto_msg).await.is_err() {
-                                error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+                            if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
                             }
                         }
                     },
@@ -349,7 +350,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
                             hello: true
                         };
                         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::HelloWorld(hello), app_context.system.id_edge.clone()) {
-                            if tx_to_server.send(proto_msg).await.is_err() {
+                            if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
                                 error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
                             }
                         }
@@ -364,8 +365,8 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
                     continue;
                 }
                 if let Some(proto_msg) = convert_to_proto_upload(server_message, app_context.system.id_edge.clone()) {
-                    if tx_to_server.send(proto_msg).await.is_err() {
-                        error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+                    if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                        error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
                     }
                 }
             }
@@ -374,6 +375,10 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<FromEdge>,
 }
 
 
+/// Mapea las estructuras internas de dominio (`ServerMessage`) a los tipos generados
+/// por Protobuf (`FromEdge` / `Payload`).
+///
+/// Este es el punto de traducción formal antes de que la capa de red gRPC envíe los bytes.
 fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEdge> {
 
     let payload = match msg {
@@ -526,6 +531,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
 }
 
 
+/// Envuelve el `Payload` gRPC validado en la estructura final de transmisión `FromEdge`.
 fn generate_edge_upload(payload: Option<Payload>,
                         edge_id: String
                        ) -> Option<FromEdge> {
@@ -541,40 +547,44 @@ fn generate_edge_upload(payload: Option<Payload>,
 }
 
 
-/// Itera sobre un vector de datos históricos y los envía uno a uno.
+/// Itera y procesa por lotes los datos históricos recuperados de la base de datos local.
+///
+/// Se ejecuta cuando el patrón "Store and Forward" detecta que la red regresó y
+/// la base de datos inyecta un `TableDataVector` (Batch). Convierte cada fila a gRPC
+/// y las encola para envío.
 async fn process_batch(batch: TableDataVector,
-                       tx: &mpsc::Sender<FromEdge>,
+                       tx: &mpsc::Sender<MessageServiceResponse>,
                        system: &System
 ) -> Result<(), ()> {
 
     for row in batch.measurement {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Report(row), system.id_edge.clone()) {
-            if tx.send(proto_msg).await.is_err() {
-                error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
 
     for row in batch.monitor {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Monitor(row), system.id_edge.clone()) {
-            if tx.send(proto_msg).await.is_err() {
-                error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
     
     for row in batch.alert_air {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertAir(row), system.id_edge.clone()) {
-            if tx.send(proto_msg).await.is_err() {
-                error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
     
     for row in batch.alert_th {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertTem(row), system.id_edge.clone()) {
-            if tx.send(proto_msg).await.is_err() {
-                error!("Error: No se puede enviar mensaje EdgeUpload al cliente gRPC");
+            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
@@ -588,11 +598,14 @@ async fn process_batch(batch: TableDataVector,
 
 /// Procesador de mensajes entrantes del Servidor (Downlink Remoto).
 ///
-/// Recibe eventos crudos del servidor y los clasifica en:
-/// - Mensajes de negocio (`IncomingMessage`): Deserializa y enruta al Hub o Gestor de Redes.
-/// - Eventos de conexión (`ServerConnected/Disconnected`): Notifica a DBA y Hub.
+/// Recibe eventos crudos de la nube (vía el motor gRPC) y los clasifica.
+///
+/// # Funcionalidad
+///
+/// Extrae la carga útil (`Payload`) de los mensajes Protobuf y delega la traducción
+/// al dominio a la función `handle_grpc_message`.
 #[instrument(name = "msg_from_server", skip(rx))]
-pub async fn msg_from_server(tx: mpsc::Sender<ServerMessage>,
+pub async fn msg_from_server(tx: mpsc::Sender<MessageServiceResponse>,
                              tx_to_msg_to_hub: mpsc::Sender<ServerMessage>,
                              mut rx: mpsc::Receiver<MessageServiceCommand>, 
                              shutdown: CancellationToken) {
@@ -624,8 +637,10 @@ pub async fn msg_from_server(tx: mpsc::Sender<ServerMessage>,
 }
 
 
+/// Convierte los mensajes gRPC (`ToEdge`) entrantes en tipos nativos de dominio (`ServerMessage`)
+/// y los enruta al destino adecuado (Hub local o procesos internos del Edge).
 async fn handle_grpc_message(proto_msg: ToEdge,
-                             tx: &mpsc::Sender<ServerMessage>,
+                             tx: &mpsc::Sender<MessageServiceResponse>,
                              tx_to_msg_to_hub: &mpsc::Sender<ServerMessage>) {
 
     if let Some(payload) = proto_msg.payload {
@@ -635,8 +650,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     metadata: extract_metadata(update_firmware.metadata),
                     network: update_firmware.network,
                 };
-                if tx.send(ServerMessage::UpdateFirmware(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje UpdateFirmware a firmware");
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::UpdateFirmware(msg))).await.is_err() {
+                    error!("Error: no se pudo enviar mensaje UpdateFirmware a firmware");
                 }
             },
             to_edge::Payload::Settings(settings) => {
@@ -650,8 +665,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     sample: settings.sample,
                     energy_mode: settings.energy_mode,
                 };
-                if tx.send(ServerMessage::FromServerSettings(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje a network");
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::FromServerSettings(msg))).await.is_err() {
+                    error!("Error: no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::DeleteHub(delete) => {
@@ -659,8 +674,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     metadata: extract_metadata(delete.metadata),
                     network: delete.network,
                 };
-                if tx.send(ServerMessage::DeleteHub(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje a network");
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::DeleteHub(msg))).await.is_err() {
+                    error!("Error: no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::SettingOk(setting_ok) => {
@@ -670,7 +685,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     handshake: setting_ok.handshake,
                 };
                 if tx_to_msg_to_hub.send(ServerMessage::FromServerSettingsAck(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje al hub");
+                    error!("Error: no se pudo enviar mensaje al hub");
                 }
             },
             to_edge::Payload::Network(network) => {
@@ -681,8 +696,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     active: network.active,
                     delete_network: network.delete_network,
                 };
-                if tx.send(ServerMessage::Network(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje a network");
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::Network(msg))).await.is_err() {
+                    error!("Error: no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::Heartbeat(heartbeat) => {
@@ -690,8 +705,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     metadata: extract_metadata(heartbeat.metadata),
                     beat: true,
                 };
-                if tx.send(ServerMessage::Heartbeat(msg)).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje a heartbeat");
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::Heartbeat(msg))).await.is_err() {
+                    error!("Error: no se pudo enviar mensaje a heartbeat");
                 }
             },
             to_edge::Payload::HelloWorld(hello_ack) => {
@@ -699,7 +714,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     metadata: extract_metadata(hello_ack.metadata),
                     hello: hello_ack.hello,
                 };
-                if tx.send(ServerMessage::HelloWorld(msg)).await.is_err() {
+                if tx.send(MessageServiceResponse::FromServer(ServerMessage::HelloWorld(msg))).await.is_err() {
                     error!("Error: no se pudo enviar mensaje HelloWorld a la fsm general");
                 }
             },
@@ -708,7 +723,8 @@ async fn handle_grpc_message(proto_msg: ToEdge,
 }
 
 
-// Convierte la metadata de gRPC a tu Metadata de dominio
+/// Helper para convertir la metadata de red generada por Protobuf en la estructura
+/// plana de `Metadata` usada en el dominio del negocio.
 fn extract_metadata(proto_meta: Option<grpc::Metadata>) -> Metadata {
     let meta = proto_meta.unwrap_or_default();
     Metadata {
@@ -722,12 +738,12 @@ fn extract_metadata(proto_meta: Option<grpc::Metadata>) -> Metadata {
 // -------------------------------------------------------------------------------------------------
 
 
-/// Utilidad genérica de serialización y envío.
+/// Utilidad genérica de serialización y encolamiento para el Downlink Local.
 ///
-/// Serializa cualquier estructura a bytes (MessagePack) y la empaqueta en un
-/// `SerializedMessage` listo para ser consumido por el cliente MQTT.
-
-pub async fn send<T>(tx: &mpsc::Sender<SerializedMessage>,
+/// Serializa cualquier estructura de dominio (T) a un arreglo de bytes utilizando **MessagePack**
+/// y la empaqueta en un objeto [`SerializedMessage`] listo para ser procesado y publicado
+/// por el cliente MQTT.
+pub async fn send<T>(tx: &mpsc::Sender<MessageServiceResponse>,
                      topic: String,
                      qos: u8,
                      msg: T,
@@ -739,12 +755,12 @@ where
     match to_vec(&msg) {
         Ok(payload) => {
             let serialized = SerializedMessage::new(topic, payload, qos, retain);
-            if tx.send(serialized).await.is_err() {
+            if tx.send(MessageServiceResponse::Serialized(serialized)).await.is_err() {
                 return Err(());
             }
         }
         Err(e) => {
-            error!("Error serializando mensaje: {:?}", e);
+            error!("Error: no se pudo serializar mensaje: {:?}", e);
         }
     }
     Ok(())

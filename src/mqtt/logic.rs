@@ -269,6 +269,9 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
         subs.insert(net.topic_alert_temp.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_alert_temp.qos)});
         subs.insert(net.topic_hub_firmware_ok.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_firmware_ok.qos)});
         subs.insert(net.topic_balance_mode_handshake.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_balance_mode_handshake.qos)});
+        subs.insert(net.topic_hub_setting_ok.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_setting_ok.qos)});
+        subs.insert(net.topic_setting.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_setting.qos)});
+        subs.insert(net.topic_ping.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_ping.qos)});
     }
 
     subs
@@ -295,6 +298,9 @@ async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, su
         all_topics(&net.topic_alert_temp.topic, net.topic_alert_temp.qos, subs);
         all_topics(&net.topic_hub_firmware_ok.topic, net.topic_hub_firmware_ok.qos, subs);
         all_topics(&net.topic_balance_mode_handshake.topic, net.topic_balance_mode_handshake.qos, subs);
+        all_topics(&net.topic_hub_setting_ok.topic, net.topic_hub_setting_ok.qos, subs);
+        all_topics(&net.topic_setting.topic, net.topic_setting.qos, subs);
+        all_topics(&net.topic_ping.topic, net.topic_ping.qos, subs);
     }
 
     let mut to_sub = Vec::new();

@@ -23,8 +23,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 use crate::config::fsm::{PERCENTAGE, PHASE_MAX_DURATION, SAFE_MODE_MAX_DURATION};
 use crate::context::domain::AppContext;
-use crate::fsm::domain::{Action, Event, FsmServiceCommand, FsmServiceResponse, FsmState, StateOfSession, SubStateBalanceMode, SubStatePhase, SubStateQuorum, Transition, UpdateSession};
-use crate::message::domain::{HandshakeToHub, Heartbeat, HubMessage, MessageStateBalanceMode, MessageStateNormal, MessageStateSafeMode, Metadata, PhaseNotification, Ping, ServerMessage};
+use crate::fsm::domain::{Action, Event, FsmServiceCommand, FsmServiceResponse, FsmState, 
+                         StateOfSession, SubStateBalanceMode, SubStatePhase, SubStateQuorum, 
+                         Transition, UpdateSession};
+use crate::message::domain::{HandshakeToHub, Heartbeat, HubMessage, MessageStateBalanceMode, 
+                             MessageStateNormal, MessageStateSafeMode, Metadata, PhaseNotification, Ping};
 
 
 /// Tarea principal asíncrona que gestiona la orquestación de mensajes y eventos de la FSM.
@@ -118,19 +121,6 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                     }
                                 }
                             },
-                            _ => {}
-                        }
-                    },
-                    FsmServiceCommand::FromServer(server_msg) => {
-                        match server_msg {
-                            ServerMessage::HelloWorld(hello_ack) => {
-                                debug!("Debug: mensaje entrante de HelloWorld");
-                                if hello_ack.hello {
-                                    if tx_to_fsm.send(Event::WaitOk).await.is_err() {
-                                        error!("Error: no se pudo enviar WaitOk a la fsm general");
-                                    }
-                                }
-                            }
                             _ => {}
                         }
                     },

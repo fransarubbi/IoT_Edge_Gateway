@@ -473,7 +473,7 @@ fn load_system_toml(path: &Path) -> Result<System, ErrorType> {
 fn load_protocol_toml(path: &Path) -> Result<ProtocolSettings, ErrorType> {
 
     let content = fs::read_to_string(path).map_err(|e| {
-        ErrorType::SystemFile(format!(
+        ErrorType::ProtocolFile(format!(
             "Error al leer la configuración en '{}': {}",
             path.display(),
             e
@@ -481,7 +481,7 @@ fn load_protocol_toml(path: &Path) -> Result<ProtocolSettings, ErrorType> {
     })?;
 
     toml::from_str(&content).map_err(|e| {
-        ErrorType::SystemFile(format!(
+        ErrorType::ProtocolFile(format!(
             "Error de sintaxis en el TOML de configuración '{}': {}",
             path.display(),
             e

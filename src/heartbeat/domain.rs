@@ -35,7 +35,7 @@ pub struct HeartbeatService {
 
 impl HeartbeatService {
     pub fn new(sender: mpsc::Sender<InternalEvent>,
-               receiver: mpsc::Receiver<ServerMessage>,) -> Self {
+               receiver: mpsc::Receiver<ServerMessage>) -> Self {
         Self {
             sender,
             receiver,

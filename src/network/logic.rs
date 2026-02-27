@@ -1,14 +1,17 @@
-//! Gestión de la configuración dinámica de redes.
+//! Módulo de lógica y administración dinámica de Redes y Hubs.
 //!
-//! Este módulo es responsable de mantener sincronizada la configuración de las redes
-//! entre el Servidor (Nube), la Memoria (Runtime) y la Base de Datos (Persistencia).
+//! Este módulo contiene el núcleo de las reglas de negocio para mantener sincronizada
+//! la topología de la red entre tres fuentes de verdad:
+//! 1. **El Servidor (Nube):** Que dicta el estado deseado (Crear/Borrar redes, Configurar Hubs).
+//! 2. **Los Hubs (Físicos):** Que reportan su existencia y confirman configuraciones aplicadas.
+//! 3. **La Base de Datos Local (SQLite):** Que provee el estado base al iniciar y persiste los cambios.
 //!
-//! # Flujo de Trabajo
+//! # Arquitectura de Tareas
 //!
-//! 1. **Recepción:** Escucha mensajes MQTT del servidor (`InternalEvent`).
-//! 2. **Decisión:** Compara el estado deseado con el estado actual en memoria (`NetworkManager`).
-//! 3. **Aplicación:** Actualiza la memoria (Thread-Safe) y notifica los cambios.
-//! 4. **Persistencia:** Una tarea dedicada escribe los cambios en SQLite asíncronamente.
+//! - **[`network_admin`]:** El "Cerebro". Toma decisiones basadas en eventos de red, actualiza
+//!   la caché en memoria (`NetworkManager`) y enruta las acciones resultantes.
+//! - **[`network_dba`]:** El "Traductor de Persistencia". Escucha los cambios de estado dictaminados
+//!   por el administrador y los convierte en comandos transaccionales para la base de datos.
 
 
 use std::collections::{HashMap, HashSet};
@@ -25,27 +28,24 @@ use crate::network::domain::{Batch, HubChanged, HubRow, Network, NetworkAction,
 use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 
 
-/// Tarea principal de procesamiento de actualizaciones de red.
+/// Tarea principal de procesamiento y reglas de negocio de la red.
 ///
-/// Escucha eventos del servidor (vía MQTT/InternalEvent) y determina qué acción
-/// tomar sobre la configuración de las redes (Insertar, Actualizar, Borrar o Ignorar).
+/// Evalúa constantemente tres flujos de entrada:
+/// 1. **Comandos del Servidor (`rx_from_server`):** Creación/Borrado de redes, y nuevas configuraciones.
+/// 2. **Respuestas de Hubs (`rx_from_hub`):** Autodescubrimiento de Hubs y ACKs de configuración.
+/// 3. **Carga Inicial (`rx_batch`):** Población de la memoria en el arranque desde la base de datos.
 ///
-/// # Lógica de Decisión
+/// # Control de Concurrencia
 ///
-/// Para evitar bloqueos de escritura innecesarios (`RwLock`), la función realiza
-/// una verificación en dos fases:
+/// La memoria compartida (`NetworkManager`) está protegida por un `RwLock`.
+/// Se prioriza obtener un lock de lectura (`read().await`) para evaluar si un cambio es necesario
+/// (Fase de Decisión). Solo si se requiere una mutación (Insert, Update, Delete), se solicita
+/// un lock de escritura (`write().await`), minimizando los cuellos de botella.
 ///
-/// 1. **Fase de Lectura:** Obtiene un `read lock` para comparar el mensaje entrante
-///    con la configuración actual y decidir la `NetworkAction`.
-/// 2. **Fase de Escritura:** Si la acción no es `Ignore`, obtiene un `write lock`
-///    para modificar el mapa de redes en memoria.
+/// # Caché de Configuraciones Pendientes
 ///
-/// # Notificaciones
-///
-/// Si se aplica un cambio, invoca a [`handle_event`] para:
-/// - Notificar a la tarea de base de datos (`network_dba_task`).
-/// - Notificar a la tarea de inserción de datos (`dba_insert_task`) para refrescar buffers.
-
+/// Utiliza `hub_hash_aux` para almacenar temporalmente las configuraciones dictadas por el servidor
+/// hasta que el Hub físico confirme su aplicación mediante un `FromHubSettingsAck`.
 #[instrument(name = "network_admin", skip(app_context))]
 pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                            tx_to_core: mpsc::Sender<NetworkServiceResponse>,
@@ -169,6 +169,11 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
 }
 
 
+/// Ejecuta la mutación de estado en la memoria caché (`NetworkManager`).
+///
+/// Obtiene un bloqueo de escritura (`write().await`) exclusivo sobre el manejador, aplica
+/// la operación requerida (Delete, Update, Insert) y retorna el evento de dominio
+/// correspondiente (`NetworkChanged`) para ser procesado por los demás sistemas.
 async fn handle_action(app_context: AppContext, 
                        network: &NetworkMsg, 
                        action: NetworkAction) -> NetworkChanged {
@@ -181,16 +186,15 @@ async fn handle_action(app_context: AppContext,
         }
         Update => {
             manager.change_active(network.active, &network.id_network);
-            let net = NetworkRow::new(network.id_network.clone(), network.name_network.clone(), network.active);
+            let net = NetworkRow::new(network.id_network.clone(), network.active);
             NetworkChanged::Update(net)
         }
         Insert => {
             manager.add_network( Network::new(
                 network.id_network.clone(),
-                network.name_network.clone(),
                 network.active
             ));
-            let net = NetworkRow::new(network.id_network.clone(), network.name_network.clone(), network.active);
+            let net = NetworkRow::new(network.id_network.clone(), network.active);
             NetworkChanged::Insert(net)
         }
         _ => unreachable!(),
@@ -199,15 +203,13 @@ async fn handle_action(app_context: AppContext,
 }
 
 
-/// Función auxiliar para distribuir la notificación de cambio de red.
+/// Función auxiliar para distribuir las consecuencias de un cambio de red.
 ///
-/// Envía el evento a tres destinos:
-/// 1. `tx_to_insert_network`: Canal hacia [`network_dba_task`] para persistencia en DB.
-/// 2. `tx_to_dba_insert`: Canal hacia la tarea de buffers (`dba_insert_task`) para
-///    que actualice sus vectores en memoria.
-/// 3. `tx_to_hub`: Canal hacia la tarea (`msg_to_hub`) para que envíe el mensaje
-/// de cambio de actividad de red a los Hubs.
-
+/// Disemina el evento hacia dos destinos críticos:
+/// 1. `tx_to_core`: Genera comandos MQTT (`DeleteHub` o `ActiveHub`) que viajan hacia
+///    los dispositivos físicos informándoles del cambio en su red.
+/// 2. `tx_to_insert_network`: Envía el evento a `network_dba` para asegurar la
+///    persistencia del cambio en SQLite.
 async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
                       tx_to_core: &mpsc::Sender<NetworkServiceResponse>,
                       net_chan: NetworkChanged,
@@ -244,6 +246,10 @@ async fn handle_event(tx_to_insert_network: &mpsc::Sender<NetworkChanged>,
 }
 
 
+/// Crea una cabecera de metadatos estandarizada para mensajes generados internamente.
+///
+/// Utiliza el ID del Edge Gateway como origen (`sender_user_id`) y marca el destino
+/// como "all" para broadcasts locales.
 fn create_metadata(app_context: AppContext) -> Metadata {
     let timestamp = Utc::now().timestamp();
 
@@ -256,17 +262,15 @@ fn create_metadata(app_context: AppContext) -> Metadata {
 }
 
 
-/// Tarea de persistencia de configuración de red.
+/// Tarea de traducción y persistencia para configuraciones de red y hubs.
 ///
-/// Actúa como consumidor de los cambios generados por [`run_network_task`].
-/// Su única responsabilidad es reflejar los cambios de memoria en la base de datos SQLite.
+/// Consume los eventos de dominio (`NetworkChanged`, `HubChanged`) emitidos por `network_admin`
+/// y los traduce a comandos CRUD (`DataServiceCommand`) destinados a la capa de base de datos.
 ///
 /// # Acciones
 ///
-/// - **Delete:** Elimina la fila correspondiente en la tabla `network` y los `hubs` asociados.
-/// - **Update:** Actualiza el campo `active` en la tabla `network`.
-/// - **Insert:** Crea un nuevo registro en la tabla `network`.
-
+/// - **Redes:** Propaga la creación, actualización de estado (`active`) o eliminación en cascada.
+/// - **Hubs:** Propaga registros (Autodescubrimiento), actualizaciones o bajas (Server request).
 #[instrument(name = "network_dba", skip(rx_from_network, rx_from_network_hub))]
 pub async fn network_dba(tx: mpsc::Sender<DataServiceCommand>,
                          mut rx_from_network: mpsc::Receiver<NetworkChanged>,

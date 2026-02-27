@@ -204,7 +204,8 @@ impl Repository {
         let rows = get_all_network_data(&self.pool).await?;
         Ok(rows)
     }
-    
+
+    /// Obtiene el número total de redes del sistema.
     pub async fn get_number_of_networks(&self) -> Result<i64, sqlx::Error> {
         let rows = count_networks(&self.pool).await?;
         Ok(rows)

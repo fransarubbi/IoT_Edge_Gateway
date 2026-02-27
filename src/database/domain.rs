@@ -67,6 +67,7 @@ pub enum DataCommandDelete {
 
 /// Comandos internos para la tarea insert.
 pub enum DataCommandInsert {
+    InsertHubMessage(HubMessage),
     InsertNetwork(NetworkRow),
     UpdateNetwork(NetworkRow),
     NewEpoch(u32),
@@ -95,31 +96,30 @@ impl DataService {
 
     pub async fn run(mut self, shutdown: CancellationToken) {
 
-        let (tx_to_core, mut rx_response_from_insert) = mpsc::channel::<DataServiceResponse>(50);
-        let (tx_response, mut rx_response) = mpsc::channel::<DataServiceResponse>(50);
-        let (tx_msg, rx_msg) = mpsc::channel::<HubMessage>(50);
+        let (tx, mut rx) = mpsc::channel::<DataServiceResponse>(50);
         let (tx_command_insert, rx_command_insert) = mpsc::channel::<DataCommandInsert>(50);
         let (tx_internal, rx_internal) = mpsc::channel::<InternalEvent>(50);
         let (tx_command_get, rx_command_get) = mpsc::channel::<DataCommandGet>(50);
         let (tx_command_delete, rx_command_delete) = mpsc::channel::<DataCommandDelete>(50);
-        let (tx_response_from_dba, mut rx_response_from_remove) = mpsc::channel::<DataServiceResponse>(50);
 
+        let tx_insert = tx.clone();
         tokio::spawn(dba_insert_task(
-                        tx_to_core,
-                        rx_msg,
+                        tx_insert,
                         rx_command_insert,
                         self.repo.clone(),
                         shutdown.clone()));
 
+        let tx_get = tx.clone();
         tokio::spawn(dba_get_task(
-                        tx_response,
+                        tx_get,
                         rx_internal,
                         rx_command_get,
                         self.repo.clone(),
                         shutdown.clone()));
 
+        let tx_remove = tx.clone();
         tokio::spawn(dba_remove_task(
-                        tx_response_from_dba,
+                        tx_remove,
                         rx_command_delete,
                         self.repo.clone(),
                         shutdown.clone()));
@@ -133,13 +133,8 @@ impl DataService {
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
                         DataServiceCommand::Hub(hub_msg) => {
-                            if tx_msg.send(hub_msg).await.is_err() {
+                            if tx_command_insert.send(DataCommandInsert::InsertHubMessage(hub_msg)).await.is_err() {
                                 error!("Error: no se pudo enviar HubMessage a dba_insert_task");
-                            }
-                        },
-                        DataServiceCommand::Internal(internal_event) => {
-                            if tx_internal.send(internal_event).await.is_err() {
-                                error!("Error: no se pudo enviar InternalEvent");
                             }
                         },
                         DataServiceCommand::NewEpoch(epoch) => {
@@ -147,19 +142,9 @@ impl DataService {
                                 error!("Error: no se pudo enviar comando NewEpoch a dba_insert_task");
                             }
                         },
-                        DataServiceCommand::GetEpoch => {
-                            if tx_command_get.send(DataCommandGet::GetEpoch).await.is_err() {
-                                error!("Error: no se pudo enviar comando GetEpoch a dba_get_task");
-                            }
-                        },
                         DataServiceCommand::NewHub(row) => {
                             if tx_command_insert.send(DataCommandInsert::InsertHub(row)).await.is_err() {
                                 error!("Error: no se pudo enviar comando InsertHub a dba_insert_task");
-                            }
-                        },
-                        DataServiceCommand::DeleteHub(hub_id) => {
-                            if tx_command_delete.send(DataCommandDelete::DeleteHub(hub_id)).await.is_err() {
-                                error!("Error: no se pudo enviar comando DeleteHub a dba_remove_task");
                             }
                         },
                         DataServiceCommand::UpdateHub(hub) => {
@@ -172,44 +157,47 @@ impl DataService {
                                 error!("Error: no se pudo enviar comando InsertNetwork a dba_insert_task");
                             }
                         },
-                        DataServiceCommand::DeleteNetwork(id_network) => {
-                            if tx_command_delete.send(DataCommandDelete::DeleteNetwork(id_network)).await.is_err() {
-                                error!("Error: no se pudo enviar comando DeleteNetwork a dba_remove_task");
-                            }
-                        },
                         DataServiceCommand::UpdateNetwork(network) => {
                             if tx_command_insert.send(DataCommandInsert::UpdateNetwork(network)).await.is_err() {
                                 error!("Error: no se pudo enviar comando UpdateNetwork a dba_insert_task");
                             }
                         },
-                        DataServiceCommand::DeleteAllHubByNetwork(id) => {
-                            if tx_command_delete.send(DataCommandDelete::DeleteAllHubByNetwork(id)).await.is_err() {
-                                error!("Error: no se pudo enviar comando DeleteAllHubByNetwork a dba_remove_task");
+                        DataServiceCommand::Internal(internal_event) => {
+                            if tx_internal.send(internal_event).await.is_err() {
+                                error!("Error: no se pudo enviar InternalEvent");
+                            }
+                        },
+                        DataServiceCommand::GetEpoch => {
+                            if tx_command_get.send(DataCommandGet::GetEpoch).await.is_err() {
+                                error!("Error: no se pudo enviar comando GetEpoch a dba_get_task");
                             }
                         },
                         DataServiceCommand::GetTotalOfNetworks => {
                             if tx_command_get.send(DataCommandGet::GetTotalOfNetworks).await.is_err() {
                                 error!("Error: no se pudo enviar comando GetTotalOfNetworks a dba_get_task");
                             }
+                        },
+                        DataServiceCommand::DeleteHub(hub_id) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteHub(hub_id)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteHub a dba_remove_task");
+                            }
+                        },
+                        DataServiceCommand::DeleteNetwork(id_network) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteNetwork(id_network)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteNetwork a dba_remove_task");
+                            }
+                        },
+                        DataServiceCommand::DeleteAllHubByNetwork(id) => {
+                            if tx_command_delete.send(DataCommandDelete::DeleteAllHubByNetwork(id)).await.is_err() {
+                                error!("Error: no se pudo enviar comando DeleteAllHubByNetwork a dba_remove_task");
+                            }
                         }
                     }
                 }
 
-                Some(response) = rx_response.recv() => {
+                Some(response) = rx.recv() => {
                     if self.sender.send(response).await.is_err() {
                         error!("Error: no se pudo enviar DataServiceResponse al Core");
-                    }
-                }
-
-                Some(response) = rx_response_from_remove.recv() => {
-                    if self.sender.send(response).await.is_err() {
-                        error!("Error: no se pudo enviar NoNetworks al Core");
-                    }
-                }
-
-                Some(response) = rx_response_from_insert.recv() => {
-                    if self.sender.send(response).await.is_err() {
-                        error!("Error: no se pudo enviar ThereAreNetworks al Core");
                     }
                 }
             }

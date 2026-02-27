@@ -1,21 +1,26 @@
 //! Módulo de orquestación de base de datos y persistencia.
 //!
 //! Este módulo implementa el patrón **"Store and Forward"** (Almacenar y Reenviar)
-//! para garantizar la integridad de los datos cuando se pierde la conexión con el servidor.
+//! para garantizar la integridad de los datos cuando se pierde la conexión con el servidor exterior,
+//! y gestiona las operaciones CRUD de la configuración local.
 //!
 //! # Arquitectura
 //!
-//! El sistema se divide en dos tareas asíncronas principales que se comunican mediante canales:
+//! El sistema utiliza un modelo de actores basado en tareas asíncronas de Tokio, las cuales
+//! se comunican mediante canales `mpsc` y comparten acceso a la base de datos a través de `Repository`.
+//! Se divide en tres tareas principales:
 //!
-//! 2.  **[`dba_insert_task`]:** El consumidor de escritura. Agrupa los datos en memoria (Buffers)
-//!     y realiza inserciones por lotes (*Batch Insert*) en SQLite para maximizar el rendimiento.
-//! 3.  **[`dba_get_task`]:** El productor de lectura. Extrae datos de la base de datos y los
-//!     inyecta de nuevo en el flujo de envío cuando se recupera la conexión.
+//! 1.  **[`dba_insert_task`]:** El consumidor de escritura. Agrupa los datos de telemetría en memoria
+//!     y realiza inserciones por lotes (*Batch Insert*). También maneja la inserción/actualización de configuración.
+//! 2.  **[`dba_remove_task`]:** El consumidor de borrado. Gestiona la eliminación de entidades (Redes, Hubs)
+//!     y notifica al sistema sobre los cambios.
+//! 3.  **[`dba_get_task`]:** El productor de lectura y retransmisor. Extrae datos almacenados
+//!     y los inyecta en el flujo de envío al servidor cuando se recupera la conexión. También sirve consultas de estado.
 //!
-//! # Concurrencia
+//! # Apagado Seguro (Graceful Shutdown)
 //!
-//! Se utiliza [`AppContext`] para compartir el acceso seguro
-//! al repositorio y a la configuración de red (`NetworkManager`) mediante `Arc<RwLock<...>>`.
+//! Todas las tareas monitorean un `CancellationToken` para interrumpir sus bucles principales
+//! y finalizar de manera limpia cuando el sistema se apaga.
 
 
 use tokio::sync::{mpsc};
@@ -29,25 +34,21 @@ use crate::database::repository::Repository;
 use crate::system::domain::InternalEvent;
 
 
-/// Tarea de persistencia y buffering.
+/// Tarea de persistencia y buffering de datos de escritura.
 ///
-/// Recibe mensajes individuales y los acumula en buffers de memoria ([`Vectors`]) organizados
-/// por red (`network_id`).
+/// Recibe comandos a través de `rx_cmd` y maneja dos flujos de trabajo principales:
+/// 1. **Datos de configuración:** Inserción y actualización inmediata de Redes, Hubs y Epoch.
+/// 2. **Datos de telemetría (`HubMessage`):** Los acumula en buffers de memoria organizados
+///    en un [`TableDataVector`] para optimizar las escrituras en disco.
 ///
-/// # Estrategia de Escritura
+/// # Estrategia de Escritura de Telemetría (Batching)
 ///
-/// Los datos se escriben en disco (SQLite) cuando ocurre una de dos condiciones:
-/// 1.  **Capacidad:** Un buffer alcanza [`BATCH_SIZE`] elementos.
-/// 2.  **Tiempo:** El temporizador [`FLUSH_INTERVAL`] expira (evita datos estancados).
-///
-/// # Gestión de Configuración
-///
-/// Escucha cambios en `NetworkManager`. Si la configuración de redes cambia,
-/// sincroniza los buffers locales (crea nuevos para redes nuevas, elimina los de redes borradas).
-
+/// Para evitar bloquear la base de datos con escrituras constantes, los mensajes se insertan
+/// en lote cuando ocurre **una de dos condiciones**:
+/// - **Capacidad:** Alguno de los vectores internos del `TableDataVector` se llena (`is_some_vector_full`).
+/// - **Tiempo:** El temporizador definido por [`FLUSH_INTERVAL`] expira, evitando que los datos se queden estancados en memoria.
 #[instrument(name = "dba_insert_task", skip(repo))]
 pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
-                             mut rx_msg: mpsc::Receiver<HubMessage>,
                              mut rx_cmd: mpsc::Receiver<DataCommandInsert>,
                              repo: Repository,
                              shutdown: CancellationToken) {
@@ -64,15 +65,6 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                 info!("Info: shutdown recibido dba_insert_task");
                 break;
             }
-            
-            Some(msg_from_dba) = rx_msg.recv() => {
-                debug!("Debug: mensaje HubMessage entrante a dba_insert_task");
-                sort_by_vectors(msg_from_dba, &mut tdv);
-                if tdv.is_some_vector_full() {
-                    repo.insert(&tdv).await.ok();
-                    tdv.clear();
-                }
-            }
 
             _ = timer.tick() => {
                 debug!("Debug: se acabo el tiempo de batch en dba_insert_task");
@@ -84,6 +76,14 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
 
             Some(command) = rx_cmd.recv() => {
                 match command {
+                    DataCommandInsert::InsertHubMessage(message) => {
+                        debug!("Debug: mensaje HubMessage entrante a dba_insert_task");
+                        sort_by_vectors(message, &mut tdv);
+                        if tdv.is_some_vector_full() {
+                            repo.insert(&tdv).await.ok();
+                            tdv.clear();
+                        }
+                    },
                     DataCommandInsert::InsertNetwork(network) => {
                         match repo.get_number_of_networks().await {
                             Ok(networks) => {
@@ -149,9 +149,10 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
 }
 
 
-/// Clasifica un mensaje entrante y lo inserta en el vector correspondiente en memoria.
+/// Clasifica un mensaje de telemetría entrante y lo apila en el vector correspondiente.
 ///
-/// Identifica la red y el tipo de tabla basándose en la red.
+/// Dependiendo de la variante del enum `HubMessage`, el dato se enruta a la tabla
+/// lógica pertinente dentro del buffer `TableDataVector`.
 fn sort_by_vectors(msg: HubMessage, tdv: &mut TableDataVector) {
 
     match msg {
@@ -175,6 +176,11 @@ fn sort_by_vectors(msg: HubMessage, tdv: &mut TableDataVector) {
 // -------------------------------------------------------------------------------------------------
 
 
+/// Tarea encargada de la eliminación de datos persistentes.
+///
+/// Escucha comandos de tipo [`DataCommandDelete`] para borrar Redes o Hubs específicos.
+/// Tras una eliminación, evalúa si el sistema se quedó sin redes configuradas para notificar
+/// al Core mediante el evento `NoNetworks`.
 pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
                              mut rx_cmd: mpsc::Receiver<DataCommandDelete>,
                              repo: Repository,
@@ -231,16 +237,14 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
 // -------------------------------------------------------------------------------------------------
 
 
-/// Tarea de recuperación de datos.
+/// Tarea de recuperación de datos (El "Forward" del patrón Store-and-Forward) y lectura general.
 ///
-/// Extrae datos de la base de datos para ser enviados al servidor.
-/// Funciona bajo demanda controlada por el estado del servidor.
-///
-/// # Funcionamiento
-///
-/// 1. Espera la señal [`InternalEvent::ServerConnected`].
-/// 2. Itera sobre cada tabla, extrayendo lotes (`pop_batch`) y enviándolos.
-
+/// Tiene dos responsabilidades principales:
+/// 1. **Atender consultas (Read):** Escucha `DataCommandGet` para devolver estados actuales
+///    (Epoch, lista de Redes, lista de Hubs).
+/// 2. **Retransmitir telemetría atrasada:** Monitorea el estado de la conexión mediante `InternalEvent`.
+///    Al detectar una transición de `Disconnected` a `Connected`, dispara el vaciado de los
+///    datos almacenados en SQLite hacia el servidor exterior.
 #[instrument(name = "dba_get_task", skip(rx_from_core, repo))]
 pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                           mut rx_from_core: mpsc::Receiver<InternalEvent>,
@@ -332,7 +336,13 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
 }
 
 
-/// Itera sobre todas las tablas y envia batch de datos al Core
+/// Helper para extraer iterativamente los datos persistidos y enviarlos al Core.
+///
+/// Realiza un bucle llamando a `repo.pop_batch()` que elimina y retorna un bloque de datos de la base de datos.
+/// El proceso se detiene cuando `pop_batch` retorna un bloque vacío.
+///
+/// **Nota de Control de Flujo:** Se aplica un `sleep` de 100ms entre cada envío para evitar
+/// saturar el canal `tx` y darle respiro al Core para procesar los batches enviados.
 async fn get_all_tables(repo: &Repository, tx: &mpsc::Sender<DataServiceResponse>) {
     loop {
         match repo.pop_batch().await {

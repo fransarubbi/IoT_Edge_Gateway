@@ -24,22 +24,16 @@ use crate::mqtt::domain::PayloadTopic;
 pub struct System {
     /// Identificador único del dispositivo (ej. `edge-001`, `sala-maquinas`).
     pub id_edge: String,
-
     /// Dirección (IP o Hostname) del servidor central.
     pub host_server: String,
-
     /// Puerto del servidor central.
     pub host_port: String,
-
     /// Dirección (IP o Hostname) local del dispositivo.
     pub host_local: String,
-
     /// Common Name del certificado TLS, usado en la configuración de gRPC.
     pub cn: String,
-
     /// Ruta relativa al archivo de base de datos SQLite (ej. `./data/edge.db`).
     pub db_path: String,
-
     pub buffer_size: usize,
 }
 
