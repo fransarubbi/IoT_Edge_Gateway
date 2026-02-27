@@ -17,7 +17,6 @@ use crate::network::domain::{NetworkRow};
 /// La tabla `network` contiene las siguientes columnas:
 ///
 /// - `id_network`: Identificador único (Primary Key, ejemplo: "sala7").
-/// - `name_network`: Nombre descriptivo de la red.
 /// - `active`: Flag booleano para habilitar/deshabilitar la red lógicamente.
 ///
 /// # Errores
@@ -36,7 +35,6 @@ pub async fn create_table_network(pool: &SqlitePool) -> Result<(), sqlx::Error> 
         r#"
         CREATE TABLE IF NOT EXISTS network (
             id_network               TEXT PRIMARY KEY,
-            name_network             TEXT NOT NULL,
             active                   BOOLEAN NOT NULL DEFAULT TRUE
         );
         "#
@@ -76,14 +74,12 @@ pub async fn insert_network_database(pool: &SqlitePool,
         r#"
         INSERT INTO network (
             id_network, 
-            name_network, 
             active
         )
-        VALUES (?, ?, ?)
+        VALUES (?, ?)
         "#
     )
         .bind(data.id_network)
-        .bind(data.name_network)
         .bind(data.active)
         .execute(pool)
         .await?;
@@ -163,16 +159,13 @@ pub async fn upsert_network(pool: &SqlitePool,
         r#"
         INSERT INTO network (
             id_network,
-            name_network,
             active
-        ) VALUES (?, ?, ?)
+        ) VALUES (?, ?)
         ON CONFLICT(id_network) DO UPDATE SET
-            name_network = excluded.name_network,
             active       = excluded.active
         "#
     )
         .bind(data.id_network)
-        .bind(&data.name_network)
         .bind(data.active)
         .execute(pool)
         .await?;

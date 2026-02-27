@@ -1,3 +1,23 @@
+//! Módulo de Gestión de Redes y Topología IoT.
+//!
+//! Este módulo actúa como el **Plano de Control** del Edge Gateway.
+//! Es responsable de mantener el estado y la configuración de todas las redes lógicas
+//! y los dispositivos físicos (Hubs) asociados a este Edge.
+//!
+//! # Arquitectura
+//!
+//! Se divide en tres componentes principales:
+//! 1. **[`NetworkService`]:** El actor asíncrono que orquesta los flujos de mensajes.
+//! 2. **[`NetworkManager`]:** La caché en memoria que almacena topologías y pre-calcula tópicos MQTT.
+//! 3. **Modelos de Datos (`NetworkRow`, `HubRow`):** Representaciones planas para la persistencia en SQLite.
+//!
+//! # Estrategia de Caché
+//!
+//! Para evitar que cada mensaje MQTT entrante requiera una consulta a la base de datos,
+//! el `NetworkManager` mantiene una copia en memoria (`HashMap`) de las redes y hubs activos,
+//! acelerando drásticamente el enrutamiento de mensajes.
+
+
 use sqlx::{FromRow};
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -11,34 +31,56 @@ use crate::database::domain::DataServiceCommand;
 use crate::message::domain::{HubMessage, Metadata, ServerMessage};
 use crate::network::logic::{network_admin, network_dba};
 
+
+/// Respuestas emitidas por el servicio de red hacia el Core o FSM.
 pub enum NetworkServiceResponse {
+    /// Mensaje de negocio procesado que debe ser enrutado a un Hub.
     HubMessage(HubMessage),
+    /// Comando de persistencia dirigido a la base de datos.
     DataCommand(DataServiceCommand),
+    /// Señal de sincronización indicando que las redes fueron cargadas en memoria.
     NetworksReady,
 }
 
 
+/// Comandos entrantes que el servicio de red debe procesar.
 pub enum NetworkServiceCommand {
+    /// Mensaje proveniente de un Hub local.
     HubMessage(HubMessage),
+    /// Comando o configuración proveniente del servidor (nube).
     ServerMessage(ServerMessage),
+    /// Lote de datos de configuración recuperados de la base de datos local.
     Batch(Batch),
 }
 
 
+/// Lotes de entidades para carga inicial o sincronización masiva.
 pub enum Batch {
+    /// Lista plana de redes proveniente de la DB.
     Network(Vec<NetworkRow>),
+    /// Lista plana de Hubs proveniente de la DB.
     Hub(Vec<HubRow>),
 }
 
 
+/// Actor principal que administra el subsistema de redes.
+///
+/// Orquesta dos sub-tareas:
+/// - `network_admin`: Aplica reglas de negocio y actualiza la caché en memoria.
+/// - `network_dba`: Gestiona la persistencia de los cambios de red en la base de datos.
 pub struct NetworkService {
+    /// Canal para emitir respuestas al exterior del módulo.
     sender: mpsc::Sender<NetworkServiceResponse>,
+    /// Canal para recibir comandos del exterior.
     receiver: mpsc::Receiver<NetworkServiceCommand>,
+    /// Contexto global de la aplicación.
     context: AppContext,
 }
 
 
 impl NetworkService {
+
+    /// Crea una nueva instancia del servicio de red.
     pub fn new(sender: mpsc::Sender<NetworkServiceResponse>,
                receiver: mpsc::Receiver<NetworkServiceCommand>,
                context: AppContext) -> Self {
@@ -49,6 +91,10 @@ impl NetworkService {
         }
     }
 
+    /// Ejecuta el bucle principal del servicio y lanza las tareas subordinadas.
+    ///
+    /// Crea la topología interna de canales para aislar la lógica de negocio (`admin`)
+    /// de la lógica de persistencia (`dba`).
     pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_insert_network, rx_from_network) = mpsc::channel::<NetworkChanged>(50);
@@ -123,26 +169,25 @@ impl NetworkService {
 }
 
 
-/// Gestor en memoria de las configuraciones de redes y tópicos del sistema.
+/// Gestor en memoria de las configuraciones de redes, hubs y tópicos del sistema.
 ///
-/// Este struct actúa como una caché de lectura rápida para evitar consultar
-/// la base de datos cada vez que llega un mensaje MQTT.
+/// Este struct actúa como una caché de lectura rápida (O(1)) para evitar consultar
+/// la base de datos cada vez que llega un mensaje o comando.
+///
+///
 ///
 /// # Responsabilidades
-/// - Almacenar la configuración de cada red (`Network`).
-/// - Validar si un tópico entrante pertenece a una red conocida.
-/// - Mapear tópicos de entrada a tipos de tablas (`Table`).
-/// - Calcular el QoS correcto para las respuestas.
-///
-/// # Campos
-/// - `networks`: Mapa de redes indexado por su ID.
-/// - `topic_handshake`: tópico global para publicar handshakes.
-/// - `topic_state`: tópico global para publicar el estado del sistema.
-/// - `topic_heartbeat`: tópico global donde el edge publica su heartbeat.
+/// - Almacenar la configuración de cada red y sus Hubs asociados.
+/// - Resolver dinámicamente el tópico MQTT de destino según el tipo de mensaje.
+/// - Administrar los tópicos globales del sistema (Handshake, State, Heartbeat).
 #[derive(Debug, Clone)]
 pub struct NetworkManager {
+    /// Mapa de redes activas, indexado por `id_network`.
     pub networks: HashMap<String, Network>,
+    /// Mapa de Hubs asociados a cada red. Key: `id_network`, Value: Conjunto de `Hub`s.
     pub hubs: HashMap<String, HashSet<Hub>>,
+
+    // Tópicos globales de control
     pub topic_handshake: Topic,
     pub topic_state: Topic,
     pub topic_heartbeat: Topic,
@@ -247,7 +292,8 @@ impl NetworkManager {
         }
         total_hubs
     }
-    
+
+    /// Resuelve el tópico MQTT específico de salida basándose en el tipo de mensaje a enviar al Hub.
     pub fn get_topic_to_send_msg_to_hub(&self, msg: &HubMessage) -> Option<Topic> {
 
         match msg {
@@ -320,28 +366,15 @@ impl Topic {
 }
 
 
-/// Configuración completa de una red en memoria.
+/// Configuración operativa completa de una Red IoT lógica.
 ///
-/// Contiene todos los tópicos asociados a una red específica.
-/// - `id_network`: id único de la red.
-/// - `name_network`: nombre de la red (mas descriptivo que el id).
-/// - `topic_data`: tópico donde se suscribe el Edge para recibir datos.
-/// - `topic_alert_air`: tópico donde se suscribe el Edge para recibir alertas de aire.
-/// - `topic_alert_temp`: tópico donde se suscribe el Edge para recibir alertas de temperatura.
-/// - `topic_monitor`: tópico donde se suscribe el Edge para recibir mensajes de monitoreo.
-/// - `topic_network`: tópico donde se suscribe el Edge para recibir mensajes del servidor para modificar redes.
-/// - `topic_new_setting_to_hub`: tópico donde se suscribe el Edge para recibir mensajes del servidor para configurar hubs.
-/// - `topic_hub_setting_ok`: tópico donde se suscribe el Edge para recibir la confirmación de config aplicada de los hubs.
-/// - `topic_new_firmware`: tópico donde se suscribe el Edge para recibir mensajes del servidor para actualizar el firmware de los hubs.
-/// - `topic_hub_firmware_ok`: tópico donde se suscribe el Edge para recibir el handshake del hub de nuevo firmware listo.
-/// - `topic_balance_mode_handshake`: tópico donde se suscribe el Edge para recibir mensaje de handshake de los nodos (en balance mode).
-/// - `active`: variable que indica si la red actualmente está activa o inactiva.
+/// Pre-calcula y almacena estáticamente todos los paths MQTT vinculados a su ID.
+/// Esto evita tener que construir strings `format!()` repetitivamente durante la ejecución.
 #[derive(Debug, Clone)]
 pub struct Network {
     pub id_network: String,
-    pub name_network: String,
 
-    // Tópicos de recepción
+    // ================= Tópicos Suscritos (Inbound) =================
     pub topic_data: Topic,
     pub topic_alert_air: Topic,
     pub topic_alert_temp: Topic,
@@ -352,7 +385,7 @@ pub struct Network {
     pub topic_setting: Topic,
     pub topic_ping: Topic,
 
-    // Tópicos de envío
+    // ================= Tópicos Publicados (Outbound) =================
     pub topic_new_setting: Topic,
     pub topic_new_firmware: Topic,
     pub topic_setting_ok: Topic,
@@ -360,12 +393,16 @@ pub struct Network {
     pub topic_active_hub: Topic,
     pub topic_ping_ack: Topic,
 
+    /// Indica si la red está en procesamiento activo o pausado.
     pub active: bool,
 }
 
 
 impl Network {
-    pub fn new(id_network: String, name_network: String, active: bool) -> Self {
+
+    /// Instancia una nueva red generando dinámicamente todos sus tópicos.
+    /// Utiliza wildcards `+` en los tópicos entrantes para capturar eventos de cualquier hub en la red.
+    pub fn new(id_network: String, active: bool) -> Self {
         let t_data = format!("iot/{id_network}/hub/+/data");
         let t_alert_air = format!("iot/{id_network}/hub/+/alert_air");
         let t_alert_temp = format!("iot/{id_network}/hub/+/alert_temp");
@@ -384,7 +421,6 @@ impl Network {
 
         Self {
             id_network,
-            name_network,
             topic_data: Topic::new(t_data, 0),
             topic_alert_air: Topic::new(t_alert_air, 1),
             topic_alert_temp: Topic::new(t_alert_temp, 1),
@@ -406,12 +442,10 @@ impl Network {
 }
 
 
-
-/// Modelo de datos plano para mapeo directo con SQLx (SQLite).
+/// DTO (Data Transfer Object) para mapear redes planas desde la tabla SQL.
 #[derive(Debug, FromRow, Deserialize, PartialEq, Clone)]
 pub struct NetworkRow {
     pub id_network: String,
-    pub name_network: String,
     pub active: bool,
 }
 
@@ -419,15 +453,16 @@ pub struct NetworkRow {
 /// Convierte una fila plana de base de datos (`NetworkRow`) a la estructura jerárquica (`Network`).
 impl NetworkRow {
     pub fn cast_to_network(self) -> Network {
-        Network::new(self.id_network, self.name_network, self.active)
+        Network::new(self.id_network, self.active)
     }
 
-    pub fn new(id_network: String, name_network: String, active: bool) -> Self {
-        Self { id_network, name_network, active }
+    pub fn new(id_network: String, active: bool) -> Self {
+        Self { id_network, active }
     }
 }
 
 
+/// Acciones operacionales posibles sobre una red para notificar al DBA.
 #[derive(Debug, PartialEq)]
 pub enum NetworkAction {
     Delete,
@@ -437,6 +472,7 @@ pub enum NetworkAction {
 }
 
 
+/// Eventos de mutación de estado en redes para sincronizar la BD.
 #[derive(Debug, PartialEq, Clone)]
 pub enum NetworkChanged {
     Insert(NetworkRow),
@@ -445,6 +481,7 @@ pub enum NetworkChanged {
 }
 
 
+/// Eventos de mutación de estado en Hubs para sincronizar la BD.
 #[derive(Debug, PartialEq, Clone)]
 pub enum HubChanged {
     Insert(HubRow),
@@ -453,6 +490,7 @@ pub enum HubChanged {
 }
 
 
+/// Representación liviana en memoria caché de un dispositivo nodo/Hub.
 #[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
 pub struct Hub {
     pub id: String,
@@ -461,6 +499,7 @@ pub struct Hub {
 }
 
 
+/// DTO (Data Transfer Object) para mapear Hubs físicos desde la tabla SQL.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
 pub struct HubRow {
     #[sqlx(flatten)]

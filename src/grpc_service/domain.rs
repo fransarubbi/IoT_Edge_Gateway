@@ -1,3 +1,26 @@
+//! Módulo de comunicación gRPC con el servidor central.
+//!
+//! Este módulo establece y mantiene una conexión **gRPC bidireccional segura (mTLS)**
+//! entre el gateway/dispositivo Edge y el servidor. Implementa un cliente
+//! resiliente capaz de recuperarse de caídas de red mediante reconexión automática.
+//!
+//!
+//! # Arquitectura
+//!
+//! El diseño se basa en un modelo de actores asíncronos de `tokio` para aislar la red
+//! del resto del sistema operativo (Core). Se divide en dos componentes principales:
+//!
+//! 1. **[`GrpcService`]**: El orquestador público. Recibe datos del sistema mediante un canal,
+//!    levanta la tarea de red en segundo plano y enruta los mensajes hacia/desde ella.
+//! 2. **Bucle de conexión (`grpc`)**: Una máquina de estados pura que maneja el ciclo
+//!    de vida de la capa de transporte (HTTP/2), cifrado (TLS) y streaming (Tonic).
+//!
+//! # Seguridad
+//!
+//! Requiere Autenticación Mutua TLS (mTLS). El cliente presenta sus propios certificados
+//! (`CRT_EDGE_GRPC`, `KEY_EDGE_GRPC`) y valida al servidor mediante una CA compartida (`CA_EDGE_GRPC`).
+
+
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::codec::CompressionEncoding;
 use tonic::Request;
@@ -15,14 +38,25 @@ use crate::system::domain::{InternalEvent, ErrorType};
 use crate::config::grpc_service::*;
 
 
+/// Servicio administrador de la conexión gRPC.
+///
+/// Actúa como una fachada que envuelve la complejidad del cliente bidireccional de `tonic`.
+/// Al invocar `run`, crea los canales puente necesarios y lanza el hilo de red concurrente.
 pub struct GrpcService {
+    /// Canal de salida hacia el Core del sistema (eventos de red y mensajes entrantes).
     sender: mpsc::Sender<InternalEvent>,
+    /// Canal de entrada desde el Core (mensajes a subir al servidor).
     receiver: mpsc::Receiver<FromEdge>,
+    /// Contexto global de la aplicación (configuración, secretos, base de datos).
     context: AppContext,
 }
 
 
 impl GrpcService {
+
+    /// Crea una nueva instancia de `GrpcService`.
+    ///
+    /// No inicia la conexión. Se debe llamar a `run()` explícitamente.
     pub fn new(sender: mpsc::Sender<InternalEvent>,
                receiver: mpsc::Receiver<FromEdge>,
                context: AppContext) -> Self {
@@ -33,6 +67,12 @@ impl GrpcService {
         }
     }
 
+    /// Inicia el servicio y bloquea la tarea actual de forma asíncrona.
+    ///
+    /// 1. Crea canales proxy para comunicar esta estructura con el demonio gRPC.
+    /// 2. Hace un `tokio::spawn` del bucle `grpc`.
+    /// 3. Entra en un select que escucha apagados del sistema y redirige el tráfico
+    ///    bidireccional entre la app y el demonio gRPC.
     pub async fn run(mut self, shutdown: CancellationToken) {
 
         let (tx_to_core, mut rx_from_grpc) = mpsc::channel::<InternalEvent>(50);
@@ -64,17 +104,28 @@ impl GrpcService {
 }
 
 
+/// Estados posibles de la máquina de estados del cliente gRPC.
 #[derive(Debug)]
 enum StateClient {
+    /// Estado inicial o de reconexión. Intenta crear el canal TLS y negociar el stream.
     Init,
+    /// Estado operativo. Mantiene activos los streams de entrada y salida bidireccionales.
     Work {
+        /// Canal interno donde se inyectan datos para enviar al servidor.
         tx_session: mpsc::Sender<FromEdge>,
+        /// Stream receptivo directo desde el servidor `tonic`.
         inbound_stream: tonic::Streaming<ToEdge>,
     },
+    /// Ocurrió un fallo (desconexión, error TLS, etc). Dispara un cool-down antes de volver a `Init`.
     Error,
 }
 
 
+/// Crea y configura un canal HTTP/2 (Transporte subyacente de gRPC) con cifrado mTLS.
+///
+/// # Errores
+/// Retorna `ErrorType::Generic` si no puede leer los certificados físicos.
+/// Retorna `ErrorType::Endpoint` si la URL es inválida o la conexión inicial falla.
 async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Channel, ErrorType> {
     let ca_pem = fs::read(CA_EDGE_GRPC)
         .map_err(|e| { error!("Error: fallo leyendo CA gRPC: {}", e); ErrorType::Generic })?;
@@ -109,6 +160,13 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 }
 
 
+/// Motor asíncrono que gobierna la conexión gRPC mediante una máquina de estados finitos.
+///
+/// Se encarga de:
+/// - Crear el stream con compresión GZIP en ambos sentidos.
+/// - Leer del canal local para enviar al stream (Upstream).
+/// - Leer del stream para enviar al canal local (Downstream).
+/// - Ejecutar el retroceso (delay) de 5 segundos al producirse fallos.
 async fn grpc(tx: mpsc::Sender<InternalEvent>,
               mut rx_outbound: mpsc::Receiver<FromEdge>,
               app_context: AppContext,
@@ -170,7 +228,8 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         break;
                     }
 
-                    msg_opt = rx_outbound.recv() => {   // Enviar datos (Upstream)
+                    // [UPSTREAM]: Datos del Core que deben ir al Servidor
+                    msg_opt = rx_outbound.recv() => {
                         match msg_opt {
                             Some(msg) => {
                                 if let Err(e) = tx_session.send(msg).await {
@@ -185,7 +244,8 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         }
                     }
 
-                    server_msg = inbound_stream.next() => {   // Recibir datos (Downstream)
+                    // [DOWNSTREAM]: Datos o comandos desde el Servidor hacia el Core
+                    server_msg = inbound_stream.next() => {
                         match server_msg {
                             Some(Ok(download_msg)) => {
                                 if tx.send(InternalEvent::IncomingGrpc(download_msg)).await.is_err() {
@@ -217,7 +277,6 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         state = StateClient::Init;
                     }
                 }
-
             }
         }
     }

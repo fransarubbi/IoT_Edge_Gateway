@@ -301,11 +301,6 @@ impl Core {
                 }
                 Some(response) = self.core_from_fsm_service.recv() => {
                     match response {
-                        FsmServiceResponse::ToServer(to_server) => {
-                            if self.core_to_message_service.send(MessageServiceCommand::ToServer(to_server)).await.is_err() {
-                                error!("Error: no se pudo enviar ToServer desde Core");
-                            }
-                        },
                         FsmServiceResponse::ToHub(to_hub) => {
                             if self.core_to_message_service.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                 error!("Error: no se pudo enviar ToHub desde Core");
@@ -366,12 +361,18 @@ impl Core {
                                     }
                                 },
                                 HubMessage::FromHubSettings(_) => {
-                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
+                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
+                                        error!("Error: no se pudo enviar FromHubSettings desde Core");
+                                    }
+                                    if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
                                         error!("Error: no se pudo enviar FromHubSettings desde Core");
                                     }
                                 },
                                 HubMessage::FromHubSettingsAck(_) => {
-                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
+                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
+                                        error!("Error: no se pudo enviar FromHubSettingsAck desde Core");
+                                    }
+                                    if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
                                         error!("Error: no se pudo enviar FromHubSettingsAck desde Core");
                                     }
                                 }
@@ -435,11 +436,6 @@ impl Core {
                                         error!("Error: no se pudo enviar Heartbeat desde Core");
                                     }
                                 },
-                                ServerMessage::HelloWorld(_) => {
-                                    if self.core_to_fsm_service.send(FsmServiceCommand::FromServer(from_server)).await.is_err() {
-                                        error!("Error: no se pudo enviar HelloWorld desde Core");
-                                    }
-                                }
                                 _ => {}
                             }
                         },

@@ -75,21 +75,27 @@ impl FirmwareService {
 
         let child_token = token.child_token();
         let update_tx_to_fsm = tx_to_fsm.clone();
-        handles.push(tokio::spawn(update_firmware_task(tx_response,
+        handles.push(tokio::spawn(update_firmware_task(
+                                          tx_response,
                                           update_tx_to_fsm,
                                           tx_to_timer,
                                           rx_msg,
                                           rx_from_fsm,
-                                          self.context.clone(), child_token)));
+                                          self.context.clone(),
+                                          child_token)));
 
         let child_token = token.child_token();
-        handles.push(tokio::spawn(run_fsm_firmware(tx_to_update_task,
-                                      fsm_rx_from_update_task, child_token)));
+        handles.push(tokio::spawn(run_fsm_firmware(
+                                         tx_to_update_task,
+                                         fsm_rx_from_update_task,
+                                         child_token)));
 
         let child_token = token.child_token();
         let timer_tx_to_fsm = tx_to_fsm.clone();
-        handles.push(tokio::spawn(firmware_watchdog_timer(timer_tx_to_fsm,
-                                             timer_rx_from_update_task, child_token)));
+        handles.push(tokio::spawn(firmware_watchdog_timer(
+                                            timer_tx_to_fsm,
+                                            timer_rx_from_update_task,
+                                            child_token)));
 
         FirmwareRuntime {
             handles,
