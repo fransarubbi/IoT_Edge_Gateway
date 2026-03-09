@@ -47,7 +47,7 @@ pub enum MetricsTimerEvent {
 /// * `rx_from_timer` - Canal para recibir notificaciones de `Timeout` cuando es hora de recolectar métricas.
 /// * `app_context` - Contexto global de la aplicación, utilizado para obtener IDs de dispositivo y configuración.
 ///
-#[instrument(name = "system_metrics", skip(rx_from_timer, app_context))]
+#[instrument(name = "system_metrics", skip_all)]
 pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>, 
                             tx_to_timer: mpsc::Sender<MetricsTimerEvent>, 
                             mut rx_from_timer: mpsc::Receiver<MetricsTimerEvent>, 
@@ -57,14 +57,14 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
     let mut metrics = MetricsCollector::new();
 
     if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(180))).await.is_err() {
-        error!("Error: no se pudo enviar evento InitTimer a metrics_timer");
+        error!("no se pudo enviar evento InitTimer a metrics_timer");
         return;
     }
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido system_metrics");
+                info!("shutdown recibido system_metrics");
                 break;
             }
 
@@ -73,16 +73,16 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
                     MetricsTimerEvent::Timeout => {
                         let metadata = Metadata {
                             sender_user_id: app_context.system.id_edge.clone(),
-                            destination_id: "Server0".to_string(),
+                            destination_id: "server0".to_string(),
                             timestamp: Utc::now().timestamp(),
                         };
                         let sys_met = metrics.collect(metadata);
                         let msg = ServerMessage::Metrics(sys_met);
                         if tx_to_server.send(msg).await.is_err() {
-                            error!("Error: no se pudo enviar mensaje de métricas a MetricsService");
+                            error!("no se pudo enviar mensaje de métricas a MetricsService");
                         }
                         if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(180))).await.is_err() {
-                            error!("Error: no se pudo enviar evento InitTimer a metrics_timer");
+                            error!("no se pudo enviar evento InitTimer a metrics_timer");
                         }
                     },
                     _ => {}
@@ -108,7 +108,7 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
 /// * `tx_to_metrics` - Canal para notificar el timeout al orquestador (`system_metrics`).
 /// * `cmd_rx` - Canal por donde recibe las instrucciones `InitTimer(Duration)`.
 ///
-#[instrument(name = "metrics_timer", skip(cmd_rx))]
+#[instrument(name = "metrics_timer", skip_all)]
 pub async fn metrics_timer(tx_to_metrics: mpsc::Sender<MetricsTimerEvent>,
                            mut cmd_rx: mpsc::Receiver<MetricsTimerEvent>,
                            shutdown: CancellationToken) {
@@ -122,12 +122,12 @@ pub async fn metrics_timer(tx_to_metrics: mpsc::Sender<MetricsTimerEvent>,
 
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido metrics_timer");
+                info!("shutdown recibido metrics_timer");
                 break;
             }
             _ = sleep(duration) => {
                 if tx_to_metrics.send(MetricsTimerEvent::Timeout).await.is_err() {
-                    error!("Error: no se pudo enviar evento Timeout en metrics_timer");
+                    error!("no se pudo enviar evento Timeout en metrics_timer");
                 }
             }
         }

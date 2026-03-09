@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Transport, Incoming, TlsConfiguration, EventLoop};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 use crate::config::mqtt_service::{BUFFER_SIZE, CA_EDGE_MQTT, CLEAN_SESSION, CRT_EDGE_MQTT, KEEP_ALIVE_TIMEOUT_SECS, KEY_EDGE_MQTT, MTLS_PORT};
 use crate::context::domain::AppContext;
 use crate::message::domain::SerializedMessage;
@@ -112,13 +112,14 @@ fn create_local_mqtt(system: &System) -> Result<(AsyncClient, EventLoop), ErrorT
 /// * `rx_net` - Canal para recibir comandos de control (ej. red lista, actualizaciones de topología).
 /// * `app_context` - Contexto global compartido de la aplicación.
 /// * `shutdown` - Token de cancelación para terminar la tarea de forma limpia.
-#[instrument(name = "mqtt", skip(rx_msg, rx_net, app_context))]
+#[instrument(name = "mqtt", skip_all)]
 pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                   mut rx_msg: mpsc::Receiver<SerializedMessage>,
                   mut rx_net: mpsc::Receiver<MqttServiceCommand>,
                   app_context: AppContext,
                   shutdown: CancellationToken) {
-    
+
+    info!("iniciando tarea mqtt");
     let mut state = StateClient::Waiting;
     let mut flag : bool;
 
@@ -148,7 +149,7 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
 
                         for (topic, entry) in &current_subs {
                             if let Err(e) = client.subscribe(topic.clone(), entry.qos).await {
-                                error!("Error: no se pudo suscribir a {topic}: {e}");
+                                error!("no se pudo suscribir a {topic}: {e}");
                                 flag = true;
                                 continue;
                             }
@@ -161,7 +162,7 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                         }
                     },
                     Err(e) => {
-                        error!("Error: {e}");
+                        error!("{e}");
                         state = StateClient::Error;
                     }
                 }
@@ -169,7 +170,7 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
             StateClient::Work { client, event_loop, current_subs } => {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
-                        info!("Info: shutdown recibido mqtt");
+                        info!("shutdown recibido mqtt");
                         break;
                     }
 
@@ -192,17 +193,17 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                                         packet.topic
                                     );
                                     if tx.send(InternalEvent::IncomingMessage(msg)).await.is_err() {
-                                        error!("Error: no se pudo enviar IncomingMessage desde mqtt");
+                                        error!("no se pudo enviar IncomingMessage desde mqtt");
                                     }
                                 },
                                 Event::Incoming(Incoming::ConnAck(_)) => {
                                     if tx.send(InternalEvent::LocalConnected).await.is_err() {
-                                        error!("Error: no se pudo enviar LocalConnected desde mqtt");
+                                        error!("no se pudo enviar LocalConnected desde mqtt");
                                     }
                                 },
                                 Event::Incoming(Incoming::Disconnect) => {
                                     if tx.send(InternalEvent::LocalDisconnected).await.is_err() {
-                                        error!("Error: no se pudo enviar LocalDisconnected desde mqtt");
+                                        error!("no se pudo enviar LocalDisconnected desde mqtt");
                                     }
                                 },
                                 _ => {}, // KeepAlive, Pings, etc.
@@ -210,7 +211,7 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                             Err(e) => {
                                 error!("{}", e);
                                 if tx.send(InternalEvent::LocalDisconnected).await.is_err() {
-                                    error!("Error: no se pudo enviar LocalDisconnected desde mqtt");
+                                    error!("no se pudo enviar LocalDisconnected desde mqtt");
                                 }
                                 state = StateClient::Error;  // Vamos a error para reconectar
                             }
@@ -228,11 +229,11 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                                 ).await;
 
                                 if let Err(e) = res {
-                                    error!("Error publicando mensaje: {e}");
+                                    error!("publicando mensaje: {e}");
                                 }
                             },
                             None => {   // El canal se cerró
-                                error!("Error: canal rx_msg cerrado");
+                                error!("canal rx_msg cerrado");
                                 state = StateClient::Error;
                             }
                         }
@@ -242,11 +243,10 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
             StateClient::Error => {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
-                        info!("Info: Shutdown recibido mqtt");
+                        info!("shutdown recibido mqtt");
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                        //state = StateClient::Init;
                         state = StateClient::Init;
                     }
                 }
@@ -260,6 +260,8 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
 ///
 /// Utilizada exclusivamente durante la fase `Init` para poblar el mapa inicial de suscripciones.
 fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> {
+
+    debug!("suscribiendo a tópicos mqtt");
     let mut subs = HashMap::new();
 
     for net in manager.networks.values() {
@@ -272,6 +274,7 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
         subs.insert(net.topic_hub_setting_ok.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_setting_ok.qos)});
         subs.insert(net.topic_setting.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_setting.qos)});
         subs.insert(net.topic_ping.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_ping.qos)});
+        subs.insert(net.topic_queue_empty.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_queue_empty.qos)});
     }
 
     subs
@@ -284,6 +287,8 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
 /// Realiza las llamadas asíncronas `subscribe` y `unsubscribe` al broker MQTT según sea necesario,
 /// actualizando el estado interno para reflejar los cambios exitosos.
 async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, subs: &mut HashMap<String, SubEntry>) {
+
+    debug!("actualizando subscripciones a tópicos mqtt");
 
     // Marcar todos como inactivos temporalmente
     for (_, entry) in subs.iter_mut() {
@@ -301,6 +306,7 @@ async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, su
         all_topics(&net.topic_hub_setting_ok.topic, net.topic_hub_setting_ok.qos, subs);
         all_topics(&net.topic_setting.topic, net.topic_setting.qos, subs);
         all_topics(&net.topic_ping.topic, net.topic_ping.qos, subs);
+        all_topics(&net.topic_queue_empty.topic, net.topic_queue_empty.qos, subs);
     }
 
     let mut to_sub = Vec::new();

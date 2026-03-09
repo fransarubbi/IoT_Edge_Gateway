@@ -18,7 +18,7 @@ use crate::config::firmware::{OTA_TIMEOUT};
 /// Tarea principal de actualización de firmware.
 ///
 /// Mantiene un bucle infinito que escucha múltiples canales (Server, Hub, FSM)
-#[instrument(name = "update_firmware", skip(app_context))]
+#[instrument(name = "update_firmware", skip_all)]
 pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceResponse>,
                                   tx_to_fsm: mpsc::Sender<Event>,
                                   tx_to_timer: mpsc::Sender<Event>,
@@ -32,7 +32,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido update_firmware_task");
+                info!("shutdown recibido update_firmware_task");
                 break;
             }
 
@@ -45,7 +45,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
 
                             info!(
                                 total_hubs = total,
-                                "Info: Iniciando nueva sesión de Actualización de Firmware"
+                                "Iniciando nueva sesión de Actualización de Firmware"
                             );
 
                             session = Some(UpdateSession::new(
@@ -54,10 +54,10 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
                                 id
                             ));
                             if tx_to_fsm.send(Event::MessageFromServer).await.is_err() {
-                                error!("Error: No se pudo enviar evento MessageUpdate a la fsm de actualización de firmware");
+                                error!("no se pudo enviar evento MessageUpdate a la fsm de actualización de firmware");
                             }
                         } else {
-                            error!("Error: No se encontraron hubs en la red {:?}", id);
+                            error!("no se encontraron hubs en la red {:?}", id);
                         }
                     },
                     FirmwareServiceCommand::HubResponse(firmware) => {
@@ -89,7 +89,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
                         },
                         Action::StopTimer => {
                             if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                                error!("Error: No se pudo enviar evento de finalización del timer");
+                                error!("no se pudo enviar evento de finalización del timer");
                             }
                         }
                         _ => {}
@@ -103,7 +103,7 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
 
 /// Actor que encapsula la Máquina de Estados (FSM).
 /// Mantiene el estado en memoria y procesa eventos secuencialmente.
-#[instrument(name = "run_fsm_firmware", skip(rx_event))]
+#[instrument(name = "run_fsm_firmware", skip_all)]
 pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
                               mut rx_event: mpsc::Receiver<Event>,
                               cancel: CancellationToken) {
@@ -113,7 +113,7 @@ pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido run_fsm_firmware");
+                info!("shutdown recibido run_fsm_firmware");
                 break;
             }
             Some(event) = rx_event.recv() => {
@@ -122,11 +122,11 @@ pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
                     Transition::Valid(t) => {
                         state = t.get_change_state();
                         if tx_actions.send(t.get_actions()).await.is_err() {
-                            error!("Error: No se pudo enviar el vector de acciones a update_firmware_task");
+                            error!("no se pudo enviar el vector de acciones a update_firmware_task");
                         }
                     },
                     Transition::Invalid(t) => {
-                        warn!("FSM Firmware transición inválida: {}", t.get_invalid());
+                        warn!("fSM Firmware transición inválida: {}", t.get_invalid());
                     }
                 }
             }
@@ -145,19 +145,19 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
         hub_id = %sender_id,
         success = is_ok,
         phase = ?session_ref.phase,
-        "Debug: Recibida respuesta de firmware"
+        "recibida respuesta de firmware"
     );
 
     if session_ref.is_canary() {
         if firmware.is_ok {
-            info!(hub_id = %sender_id, "Info: Canario actualizado exitosamente. Avanzando a Broadcast.");
+            info!(hub_id = %sender_id, "canario actualizado exitosamente. Avanzando a Broadcast.");
             if tx_to_fsm.send(Event::MessageFromHub).await.is_err() {
-                error!("Error: No se pudo enviar evento MessageFromHub a la fsm de actualización de firmware");
+                error!("no se pudo enviar evento MessageFromHub a la fsm de actualización de firmware");
             }
         } else {
-            warn!(hub_id = %sender_id, "Warning: Canario falló la actualización. Abortando despliegue.");
+            warn!(hub_id = %sender_id, "canario falló la actualización. Abortando despliegue.");
             if tx_to_fsm.send(Event::Error).await.is_err() {
-                error!("Error: No se pudo enviar evento Error a la fsm de actualización de firmware");
+                error!("no se pudo enviar evento Error a la fsm de actualización de firmware");
             }
         }
     }
@@ -177,11 +177,11 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
 
                 if session_ref.failures == 0 {
                     if tx_to_fsm.send(Event::AllMessageReceived).await.is_err() {
-                        error!("Error: No se pudo enviar evento AllMessageReceived a la fsm de actualización de firmware");
+                        error!("no se pudo enviar evento AllMessageReceived a la fsm de actualización de firmware");
                     }
                 } else {
                     if tx_to_fsm.send(Event::Error).await.is_err() {
-                        error!("Error: No se pudo enviar evento Error a la fsm de actualización de firmware");
+                        error!("no se pudo enviar evento Error a la fsm de actualización de firmware");
                     }
                 }
 
@@ -189,7 +189,7 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
                     success_rate = rate,
                     failures = session_ref.failures,
                     total = session_ref.total_hubs,
-                    "Info: Fase Broadcast finalizada. Reportando resultados."
+                    "fase Broadcast finalizada. Reportando resultados."
                 );
             }
         }
@@ -217,7 +217,7 @@ async fn on_entry(state_firm: StateFirmwareUpdate, session: &mut Option<UpdateSe
 async fn init_timer_and_update_phase(session: &mut Option<UpdateSession>, tx_to_timer: &mpsc::Sender<Event>, phase: Phase) {
     if let Some(session_ref) = session {
         if tx_to_timer.send(Event::InitTimer(OTA_TIMEOUT)).await.is_err() {
-            error!("Error: No se pudo enviar evento de inicialización del watchdog de firmware");
+            error!("no se pudo enviar evento de inicialización del watchdog de firmware");
         }
         session_ref.phase = phase;
     }
@@ -236,7 +236,7 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
             info!(
                 network = %session_ref.network,
                 target_hub = %id_hub,
-                "Info: Seleccionado Hub Canario para prueba piloto"
+                "seleccionado Hub Canario para prueba piloto"
             );
 
             match session_ref.message.clone() {
@@ -251,15 +251,15 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
                     };
                     
                     if tx_to_core.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
-                        error!("Error: No se pudo enviar mensaje al Hub canario");
+                        error!("no se pudo enviar mensaje al Hub canario");
                     }
                 },
                 _ => {},
             }
         } else {
-            error!(network = %session_ref.network, "Error: La red está vacía, no se puede seleccionar canario.");
+            error!(network = %session_ref.network, "la red está vacía, no se puede seleccionar canario.");
             if tx_to_fsm.send(Event::Error).await.is_err() {
-                error!("Error: No se pudo enviar evento de Error a la fsm firmware");
+                error!("no se pudo enviar evento de Error a la fsm firmware");
             }
         }
     }
@@ -282,7 +282,7 @@ async fn handle_send_message_to_network(session: &mut Option<UpdateSession>,
                 };
                 
                 if tx_to_hub.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
-                    error!("Error: No se pudo enviar mensaje al resto de Hubs (Broadcast Firmware)");
+                    error!("no se pudo enviar mensaje al resto de Hubs (Broadcast Firmware)");
                 }
             },
             _ => {},
@@ -301,7 +301,7 @@ async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
 
         let metadata = Metadata {
             sender_user_id: app_context.system.id_edge.clone(),
-            destination_id: "Server0".to_string(),
+            destination_id: "server0".to_string(),
             timestamp
         };
 
@@ -309,12 +309,12 @@ async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
         if session_ref.percentage == 100.00 {
             let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: 100.00 };
             if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
-                error!("Error: No se pudo enviar FirmwareOutcome Ok al servidor");
+                error!("no se pudo enviar FirmwareOutcome Ok al servidor");
             }
         } else {
             let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: session_ref.percentage };
             if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
-                error!("Error: No se pudo enviar FirmwareOutcome Fail al servidor");
+                error!("no se pudo enviar FirmwareOutcome Fail al servidor");
             }
         }
     }

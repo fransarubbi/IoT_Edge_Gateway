@@ -23,6 +23,7 @@ pub mod grpc {
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use futures::stream::{FuturesUnordered, StreamExt};
+use tracing_subscriber::EnvFilter;
 use crate::channels::domain::Channels;
 use crate::core::domain::Core;
 use crate::database::domain::DataService;
@@ -43,10 +44,15 @@ use crate::system::fsm::init_fsm;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    
-    init_tracing();
 
+    let tracing_handle = init_tracing();
     let app_context = init_fsm().await?;
+
+    let new_filter = EnvFilter::new(app_context.system.rust_log.clone());
+    if let Err(e) = tracing_handle.reload(new_filter) {
+        error!("error al recargar el nivel de log: {:?}", e);
+    }
+
     let repo = Repository::create_repository(&app_context.system.db_path).await;
 
     let channels = Channels::new(app_context.system.buffer_size);

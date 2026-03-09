@@ -19,8 +19,6 @@ pub mod firmware {
 
 pub mod fsm {
     pub const PERCENTAGE: f64 = 80.0;
-    pub const PHASE_MAX_DURATION: u64 = 600;  // 10 min
-    pub const SAFE_MODE_MAX_DURATION: u64 = 900;  // 15 min
 }
 
 pub mod grpc_service {
@@ -29,7 +27,7 @@ pub mod grpc_service {
     pub const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
     pub const CA_EDGE_GRPC : &str = "/etc/mosquitto/certs/root.crt";
     pub const CRT_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge_fullchain.crt";
-    pub const KEY_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge.key";
+    pub const KEY_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge_rust.key";
 }
 
 pub mod heartbeat {
@@ -43,6 +41,6 @@ pub mod mqtt_service {
     pub const MTLS_PORT: u16 = 8883;
     pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
     pub const CA_EDGE_MQTT : &str = "/etc/mosquitto/certs/root.crt";
-    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge_fullchain.crt";
-    pub const KEY_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge.key";
+    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge.crt";
+    pub const KEY_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge_rust.key";
 }

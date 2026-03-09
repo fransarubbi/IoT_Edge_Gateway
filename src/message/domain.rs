@@ -104,7 +104,7 @@ impl MessageService {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!("Info: shutdown recibido MessageService");
+                    info!("shutdown recibido MessageService");
                     break;
                 }
                 
@@ -114,38 +114,38 @@ impl MessageService {
                             match internal {
                                 InternalEvent::LocalDisconnected => {
                                     if tx_command_from_hub.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje LocalDisconnected a msg_from_hub");
+                                        error!("no se pudo enviar el mensaje LocalDisconnected a msg_from_hub");
                                     }
                                 },
                                 InternalEvent::LocalConnected => {
                                     if tx_command_from_hub.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje LocalConnected a msg_from_hub");
+                                        error!("no se pudo enviar el mensaje LocalConnected a msg_from_hub");
                                     }
                                 },
                                 InternalEvent::ServerConnected => {
                                     if tx_command_from_hub.send(MessageServiceCommand::Internal(internal.clone())).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje ServerConnected a msg_from_hub");
+                                        error!("no se pudo enviar el mensaje ServerConnected a msg_from_hub");
                                     }
                                     if tx_command_to_server.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje ServerConnected a msg_to_server");
+                                        error!("no se pudo enviar el mensaje ServerConnected a msg_to_server");
                                     }
                                 },
                                 InternalEvent::ServerDisconnected => {
                                     if tx_command_from_hub.send(MessageServiceCommand::Internal(internal.clone())).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje ServerDisconnected a msg_from_hub");
+                                        error!("no se pudo enviar el mensaje ServerDisconnected a msg_from_hub");
                                     }
                                     if tx_command_to_server.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje ServerDisconnected a msg_to_server");
+                                        error!("no se pudo enviar el mensaje ServerDisconnected a msg_to_server");
                                     }
                                 },
                                 InternalEvent::IncomingMessage(_) => {
                                     if tx_command_from_hub.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje IncomingMessage a msg_from_hub");
+                                        error!("no se pudo enviar el mensaje IncomingMessage a msg_from_hub");
                                     }
                                 },
                                 InternalEvent::IncomingGrpc(_) => {
                                     if tx_command_from_server.send(MessageServiceCommand::Internal(internal)).await.is_err() {
-                                        error!("Error: no se pudo enviar el mensaje IncomingGrpc a msg_from_server");
+                                        error!("no se pudo enviar el mensaje IncomingGrpc a msg_from_server");
                                     }
                                 }
                             }
@@ -154,62 +154,67 @@ impl MessageService {
                             match to_hub {
                                 HubMessage::HandshakeToHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::StateBalanceMode(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::StateNormal(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::StateSafeMode(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
+                                    }
+                                },
+                                HubMessage::PhaseNotification(_) => {
+                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::Heartbeat(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::Ping(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::UpdateFirmware(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::FromServerSettings(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::FromServerSettingsAck(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::DeleteHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::ActiveHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
                                 HubMessage::PingToHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_hub");
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 }
                                 _ => {}
@@ -217,49 +222,49 @@ impl MessageService {
                         },
                         MessageServiceCommand::Batch(batch) => {
                             if tx_command_to_server.send(MessageServiceCommand::Batch(batch)).await.is_err() {
-                                error!("Error: no se pudo enviar batch a msg_to_server");
+                                error!("no se pudo enviar batch a msg_to_server");
                             }
                         },
                         MessageServiceCommand::ToServer(to_server) => {
                             match to_server {
                                 ServerMessage::FromHubSettings(hub_settings) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::FromHubSettings(hub_settings))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::FromHubSettingsAck(hub_settings_ack) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::FromHubSettingsAck(hub_settings_ack))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::FirmwareOutcome(firmware_outcome) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::FirmwareOutcome(firmware_outcome))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::Report(report) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::Report(report))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::Monitor(monitor) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::Monitor(monitor))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::AlertAir(alert_air) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::AlertAir(alert_air))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::AlertTem(alert_tem) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::AlertTem(alert_tem))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 ServerMessage::Metrics(metrics) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::Metrics(metrics))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje a msg_to_server");
+                                        error!("no se pudo enviar mensaje a msg_to_server");
                                     }
                                 },
                                 _ => {}
@@ -267,7 +272,7 @@ impl MessageService {
                         },
                         MessageServiceCommand::GenerateHelloWorld => {
                             if tx_command_to_server.send(cmd).await.is_err() {
-                                error!("Error: no se pudo enviar GenerateHelloWorld a msg_to_server");
+                                error!("no se pudo enviar GenerateHelloWorld a msg_to_server");
                             }
                         }
                     }
@@ -275,7 +280,7 @@ impl MessageService {
 
                 Some(cmd) = rx.recv() => {
                     if self.sender.send(cmd).await.is_err() {
-                        error!("Error: no se pudo enviar mensaje MessageServiceResponse desde MessageService");
+                        error!("no se pudo enviar mensaje MessageServiceResponse desde MessageService");
                     }
                 }
             }
@@ -420,7 +425,7 @@ pub struct HandshakeToHub {
 }
 
 
-/// Mensaje de Handshake proveniente DEL Hub (Uplink).
+/// Mensaje de Handshake proveniente del Hub (Uplink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
     pub metadata: Metadata,
@@ -435,7 +440,6 @@ pub struct MessageStateBalanceMode {
     pub metadata: Metadata,
     pub state: String,
     pub balance_epoch: u32,
-    pub sub_state: String,
     pub duration: u32,
 }
 

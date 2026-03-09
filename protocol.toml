@@ -1,4 +1,9 @@
 max_attempts = 14
+frequency_phase = 5
+frequency_safe_mode = 15
+timeout_handshake = 30
+timeout_phase = 60
+timeout_safe_mode = 120
 time_between_heartbeats_balance_mode = 20
 time_between_heartbeats_normal = 50
 time_between_heartbeats_safe_mode = 60

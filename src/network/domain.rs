@@ -384,6 +384,7 @@ pub struct Network {
     pub topic_balance_mode_handshake: Topic,
     pub topic_setting: Topic,
     pub topic_ping: Topic,
+    pub topic_queue_empty: Topic,
 
     // ================= Tópicos Publicados (Outbound) =================
     pub topic_new_setting: Topic,
@@ -418,6 +419,7 @@ impl Network {
         let t_active = format!("iot/{id_network}/active");
         let t_ping = format!("iot/{id_network}/hub/+/ping");
         let t_ping_ack = format!("iot/{id_network}/ping");
+        let t_queue_empty = format!("iot/{id_network}/hub/+/empty_queue");
 
         Self {
             id_network,
@@ -436,6 +438,7 @@ impl Network {
             topic_active_hub: Topic::new(t_active, 0),
             topic_ping: Topic::new(t_ping, 1),
             topic_ping_ack: Topic::new(t_ping_ack, 1),
+            topic_queue_empty: Topic::new(t_queue_empty, 1),
             active
         }
     }

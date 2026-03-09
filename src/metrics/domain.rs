@@ -55,12 +55,12 @@ impl MetricsService {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!("Info: shutdown recibido Core");
+                    info!("shutdown recibido Core");
                     break;
                 }
                 Some(msg) = rx_command_from_server.recv() => {
                     if self.sender.send(msg).await.is_err() {
-                        error!("Error: no se pudo enviar mensaje SystemMetrics");
+                        error!("no se pudo enviar mensaje SystemMetrics");
                     }
                 }
             }

@@ -70,18 +70,18 @@ impl HeartbeatService {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!("Info: shutdown recibido HeartbeatService");
+                    info!("shutdown recibido HeartbeatService");
                     break;
                 }
-                
+
                 Some(msg) = self.receiver.recv() => {
                     if tx_msg.send(msg).await.is_err() {
-                        error!("Error: no se pudo enviar mensaje de Heartbeat proveniente del servidor");
+                        error!("no se pudo enviar mensaje de Heartbeat proveniente del servidor");
                     }
                 }
                 Some(msg) = rx.recv() => {
                     if self.sender.send(msg).await.is_err() {
-                        error!("Error: no se pudo enviar el InternalEvent proveniente de heartbeat");
+                        error!("no se pudo enviar el InternalEvent proveniente de heartbeat");
                     }
                 }
             }
@@ -394,7 +394,7 @@ pub async fn watchdog_timer_for_heartbeat(tx_to_fsm: mpsc::Sender<Event>,
 
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido watchdog_timer_for_heartbeat");
+                info!("shutdown recibido watchdog_timer_for_heartbeat");
                 break;
             }
             _ = sleep(duration) => {
@@ -402,7 +402,7 @@ pub async fn watchdog_timer_for_heartbeat(tx_to_fsm: mpsc::Sender<Event>,
                 let _ = tx_to_fsm.send(Event::Timeout).await;
             }
             Some(Event::StopTimer) = cmd_rx.recv() => {
-                debug!("Debug: Watchdog timer de fsm heartbeat, cancelado");
+                debug!("Watchdog timer de fsm heartbeat, cancelado");
             }
         }
     }
@@ -460,7 +460,7 @@ mod tests {
 
                 assert_eq!(actions.len(), 3);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -481,7 +481,7 @@ mod tests {
                 assert!(contains_action(&actions, &Action::OnEntry(State::NotHeartbeatYet)));
                 assert_eq!(actions.len(), 1);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -540,7 +540,7 @@ mod tests {
 
                 assert_eq!(actions.len(), 2);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -564,7 +564,7 @@ mod tests {
                 assert!(contains_action(&actions, &Action::OnEntry(State::NotHeartbeatYet)));
                 assert_eq!(actions.len(), 1);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -621,7 +621,7 @@ mod tests {
 
                 assert_eq!(actions.len(), 2);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -652,7 +652,7 @@ mod tests {
 
                 assert_eq!(actions.len(), 2);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -675,7 +675,7 @@ mod tests {
 
                 assert_eq!(actions.len(), 2);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -728,7 +728,7 @@ mod tests {
                 assert!(contains_action(&actions, &Action::OnEntry(State::StartingWait)));
                 assert_eq!(actions.len(), 1);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -787,7 +787,7 @@ mod tests {
                 assert_eq!(fsm.state, State::ItsAlive);
                 assert_eq!(fsm.status, Status::Connected);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
 
         // ItsAlive -> Heartbeat -> StartingWait (mantiene Connected)
@@ -798,7 +798,7 @@ mod tests {
                 assert_eq!(fsm.state, State::StartingWait);
                 assert_eq!(fsm.status, Status::Connected);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -813,7 +813,7 @@ mod tests {
                 fsm = valid.get_change_state();
                 assert_eq!(fsm.state, State::NotHeartbeatYet);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
 
         // NotHeartbeatYet -> Timeout -> DeadServer
@@ -824,7 +824,7 @@ mod tests {
                 assert_eq!(fsm.state, State::DeadServer);
                 assert_eq!(fsm.status, Status::Disconnected);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -841,7 +841,7 @@ mod tests {
                 fsm = valid.get_change_state();
                 assert_eq!(fsm.state, State::StartingWait);
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
 
         // StartingWait -> Heartbeat -> ItsAlive + Connected
@@ -858,7 +858,7 @@ mod tests {
                 assert!(contains_action(&actions,
                                         &Action::SendStatusConditional(Status::Disconnected, Status::Connected)));
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -872,7 +872,7 @@ mod tests {
             Transition::Valid(valid) => {
                 fsm = valid.get_change_state();
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
 
         // NotHeartbeatYet -> Heartbeat -> StartingWait (recuperación)
@@ -885,7 +885,7 @@ mod tests {
                 assert_eq!(fsm.state, State::StartingWait);
                 assert!(contains_action(&actions, &Action::StopTimer));
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -916,7 +916,7 @@ mod tests {
                 assert!(contains_action(&actions,
                                         &Action::SendStatusConditional(Status::Connected, Status::Disconnected)));
             },
-            _ => panic!("Error: Se esperaba una transicion valida"),
+            _ => panic!("Se esperaba una transicion valida"),
         }
     }
 
@@ -989,7 +989,7 @@ mod tests {
         let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
         let (tx_cmd, rx_cmd) = mpsc::channel(10);
 
-        let shutdown_token = CancellationToken::new();    
+        let shutdown_token = CancellationToken::new();
         tokio::spawn(async move {
             watchdog_timer_for_heartbeat(tx_to_fsm, rx_cmd, shutdown_token).await;
         });
