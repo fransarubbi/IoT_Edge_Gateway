@@ -46,7 +46,7 @@ use crate::network::domain::NetworkAction::{Delete, Ignore, Insert, Update};
 ///
 /// Utiliza `hub_hash_aux` para almacenar temporalmente las configuraciones dictadas por el servidor
 /// hasta que el Hub físico confirme su aplicación mediante un `FromHubSettingsAck`.
-#[instrument(name = "network_admin", skip(app_context))]
+#[instrument(name = "network_admin", skip_all)]
 pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                            tx_to_core: mpsc::Sender<NetworkServiceResponse>,
                            tx_to_insert_hub: mpsc::Sender<HubChanged>,
@@ -61,7 +61,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido network_admin");
+                info!("shutdown recibido network_admin");
                 break;
             }
 
@@ -91,7 +91,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             .or_default()
                             .insert(settings.clone().cast_settings_to_hub_row(id));
                         if tx_to_core.send(NetworkServiceResponse::HubMessage(HubMessage::FromServerSettings(settings.clone()))).await.is_err() {
-                            error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
+                            error!("no se pudo enviar el mensaje de nueva configuración al Hub");
                         }
                     },
                     ServerMessage::DeleteHub(ref hub) => {
@@ -99,10 +99,10 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         let mut manager = app_context.net_man.write().await;
                         manager.remove_hub(&id, &hub.metadata.destination_id);
                         if tx_to_insert_hub.send(HubChanged::Delete(id.clone())).await.is_err() {
-                            error!("Error: No se pudo notificar a network_dba_task que debe eliminar un Hub");
+                            error!("no se pudo notificar a network_dba_task que debe eliminar un Hub");
                         }
                         if tx_to_core.send(NetworkServiceResponse::HubMessage(HubMessage::DeleteHub(hub.clone()))).await.is_err() {
-                            error!("Error: No se pudo enviar el mensaje de nueva configuración al Hub");
+                            error!("no se pudo enviar el mensaje de nueva configuración al Hub");
                         }
                     }
                     _ => {},
@@ -119,7 +119,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             manager.add_hub(id, hub_row.clone().cast_to_hub());
                             drop(manager);
                             if tx_to_insert_hub.send(HubChanged::Insert(hub_row)).await.is_err() {
-                                error!("Error: No se pudo notificar a network_dba_task que un nuevo Hub debe insertarse");
+                                error!("no se pudo notificar a network_dba_task que un nuevo Hub debe insertarse");
                             }
                         }
                     },
@@ -128,7 +128,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                         if let Some(hub_row) = hub_hash_aux.get_mut(&id) {
                             if let Some(row) = hub_row.iter().find(|r| r.metadata.sender_user_id == settings_ok.metadata.sender_user_id) {
                                 if tx_to_insert_hub.send(HubChanged::Update(row.clone())).await.is_err() {
-                                    error!("Error: No se pudo notificar a network_dba_task que un Hub debe actualizarse");
+                                    error!("no se pudo notificar a network_dba_task que un Hub debe actualizarse");
                                 }
                                 let mut manager = app_context.net_man.write().await;
                                 manager.remove_hub(&id, &row.metadata.sender_user_id);
@@ -148,9 +148,9 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             let network = networks_row.cast_to_network();
                             manager.add_network(network);
                         }
-                        info!("Info: estado cargado, {} redes en sistema", manager.networks.len());
+                        info!("estado cargado, {} redes en sistema", manager.networks.len());
                         if tx_to_core.send(NetworkServiceResponse::NetworksReady).await.is_err() {
-                            error!("Error: no se pudo enviar NetworksReady desde network_admin")
+                            error!("no se pudo enviar NetworksReady desde network_admin")
                         }
                     }
                     Batch::Hub(hubs) => {
@@ -160,7 +160,7 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
                             let hub = hubs_row.cast_to_hub();
                             manager.add_hub(net_id, hub);
                         }
-                        info!("Info: estado cargado, {} hubs en sistema", manager.get_total_hubs());
+                        info!("estado cargado, {} hubs en sistema", manager.get_total_hubs());
                     }
                 }
             }
@@ -271,7 +271,7 @@ fn create_metadata(app_context: AppContext) -> Metadata {
 ///
 /// - **Redes:** Propaga la creación, actualización de estado (`active`) o eliminación en cascada.
 /// - **Hubs:** Propaga registros (Autodescubrimiento), actualizaciones o bajas (Server request).
-#[instrument(name = "network_dba", skip(rx_from_network, rx_from_network_hub))]
+#[instrument(name = "network_dba", skip_all)]
 pub async fn network_dba(tx: mpsc::Sender<DataServiceCommand>,
                          mut rx_from_network: mpsc::Receiver<NetworkChanged>,
                          mut rx_from_network_hub: mpsc::Receiver<HubChanged>,

@@ -33,7 +33,7 @@ use crate::system::domain::InternalEvent;
 /// * `tx_to_timer`: Canal para controlar el temporizador de seguridad (Watchdog).
 /// * `rx_from_server`: Canal por donde llegan los mensajes decodificados gRPC.
 /// * `rx_fsm`: Canal por donde la FSM envía las instrucciones (Acciones) que deben ejecutarse.
-#[instrument(name = "heartbeat", skip(rx_from_server, rx_fsm))]
+#[instrument(name = "heartbeat", skip_all)]
 pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                        tx_to_fsm: mpsc::Sender<Event>,
                        tx_to_timer: mpsc::Sender<Event>,
@@ -44,7 +44,7 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido heartbeat");
+                info!("shutdown recibido heartbeat");
                 break;
             }
 
@@ -52,7 +52,7 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                 match msg {
                     ServerMessage::Heartbeat(_) => {
                         if tx_to_fsm.send(Event::Heartbeat).await.is_err() {
-                            error!("Error: No se pudo enviar evento Heartbeat a la FSM heartbeat");
+                            error!("no se pudo enviar evento Heartbeat a la FSM heartbeat");
                         }
                     },
                     _ => {}
@@ -66,7 +66,7 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                             match state {
                                 State::StartingWait | State::NotHeartbeatYet | State::ItsAlive => {
                                     if tx_to_timer.send(Event::InitTimer(HEARTBEAT_TIMEOUT)).await.is_err() {
-                                        error!("Error: No se pudo enviar evento de inicio de timer al watchdog del heartbeat");
+                                        error!("no se pudo enviar evento de inicio de timer al watchdog del heartbeat");
                                     }
                                 },
                                 _ => {}
@@ -76,19 +76,19 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
                             if old_status != new_status {
                                 if new_status == Status::Connected {
                                     if tx.send(InternalEvent::ServerConnected).await.is_err() {
-                                        error!("Error: No se pudo distribuir el estado de ServerConnected");
+                                        error!("no se pudo distribuir el estado de ServerConnected");
                                     }
                                 }
                                 if new_status == Status::Disconnected {
                                     if tx.send(InternalEvent::ServerDisconnected).await.is_err() {
-                                        error!("Error: No se pudo distribuir el estado de ServerDisconnected");
+                                        error!("no se pudo distribuir el estado de ServerDisconnected");
                                     }
                                 }
                             }
                         }
                         Action::StopTimer => {
                             if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                                error!("Error: No se pudo parar el timer watchdog del heartbeat");
+                                error!("no se pudo parar el timer watchdog del heartbeat");
                             }
                         },
                         _ => {},
@@ -109,7 +109,7 @@ pub async fn heartbeat(tx: mpsc::Sender<InternalEvent>,
 ///
 /// * `tx_actions`: Canal para enviar las acciones resultantes (Side Effects) al orquestador.
 /// * `rx_from_server`: Canal de entrada de eventos (Heartbeats recibidos, Timeouts del timer).
-#[instrument(name = "run_fsm_heartbeat", skip(rx_from_heartbeat))]
+#[instrument(name = "run_fsm_heartbeat", skip_all)]
 pub async fn run_fsm_heartbeat(tx_actions: mpsc::Sender<Vec<Action>>,
                                mut rx_from_heartbeat: mpsc::Receiver<Event>,
                                shutdown: CancellationToken) {
@@ -119,7 +119,7 @@ pub async fn run_fsm_heartbeat(tx_actions: mpsc::Sender<Vec<Action>>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido run_fsm_heartbeat");
+                info!("shutdown recibido run_fsm_heartbeat");
                 break;
             }
 
@@ -130,11 +130,11 @@ pub async fn run_fsm_heartbeat(tx_actions: mpsc::Sender<Vec<Action>>,
                     Transition::Valid(valid) => {
                         state = valid.get_change_state();
                         if tx_actions.send(valid.get_actions()).await.is_err() {
-                            error!("Error: no se pudo enviar la acción a heartbeat");
+                            error!("no se pudo enviar la acción a heartbeat");
                         }
                     },
                     Transition::Invalid(invalid) => {
-                        warn!("Warning: FSM Heartbeat transición inválida: {}", invalid.get_invalid());
+                        warn!("fsm Heartbeat transición inválida: {}", invalid.get_invalid());
                     }
                 }
             }

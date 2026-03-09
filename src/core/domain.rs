@@ -222,11 +222,11 @@ impl Core {
     pub async fn run(mut self, shutdown: CancellationToken) {
 
         if self.core_to_data_service.send(DataServiceCommand::GetTotalOfNetworks).await.is_err() {
-            error!("Error: no se pudo enviar comando GetTotalOfNetworks desde Core");
+            error!("no se pudo enviar comando GetTotalOfNetworks desde Core");
         }
 
         if self.core_to_message_service.send(MessageServiceCommand::GenerateHelloWorld).await.is_err() {
-            error!("Error: no se pudo enviar comando GenerateHelloWorld desde Core");
+            error!("no se pudo enviar comando GenerateHelloWorld desde Core");
         }
 
         loop {
@@ -239,48 +239,48 @@ impl Core {
                     match response {
                         DataServiceResponse::Batch(batch) => {
                             if self.core_to_message_service.send(MessageServiceCommand::Batch(batch)).await.is_err() {
-                                error!("Error: no se pudo enviar Batch desde Core");
+                                error!("no se pudo enviar Batch desde Core");
                             }
                         },
                         DataServiceResponse::Epoch(epoch) => {
                             if self.core_to_fsm_service.send(FsmServiceCommand::Epoch(epoch)).await.is_err() {
-                                error!("Error: no se pudo enviar Epoch desde Core");
+                                error!("no se pudo enviar Epoch desde Core");
                             }
                         },
                         DataServiceResponse::ErrorEpoch => {
                             if self.core_to_fsm_service.send(FsmServiceCommand::ErrorEpoch).await.is_err() {
-                                error!("Error: no se pudo enviar ErrorEpoch desde Core");
+                                error!("no se pudo enviar ErrorEpoch desde Core");
                             }
                         },
                         DataServiceResponse::NoNetworks => {
                             if self.core_to_fsm_service.send(FsmServiceCommand::DeleteRuntime).await.is_err() {
-                                error!("Error: no se pudo enviar DeleteRuntime desde Core");
+                                error!("no se pudo enviar DeleteRuntime desde Core");
                             }
                             if self.core_to_firmware_service.send(FirmwareServiceCommand::DeleteRuntime).await.is_err() {
-                                error!("Error: no se pudo enviar DeleteRuntime desde Core");
+                                error!("no se pudo enviar DeleteRuntime desde Core");
                             }
                         },
                         DataServiceResponse::ThereAreNetworks => {
                             if self.core_to_fsm_service.send(FsmServiceCommand::CreateRuntime).await.is_err() {
-                                error!("Error: no se pudo enviar CreateRuntime desde Core");
+                                error!("no se pudo enviar CreateRuntime desde Core");
                             }
                             if self.core_to_firmware_service.send(FirmwareServiceCommand::CreateRuntime).await.is_err() {
-                                error!("Error: no se pudo enviar CreateRuntime desde Core");
+                                error!("no se pudo enviar CreateRuntime desde Core");
                             }
                         },
                         DataServiceResponse::BatchNetwork(networks) => {
                             if self.core_to_network_service.send(NetworkServiceCommand::Batch(Batch::Network(networks))).await.is_err() {
-                                error!("Error: no se pudo enviar BatchNetwork desde Core");
+                                error!("no se pudo enviar BatchNetwork desde Core");
                             }
                         },
                         DataServiceResponse::BatchHub(hubs) => {
                             if self.core_to_network_service.send(NetworkServiceCommand::Batch(Batch::Hub(hubs))).await.is_err() {
-                                error!("Error: no se pudo enviar BatchHub desde Core");
+                                error!("no se pudo enviar BatchHub desde Core");
                             }
                         },
                         DataServiceResponse::NetworksUpdated => {
                             if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksUpdated).await.is_err() {
-                                error!("Error: no se pudo enviar NetworksUpdated desde Core");
+                                error!("no se pudo enviar NetworksUpdated desde Core");
                             }
                         }
                     }
@@ -289,12 +289,12 @@ impl Core {
                     match response {
                         FirmwareServiceResponse::ServerAck(server_msg) => {
                             if self.core_to_message_service.send(MessageServiceCommand::ToServer(server_msg)).await.is_err() {
-                                error!("Error: no se pudo enviar ServerAck desde Core");
+                                error!("no se pudo enviar ServerAck desde Core");
                             }
                         },
                         FirmwareServiceResponse::HubCommand(hub_msg) => {
                             if self.core_to_message_service.send(MessageServiceCommand::ToHub(hub_msg)).await.is_err() {
-                                error!("Error: no se pudo enviar HubCommand desde Core");
+                                error!("no se pudo enviar HubCommand desde Core");
                             }
                         }
                     }
@@ -303,102 +303,102 @@ impl Core {
                     match response {
                         FsmServiceResponse::ToHub(to_hub) => {
                             if self.core_to_message_service.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                error!("Error: no se pudo enviar ToHub desde Core");
+                                error!("no se pudo enviar ToHub desde Core");
                             }
                         },
                         FsmServiceResponse::NewEpoch(new_epoch) => {
                             if self.core_to_data_service.send(DataServiceCommand::NewEpoch(new_epoch)).await.is_err() {
-                                error!("Error: no se pudo enviar NewEpoch desde Core");
+                                error!("no se pudo enviar NewEpoch desde Core");
                             }
                         },
                         FsmServiceResponse::GetEpoch => {
                             if self.core_to_data_service.send(DataServiceCommand::GetEpoch).await.is_err() {
-                                error!("Error: no se pudo enviar GetEpoch desde Core");
+                                error!("no se pudo enviar GetEpoch desde Core");
                             }
                         }
                     }
                 }
                 Some(response) = self.core_from_grpc_service.recv() => {
                     if self.core_to_message_service.send(MessageServiceCommand::Internal(response)).await.is_err() {
-                        error!("Error: no se pudo enviar Internal desde Core");
+                        error!("no se pudo enviar Internal desde Core");
                     }
                 }
                 Some(response) = self.core_from_heartbeat_service.recv() => {
                     if self.core_to_message_service.send(MessageServiceCommand::Internal(response.clone())).await.is_err() {
-                        error!("Error: no se pudo enviar Internal desde Core");
+                        error!("no se pudo enviar Internal desde Core");
                     }
                     if self.core_to_data_service.send(DataServiceCommand::Internal(response)).await.is_err() {
-                        error!("Error: no se pudo enviar Internal desde Core");
+                        error!("no se pudo enviar Internal desde Core");
                     }
                 }
                 Some(response) = self.core_from_message_service.recv() => {
                     match response {
                         MessageServiceResponse::EdgeUpload(upload) => {
                             if self.core_to_grpc_service.send(upload).await.is_err() {
-                                error!("Error: no se pudo enviar EdgeUpload desde Core");
+                                error!("no se pudo enviar EdgeUpload desde Core");
                             }
                         },
                         MessageServiceResponse::FromHub(from_hub) => {
                             match from_hub {
                                 HubMessage::Report(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar Report desde Core");
+                                        error!("no se pudo enviar Report desde Core");
                                     }
                                 },
                                 HubMessage::Monitor(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar Monitor desde Core");
+                                        error!("no se pudo enviar Monitor desde Core");
                                     }
                                 },
                                 HubMessage::AlertAir(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar AlertAir desde Core");
+                                        error!("no se pudo enviar AlertAir desde Core");
                                     }
                                 },
                                 HubMessage::AlertTem(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar AlertTem desde Core");
+                                        error!("no se pudo enviar AlertTem desde Core");
                                     }
                                 },
                                 HubMessage::FromHubSettings(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
-                                        error!("Error: no se pudo enviar FromHubSettings desde Core");
+                                        error!("no se pudo enviar FromHubSettings desde Core");
                                     }
                                     if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar FromHubSettings desde Core");
+                                        error!("no se pudo enviar FromHubSettings desde Core");
                                     }
                                 },
                                 HubMessage::FromHubSettingsAck(_) => {
                                     if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
-                                        error!("Error: no se pudo enviar FromHubSettingsAck desde Core");
+                                        error!("no se pudo enviar FromHubSettingsAck desde Core");
                                     }
                                     if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar FromHubSettingsAck desde Core");
+                                        error!("no se pudo enviar FromHubSettingsAck desde Core");
                                     }
                                 }
                                 HubMessage::FirmwareOk(firmware) => {
                                     if self.core_to_firmware_service.send(FirmwareServiceCommand::HubResponse(firmware)).await.is_err() {
-                                        error!("Error: no se pudo enviar FirmwareOk desde Core");
+                                        error!("no se pudo enviar FirmwareOk desde Core");
                                     }
                                 }
                                 HubMessage::HandshakeFromHub(_) => {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar HandshakeFromHub desde Core");
+                                        error!("no se pudo enviar HandshakeFromHub desde Core");
                                     }
                                 },
                                 HubMessage::EmptyQueue(_) => {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar EmptyQueue desde Core");
+                                        error!("no se pudo enviar EmptyQueue desde Core");
                                     }
                                 },
                                 HubMessage::EmptyQueueSafe(_) => {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar EmptyQueueSafe desde Core");
+                                        error!("no se pudo enviar EmptyQueueSafe desde Core");
                                     }
                                 },
                                 HubMessage::Ping(_) => {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
-                                        error!("Error: no se pudo enviar Ping desde Core");
+                                        error!("no se pudo enviar Ping desde Core");
                                     }
                                 }
                                 _ => {}
@@ -408,32 +408,32 @@ impl Core {
                             match from_server {
                                 ServerMessage::UpdateFirmware(update) => {
                                     if self.core_to_firmware_service.send(FirmwareServiceCommand::Update(update)).await.is_err() {
-                                        error!("Error: no se pudo enviar UpdateFirmware desde Core");
+                                        error!("no se pudo enviar UpdateFirmware desde Core");
                                     }
                                 },
                                 ServerMessage::DeleteHub(_) => {
                                     if self.core_to_network_service.send(NetworkServiceCommand::ServerMessage(from_server)).await.is_err() {
-                                        error!("Error: no se pudo enviar DeleteHub desde Core");
+                                        error!("no se pudo enviar DeleteHub desde Core");
                                     }
                                 },
                                 ServerMessage::FromServerSettings(_) => {
                                     if self.core_to_network_service.send(NetworkServiceCommand::ServerMessage(from_server)).await.is_err() {
-                                        error!("Error: no se pudo enviar FromServerSettings desde Core");
+                                        error!("no se pudo enviar FromServerSettings desde Core");
                                     }
                                 },
                                 ServerMessage::FromServerSettingsAck(ack) => {
                                     if self.core_to_message_service.send(MessageServiceCommand::ToHub(HubMessage::FromHubSettingsAck(ack))).await.is_err() {
-                                        error!("Error: no se pudo enviar FromServerSettingsAck desde Core");
+                                        error!("no se pudo enviar FromServerSettingsAck desde Core");
                                     }
                                 },
                                 ServerMessage::Network(_) => {
                                     if self.core_to_network_service.send(NetworkServiceCommand::ServerMessage(from_server)).await.is_err() {
-                                        error!("Error: no se pudo enviar Network desde Core");
+                                        error!("no se pudo enviar Network desde Core");
                                     }
                                 },
                                 ServerMessage::Heartbeat(_) => {
                                     if self.core_to_heartbeat_service.send(from_server).await.is_err() {
-                                        error!("Error: no se pudo enviar Heartbeat desde Core");
+                                        error!("no se pudo enviar Heartbeat desde Core");
                                     }
                                 },
                                 _ => {}
@@ -441,63 +441,63 @@ impl Core {
                         },
                         MessageServiceResponse::Serialized(serialized) => {
                             if self.core_to_mqtt_service.send(MqttServiceCommand::Serialized(serialized)).await.is_err() {
-                                error!("Error: no se pudo enviar Serialized desde Core");
+                                error!("no se pudo enviar Serialized desde Core");
                             }
                         }
                     }
                 }
                 Some(response) = self.core_from_metrics_service.recv() => {
                     if self.core_to_message_service.send(MessageServiceCommand::ToServer(response)).await.is_err() {
-                        error!("Error: no se pudo enviar ToServer desde Core");
+                        error!("no se pudo enviar ToServer desde Core");
                     }
                 }
                 Some(response) = self.core_from_mqtt_service.recv() => {
                     if self.core_to_message_service.send(MessageServiceCommand::Internal(response)).await.is_err() {
-                        error!("Error: no se pudo enviar Internal desde Core");
+                        error!("no se pudo enviar Internal desde Core");
                     }
                 }
                 Some(response) = self.core_from_network_service.recv() => {
                     match response {
                         NetworkServiceResponse::HubMessage(hub_msg) => {
                             if self.core_to_message_service.send(MessageServiceCommand::ToHub(hub_msg)).await.is_err() {
-                                error!("Error: no se pudo enviar ToHub desde Core");
+                                error!("no se pudo enviar ToHub desde Core");
                             }
                         },
                         NetworkServiceResponse::DataCommand(data_command) => {
                             match data_command {
                                 DataServiceCommand::DeleteNetwork(id) => {
                                     if self.core_to_data_service.send(DataServiceCommand::DeleteNetwork(id)).await.is_err() {
-                                        error!("Error: no se pudo enviar DeleteNetwork desde Core");
+                                        error!("no se pudo enviar DeleteNetwork desde Core");
                                     }
                                 },
                                 DataServiceCommand::DeleteAllHubByNetwork(id) => {
                                     if self.core_to_data_service.send(DataServiceCommand::DeleteAllHubByNetwork(id)).await.is_err() {
-                                        error!("Error: no se pudo enviar DeleteAllHubByNetwork desde Core");
+                                        error!("no se pudo enviar DeleteAllHubByNetwork desde Core");
                                     }
                                 },
                                 DataServiceCommand::UpdateNetwork(network) => {
                                     if self.core_to_data_service.send(DataServiceCommand::UpdateNetwork(network)).await.is_err() {
-                                        error!("Error: no se pudo enviar UpdateNetwork desde Core");
+                                        error!("no se pudo enviar UpdateNetwork desde Core");
                                     }
                                 },
                                 DataServiceCommand::NewNetwork(network) => {
                                     if self.core_to_data_service.send(DataServiceCommand::NewNetwork(network)).await.is_err() {
-                                        error!("Error: no se pudo enviar NewNetwork desde Core");
+                                        error!("no se pudo enviar NewNetwork desde Core");
                                     }
                                 },
                                 DataServiceCommand::NewHub(id) => {
                                     if self.core_to_data_service.send(DataServiceCommand::NewHub(id)).await.is_err() {
-                                        error!("Error: no se pudo enviar NewHub desde Core");
+                                        error!("no se pudo enviar NewHub desde Core");
                                     }
                                 },
                                 DataServiceCommand::DeleteHub(id) => {
                                     if self.core_to_data_service.send(DataServiceCommand::DeleteHub(id)).await.is_err() {
-                                        error!("Error: no se pudo enviar DeleteHub desde Core");
+                                        error!("no se pudo enviar DeleteHub desde Core");
                                     }
                                 },
                                 DataServiceCommand::UpdateHub(id) => {
                                     if self.core_to_data_service.send(DataServiceCommand::UpdateHub(id)).await.is_err() {
-                                        error!("Error: no se pudo enviar UpdateHub desde Core");
+                                        error!("no se pudo enviar UpdateHub desde Core");
                                     }
                                 }
                                 _ => {}
@@ -505,7 +505,7 @@ impl Core {
                         }
                         NetworkServiceResponse::NetworksReady => {
                             if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksReady).await.is_err() {
-                                error!("Error: no se pudo enviar NetworksReady desde Core");
+                                error!("no se pudo enviar NetworksReady desde Core");
                             }
                         },
                     }

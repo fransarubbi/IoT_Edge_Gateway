@@ -21,13 +21,14 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
-use crate::config::fsm::{PERCENTAGE, PHASE_MAX_DURATION, SAFE_MODE_MAX_DURATION};
+use crate::config::fsm::{PERCENTAGE};
 use crate::context::domain::AppContext;
-use crate::fsm::domain::{Action, Event, FsmServiceCommand, FsmServiceResponse, FsmState, 
-                         StateOfSession, SubStateBalanceMode, SubStatePhase, SubStateQuorum, 
+use crate::fsm::domain::{Action, Event, FsmServiceCommand, FsmServiceResponse, FsmState,
+                         StateOfSession, SubStateBalanceMode, SubStatePhase, SubStateQuorum,
                          Transition, UpdateSession};
-use crate::message::domain::{HandshakeToHub, Heartbeat, HubMessage, MessageStateBalanceMode, 
+use crate::message::domain::{HandshakeToHub, Heartbeat, HubMessage, MessageStateBalanceMode,
                              MessageStateNormal, MessageStateSafeMode, Metadata, PhaseNotification, Ping};
+use crate::quorum::domain::ProtocolSettings;
 
 
 /// Tarea principal asíncrona que gestiona la orquestación de mensajes y eventos de la FSM.
@@ -45,24 +46,24 @@ use crate::message::domain::{HandshakeToHub, Heartbeat, HubMessage, MessageState
 /// 2.  **Quorum:** Evalúa mensajes `EmptyQueue` para determinar si el sistema puede transicionar de estado.
 /// 3.  **Ping/Pong:** Responde automáticamente a solicitudes de diagnóstico de red.
 /// 4.  **Ejecución de Acciones:** Delega las acciones recibidas a `handle_action`.
-#[instrument(name = "fsm", skip(rx_command, rx_from_fsm, app_context))]
+#[instrument(name = "fsm", skip_all)]
 pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
-                                  tx_to_fsm: mpsc::Sender<Event>,
-                                  tx_to_timer: mpsc::Sender<Event>,
-                                  tx_to_heartbeat: mpsc::Sender<Action>,
-                                  mut rx_command: mpsc::Receiver<FsmServiceCommand>,
-                                  mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
-                                  app_context: AppContext,
-                                  cancel: CancellationToken) {
+                 tx_to_fsm: mpsc::Sender<Event>,
+                 tx_to_timer: mpsc::Sender<Event>,
+                 tx_to_heartbeat: mpsc::Sender<Action>,
+                 mut rx_command: mpsc::Receiver<FsmServiceCommand>,
+                 mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
+                 app_context: AppContext,
+                 cancel: CancellationToken) {
 
-    info!("Info: iniciando tarea fsm");
+    info!("iniciando tarea fsm");
     let mut current_epoch: u32 = 0;
     let mut session: UpdateSession = UpdateSession::new();
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido fsm");
+                info!("shutdown recibido fsm");
                 break;
             }
 
@@ -71,7 +72,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                     FsmServiceCommand::FromHub(hub_msg) => {
                         match hub_msg {
                             HubMessage::HandshakeFromHub(handshake) => {
-                                debug!("Debug: mensaje entrante de HandshakeFromHub");
+                                debug!("mensaje entrante de HandshakeFromHub");
                                 match session.get_state() {
                                     StateOfSession::InHandshake | StateOfSession::OutHandshake | StateOfSession::RepeatHandshake => {
                                         if handshake.balance_epoch == current_epoch {
@@ -82,7 +83,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                 }
                             },
                             HubMessage::EmptyQueue(msg) => {
-                                debug!("Debug: mensaje entrante de EmptyQueue");
+                                debug!("mensaje entrante de EmptyQueue");
                                 match session.get_state() {
                                     StateOfSession::PhaseAlert | StateOfSession::PhaseData | StateOfSession::PhaseMonitor => {
                                         quorum_phase(&mut session,
@@ -95,7 +96,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                 }
                             },
                             HubMessage::EmptyQueueSafe(msg) => {
-                                debug!("Debug: mensaje entrante de EmptyQueueSafe");
+                                debug!("mensaje entrante de EmptyQueueSafe");
                                 match session.get_state() {
                                     StateOfSession::SafeMode => {
                                         quorum_safe_mode(&mut session,
@@ -108,7 +109,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                 }
                             },
                             HubMessage::Ping(msg) => {
-                                debug!("Debug: mensaje entrante de Ping");
+                                debug!("mensaje entrante de Ping");
                                 if msg.ping {
                                     let metadata = build_metadata(&app_context, &msg.metadata.sender_user_id.clone());
                                     let ping_ack = Ping {
@@ -117,7 +118,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                         ping: true,
                                     };
                                     if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::Ping(ping_ack))).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje Ping ack al hub");
+                                        error!("no se pudo enviar mensaje Ping ack al hub");
                                     }
                                 }
                             },
@@ -126,16 +127,16 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                     },
                     FsmServiceCommand::ErrorEpoch => {
                         if tx_to_fsm.send(Event::BalanceEpochNotOk).await.is_err() {
-                            error!("Error: no se pudo enviar comando BalanceEpochNotOk");
+                            error!("no se pudo enviar comando BalanceEpochNotOk");
                         }
                     },
                     FsmServiceCommand::Epoch(epoch) => {
                         current_epoch = epoch + 1;
                         if tx_to_fsm.send(Event::BalanceEpochOk).await.is_err() {
-                            error!("Error: no se pudo enviar comando BalanceEpochOk");
+                            error!("no se pudo enviar comando BalanceEpochOk");
                         }
                         if tx_to_core.send(FsmServiceResponse::NewEpoch(current_epoch)).await.is_err() {
-                            error!("Error: no se pudo enviar comando NewEpoch");
+                            error!("no se pudo enviar comando NewEpoch");
                         }
                     }
                     _ => {}
@@ -143,7 +144,7 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
             }
 
             Some(vec_action) = rx_from_fsm.recv() => {
-                debug!("Debug: vector de acciones entrante");
+                debug!("vector de acciones entrante");
                 for action in vec_action {
                     handle_action(
                         action,
@@ -182,14 +183,14 @@ async fn handle_action(action: Action,
                        current_epoch: &mut u32,
                        session: &mut UpdateSession) {
 
-    debug!("Debug: entrando a handle_action");
-    
+    debug!("entrando a handle_action");
+
     match action {
         Action::OnEntryBalance(sub_bm) => {
-            debug!("Debug: acción recibida Action::OnEntryBalance");
+            debug!("acción recibida Action::OnEntryBalance");
             match sub_bm {
                 SubStateBalanceMode::InitBalanceMode => {
-                    on_entry_init_balance_mode(tx_to_core).await;
+                    on_entry_init_balance_mode(tx_to_core, app_context.clone(), current_epoch).await;
                 },
                 SubStateBalanceMode::InHandshake => {
                     session.set_state(StateOfSession::InHandshake);
@@ -203,7 +204,7 @@ async fn handle_action(action: Action,
             }
         },
         Action::OnEntryQuorum(sub_q) => {
-            debug!("Debug: acción recibida Action::OnEntryQuorum");
+            debug!("acción recibida Action::OnEntryQuorum");
             match sub_q {
                 SubStateQuorum::CheckQuorumIn | SubStateQuorum::CheckQuorumOut => {
                     session.set_state(StateOfSession::Quorum);
@@ -217,51 +218,51 @@ async fn handle_action(action: Action,
             }
         },
         Action::OnEntryPhase(sub_p) => {
-            debug!("Debug: acción recibida Action::OnEntryPhase");
+            debug!("acción recibida Action::OnEntryPhase");
             session.reset_total_attempts();
             session.reset_handshake_hash();
             session.reset_empty_hash();
             match sub_p {
                 SubStatePhase::Alert => {
                     session.set_state(StateOfSession::PhaseAlert);
-                    on_entry_alert(tx_to_core, tx_to_timer, tx_to_heartbeat, current_epoch, app_context).await;
+                    on_entry_alert(tx_to_core, tx_to_timer, tx_to_heartbeat, current_epoch, app_context, &app_context.quorum).await;
                 },
                 SubStatePhase::Data => {
                     session.set_state(StateOfSession::PhaseData);
-                    on_entry_data(tx_to_core, tx_to_timer, current_epoch, app_context).await;
+                    on_entry_data(tx_to_core, tx_to_timer, current_epoch, app_context, &app_context.quorum).await;
                 },
                 SubStatePhase::Monitor => {
                     session.set_state(StateOfSession::PhaseMonitor);
-                    on_entry_monitor(tx_to_core, tx_to_timer, current_epoch, app_context).await;
+                    on_entry_monitor(tx_to_core, tx_to_timer, current_epoch, app_context, &app_context.quorum).await;
                 },
             }
         },
         Action::OnEntryNormal => {
-            debug!("Debug: acción recibida Action::OnEntryNormal");
+            debug!("acción recibida Action::OnEntryNormal");
             on_entry_normal(tx_to_core, tx_to_heartbeat, app_context).await;
         },
         Action::OnEntrySafeMode => {
-            debug!("Debug: acción recibida Action::OnEntrySafeMode");
+            debug!("acción recibida Action::OnEntrySafeMode");
             session.reset_empty_hash();
             session.set_state(StateOfSession::SafeMode);
-            on_entry_safe_mode(tx_to_core, tx_to_timer, tx_to_heartbeat, current_epoch, app_context).await;
+            on_entry_safe_mode(tx_to_core, tx_to_timer, tx_to_heartbeat, app_context, &app_context.quorum).await;
         }
         Action::StopTimer => {
-            debug!("Debug: acción recibida Action::StopTimer");
+            debug!("acción recibida Action::StopTimer");
             if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                error!("Error: no se pudo enviar evento de finalización de watchdog de fsm general");
+                error!("no se pudo enviar evento de finalización de watchdog de fsm general");
             }
         }
         Action::StopSendHeartbeatMessagePhase => {
-            debug!("Debug: acción recibida Action::StopSendHeartbeatMessagePhase");
+            debug!("acción recibida Action::StopSendHeartbeatMessagePhase");
             if tx_to_heartbeat.send(Action::StopSendHeartbeatMessagePhase).await.is_err() {
-                error!("Error: no se pudo enviar acción StopSendHeartbeatMessagePhase");
+                error!("no se pudo enviar acción StopSendHeartbeatMessagePhase");
             }
         },
         Action::StopSendHeartbeatMessageSafeMode => {
-            debug!("Debug: acción recibida Action::StopSendHeartbeatMessageSafeMode");
+            debug!("acción recibida Action::StopSendHeartbeatMessageSafeMode");
             if tx_to_heartbeat.send(Action::StopSendHeartbeatMessageSafeMode).await.is_err() {
-                error!("Error: no se pudo enviar acción StopSendHeartbeatMessageSafeMode");
+                error!("no se pudo enviar acción StopSendHeartbeatMessageSafeMode");
             }
         },
         _ => {}
@@ -271,17 +272,22 @@ async fn handle_action(action: Action,
 
 async fn init_timer(tx_to_timer: &mpsc::Sender<Event>, duration: Duration) {
     if tx_to_timer.send(Event::InitTimer(duration)).await.is_err() {
-        error!("Error: no se pudo enviar evento de inicialización del watchdog de fsm general");
+        error!("no se pudo enviar evento de inicialización del watchdog de fsm general");
     }
 }
 
 
-async fn on_entry_init_balance_mode(tx_to_core: &mpsc::Sender<FsmServiceResponse>) {
-    debug!("Debug: entrando a on_entry_init_balance_mode");
+async fn on_entry_init_balance_mode(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
+                                    app_context: AppContext,
+                                    current_epoch: &u32) {
+
+    debug!("entrando a on_entry_init_balance_mode");
+    let metadata = build_metadata(&app_context, "all");
+    send_balance_state(tx_to_core, metadata.clone(), *current_epoch).await;
     let mut flag = true;
     loop {
         if tx_to_core.send(FsmServiceResponse::GetEpoch).await.is_err() {
-            error!("Error: no se pudo enviar comando GetEpoch");
+            error!("no se pudo enviar comando GetEpoch");
             flag = false;
         }
         if flag {
@@ -300,11 +306,10 @@ async fn on_entry_in_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                                app_context: AppContext,
                                state: SubStateBalanceMode) {
 
-    debug!("Debug: entrando a on_entry_in_handshake");
+    debug!("entrando a on_entry_in_handshake");
     let metadata = build_metadata(&app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch, "in_handshake").await;
     send_handshake(tx_to_core, metadata, *current_epoch, state).await;
-    init_timer(tx_to_timer, Duration::from_secs(180)).await;
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_handshake())).await;
 }
 
 
@@ -314,11 +319,10 @@ async fn on_entry_out_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                                 app_context: AppContext,
                                 state: SubStateBalanceMode) {
 
-    debug!("Debug: entrando a on_entry_out_handshake");
+    debug!("entrando a on_entry_out_handshake");
     let metadata = build_metadata(&app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch, "out_handshake").await;
     send_handshake(tx_to_core, metadata.clone(), *current_epoch, state).await;
-    init_timer(tx_to_timer, Duration::from_secs(180)).await;
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_handshake())).await;
 }
 
 
@@ -334,13 +338,13 @@ async fn quorum_algorithm(session: &mut UpdateSession,
                           tx_to_fsm: &mpsc::Sender<Event>,
                           app_context: &AppContext) {
 
-    debug!("Debug: iniciando quorum algorithm");
+    debug!("iniciando quorum algorithm");
     let max_attempts = app_context.quorum.get_max_attempts();
 
     if session.get_total_attempts() > max_attempts as f64 {
-        debug!("Debug: no mas intentos de quorum");
+        debug!("no mas intentos de quorum");
         if tx_to_fsm.send(Event::NotApproveNotAttempts).await.is_err() {
-            error!("Error: no se pudo enviar evento NotApproveNotAttempts a la fsm general");
+            error!("no se pudo enviar evento NotApproveNotAttempts a la fsm general");
         }
     } else {
         let manager = app_context.net_man.read().await;
@@ -348,16 +352,16 @@ async fn quorum_algorithm(session: &mut UpdateSession,
         drop(manager);
         let threshold = PERCENTAGE - (session.get_total_attempts() * 5.0 - 5.0);
 
-        if ((session.get_total_handshake() as f64 / total_hubs as f64) >= threshold) && threshold > 10.0 {
-            debug!("Debug: quorum aprobado");
+        if (((session.get_total_handshake() as f64 / total_hubs as f64) * 100.0) >= threshold) && threshold > 10.0 {
+            debug!("quorum aprobado");
             if tx_to_fsm.send(Event::ApproveQuorum).await.is_err() {
-                error!("Error: no se pudo enviar evento ApproveQuorum a la fsm general");
+                error!("no se pudo enviar evento ApproveQuorum a la fsm general");
             }
         } else {
-            debug!("Debug: quorum desaprobado");
+            debug!("quorum desaprobado");
             session.reset_handshake_hash();
             if tx_to_fsm.send(Event::NotApproveQuorum).await.is_err() {
-                error!("Error: no se pudo enviar evento NotApproveQuorum a la fsm general");
+                error!("no se pudo enviar evento NotApproveQuorum a la fsm general");
             }
         }
     }
@@ -374,24 +378,23 @@ async fn quorum_phase(session: &mut UpdateSession,
                       msg: HubMessage,
                       tx_to_timer: &mpsc::Sender<Event>) {
 
-    debug!("Debug: iniciando quorum phase");
+    debug!("iniciando quorum phase");
     match msg {
         HubMessage::EmptyQueue(empty) => {
             if empty.queue_empty {
-                debug!("Debug: mensaje de cola vacía recibido");
+                debug!("mensaje de cola vacía recibido");
                 session.insert_empty(empty.metadata.sender_user_id, empty.queue_empty);
-                let total_empty_msg = session.get_total_empty();
                 let manager = app_context.net_man.read().await;
                 let total_hubs = manager.get_total_hubs();
-                let percentage = (total_empty_msg/total_hubs) as f64 * 100.0;
+                let percentage = (session.get_total_empty() as f64 / total_hubs as f64) * 100.0;
                 drop(manager);
                 if percentage >= 80.0 {
-                    debug!("Debug: aprobado el QuorumPhase");
+                    debug!("aprobado el QuorumPhase");
                     if tx_to_fsm.send(Event::QuorumPhase).await.is_err() {
-                        error!("Error: no se pudo enviar evento QuorumPhase a la fsm general");
+                        error!("no se pudo enviar evento QuorumPhase a la fsm general");
                     }
                     if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                        error!("Error: no se pudo enviar evento de finalización de watchdog de QuorumPhase");
+                        error!("no se pudo enviar evento de finalización de watchdog de QuorumPhase");
                     }
                 }
             }
@@ -406,29 +409,28 @@ async fn quorum_phase(session: &mut UpdateSession,
 /// Verifica si un porcentaje (>= 70%) de los hubs han reportado que sus colas están vacías.
 /// Si se cumple, dispara el evento `QuorumSafeMode` y detiene el watchdog.
 async fn quorum_safe_mode(session: &mut UpdateSession,
-                         tx_to_fsm: &mpsc::Sender<Event>,
-                         app_context: &AppContext,
-                         msg: HubMessage,
-                         tx_to_timer: &mpsc::Sender<Event>) {
+                          tx_to_fsm: &mpsc::Sender<Event>,
+                          app_context: &AppContext,
+                          msg: HubMessage,
+                          tx_to_timer: &mpsc::Sender<Event>) {
 
-    debug!("Debug: iniciando quorum_safe_mode");
+    debug!("iniciando quorum_safe_mode");
     match msg {
         HubMessage::EmptyQueueSafe(empty) => {
             if empty.queue_empty {
-                debug!("Debug: mensaje de cola vacía SafeMode recibido");
+                debug!("mensaje de cola vacía SafeMode recibido");
                 session.insert_empty(empty.metadata.sender_user_id, empty.queue_empty);
-                let total_empty_msg = session.get_total_empty();
                 let manager = app_context.net_man.read().await;
                 let total_hubs = manager.get_total_hubs();
-                let percentage = (total_empty_msg/total_hubs) as f64 * 100.0;
+                let percentage = (session.get_total_empty() as f64 / total_hubs as f64) * 100.0;
                 drop(manager);
                 if percentage >= 70.0 {
-                    debug!("Debug: quorum de SafeMode aprobado");
+                    debug!("quorum de SafeMode aprobado");
                     if tx_to_fsm.send(Event::QuorumSafeMode).await.is_err() {
-                        error!("Error: no se pudo enviar evento QuorumSafeMode a la fsm general");
+                        error!("no se pudo enviar evento QuorumSafeMode a la fsm general");
                     }
                     if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                        error!("Error: no se pudo enviar evento de finalización de watchdog de QuorumSafeMode");
+                        error!("no se pudo enviar evento de finalización de watchdog de QuorumSafeMode");
                     }
                 }
             }
@@ -444,10 +446,10 @@ async fn on_entry_repeat_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>
                                    app_context: &AppContext,
                                    state: SubStateQuorum) {
 
-    debug!("Debug: iniciando on_entry_repeat_handshake");
+    debug!("iniciando on_entry_repeat_handshake");
     match state {
         SubStateQuorum::RepeatHandshakeIn => {
-            debug!("Debug: preparando mensaje Handshake en estado RepeatHandshakeIn");
+            debug!("preparando mensaje Handshake en estado RepeatHandshakeIn");
             let metadata = build_metadata(app_context, "all");
             let handshake = HandshakeToHub {
                 metadata,
@@ -455,11 +457,11 @@ async fn on_entry_repeat_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>
                 balance_epoch: *current_epoch,
             };
             if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(handshake))).await.is_err() {
-                error!("Error: no se pudo enviar mensaje HandshakeToHub");
+                error!("no se pudo enviar mensaje HandshakeToHub");
             }
         },
         SubStateQuorum::RepeatHandshakeOut => {
-            debug!("Debug: preparando mensaje Handshake en estado RepeatHandshakeOut");
+            debug!("preparando mensaje Handshake en estado RepeatHandshakeOut");
             let metadata = build_metadata(app_context, "all");
             let handshake = HandshakeToHub {
                 metadata,
@@ -467,13 +469,13 @@ async fn on_entry_repeat_handshake(tx_to_core: &mpsc::Sender<FsmServiceResponse>
                 balance_epoch: *current_epoch,
             };
             if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(handshake))).await.is_err() {
-                error!("Error: no se pudo enviar mensaje HandshakeToHub");
+                error!("no se pudo enviar mensaje HandshakeToHub");
             }
         }
         _ => {}
     }
 
-    init_timer(tx_to_timer, Duration::from_secs(180)).await;
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_handshake())).await;
 }
 
 
@@ -481,16 +483,16 @@ async fn on_entry_alert(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                         tx_to_timer: &mpsc::Sender<Event>,
                         tx_to_heartbeat: &mpsc::Sender<Action>,
                         current_epoch: &u32,
-                        app_context: &AppContext) {
+                        app_context: &AppContext,
+                        protocol_settings: &ProtocolSettings) {
 
-    debug!("Debug: entrando a on_entry_alert");
-    init_timer(tx_to_timer, Duration::from_secs(PHASE_MAX_DURATION)).await;
+    debug!("entrando a on_entry_alert");
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_phase())).await;
     let metadata = build_metadata(app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch, "phase").await;
-    send_phase_notification(tx_to_core, metadata, *current_epoch).await;
+    send_phase_notification(tx_to_core, metadata, *current_epoch, "alert".to_string(), protocol_settings).await;
 
     if tx_to_heartbeat.send(Action::SendHeartbeatMessagePhase).await.is_err() {
-        error!("Error: no se pudo enviar acción SendHeartbeatMessagePhase");
+        error!("no se pudo enviar acción SendHeartbeatMessagePhase");
     }
 }
 
@@ -498,26 +500,26 @@ async fn on_entry_alert(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
 async fn on_entry_data(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                        tx_to_timer: &mpsc::Sender<Event>,
                        current_epoch: &u32,
-                       app_context: &AppContext) {
+                       app_context: &AppContext,
+                       protocol_settings: &ProtocolSettings) {
 
-    debug!("Debug: entrando a on_entry_data");
-    init_timer(tx_to_timer, Duration::from_secs(PHASE_MAX_DURATION)).await;
+    debug!("entrando a on_entry_data");
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_phase())).await;
     let metadata = build_metadata(app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch, "phase").await;
-    send_phase_notification(tx_to_core, metadata, *current_epoch).await;
+    send_phase_notification(tx_to_core, metadata, *current_epoch, "data".to_string(), protocol_settings).await;
 }
 
 
 async fn on_entry_monitor(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                           tx_to_timer: &mpsc::Sender<Event>,
                           current_epoch: &u32,
-                          app_context: &AppContext) {
+                          app_context: &AppContext,
+                          protocol_settings: &ProtocolSettings) {
 
-    debug!("Debug: entrando a on_entry_monitor");
-    init_timer(tx_to_timer, Duration::from_secs(PHASE_MAX_DURATION)).await;
+    debug!("entrando a on_entry_monitor");
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_phase())).await;
     let metadata = build_metadata(app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch, "phase").await;
-    send_phase_notification(tx_to_core, metadata, *current_epoch).await;
+    send_phase_notification(tx_to_core, metadata, *current_epoch, "monitor".to_string(), protocol_settings).await;
 }
 
 
@@ -525,7 +527,7 @@ async fn on_entry_normal(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                          tx_to_heartbeat: &mpsc::Sender<Action>,
                          app_context: &AppContext) {
 
-    debug!("Debug: entrando a on_entry_normal");
+    debug!("entrando a on_entry_normal");
     let metadata = build_metadata(app_context, "all");
     let state = MessageStateNormal {
         metadata,
@@ -533,11 +535,11 @@ async fn on_entry_normal(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
     };
 
     if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::StateNormal(state))).await.is_err() {
-        error!("Error: no se pudo enviar el mensaje de Normal a los hubs");
+        error!("no se pudo enviar el mensaje de Normal a los hubs");
     }
 
     if tx_to_heartbeat.send(Action::SendHeartbeatMessageNormal).await.is_err() {
-        error!("Error: no se pudo enviar acción SendHeartbeatMessageNormal");
+        error!("no se pudo enviar acción SendHeartbeatMessageNormal");
     }
 }
 
@@ -545,29 +547,27 @@ async fn on_entry_normal(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
 async fn on_entry_safe_mode(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                             tx_to_timer: &mpsc::Sender<Event>,
                             tx_to_heartbeat: &mpsc::Sender<Action>,
-                            current_epoch: &u32,
-                            app_context: &AppContext) {
+                            app_context: &AppContext,
+                            protocol_settings: &ProtocolSettings) {
 
-    debug!("Debug: entrando a on_entry_safe_mode");
-    init_timer(tx_to_timer, Duration::from_secs(SAFE_MODE_MAX_DURATION)).await;  
+    debug!("entrando a on_entry_safe_mode");
+    init_timer(tx_to_timer, Duration::from_secs(app_context.quorum.get_timeout_safe_mode())).await;
 
     let metadata = build_metadata(app_context, "all");
-    let jitter = fastrand::u32(0..=5);
+    let jitter = fastrand::u32(0..=60);
     let state = MessageStateSafeMode {
         metadata: metadata.clone(),
         state: "safe_mode".to_string(),
-        frequency: 4,
+        frequency: protocol_settings.get_frequency_safe_mode(),
         jitter,
     };
 
     if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::StateSafeMode(state))).await.is_err() {
-        error!("Error: no se pudo enviar mensaje de SafeMode a los hubs");
+        error!("no se pudo enviar mensaje de SafeMode a los hubs");
     }
 
-    send_phase_notification(tx_to_core, metadata, *current_epoch).await;
-
     if tx_to_heartbeat.send(Action::SendHeartbeatMessageSafeMode).await.is_err() {
-        error!("Error: no se pudo enviar acción SendHeartbeatMessageSafeMode");
+        error!("no se pudo enviar acción SendHeartbeatMessageSafeMode");
     }
 }
 
@@ -578,12 +578,12 @@ async fn on_entry_safe_mode(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
 ///
 /// * `tx_actions`: Canal para emitir los efectos secundarios que deben ejecutarse.
 /// * `rx_event`: Canal de entrada de eventos (triggers).
-#[instrument(name = "run_fsm", skip(rx_event))]
+#[instrument(name = "run_fsm", skip_all)]
 pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
                      mut rx_event: mpsc::Receiver<Event>,
                      cancel: CancellationToken) {
 
-    info!("Info: iniciando tarea fsm");
+    info!("iniciando tarea fsm");
     let mut state = FsmState::new();
 
     handle_transition(state.step(Event::Start), &mut state, &tx_actions).await;
@@ -591,11 +591,11 @@ pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido run_fsm");
+                info!("shutdown recibido run_fsm");
                 break;
             }
             Some(event) = rx_event.recv() => {
-                debug!("Debug: evento recibido en run_fsm");
+                debug!("evento recibido en run_fsm");
                 handle_transition(state.step(event), &mut state, &tx_actions).await;
             }
         }
@@ -607,12 +607,12 @@ pub async fn run_fsm(tx_actions: mpsc::Sender<Vec<Action>>,
 ///
 /// Si este timer expira sin ser reseteado o detenido, envía un evento `Timeout`
 /// que fuerza el envío de un nuevo latido.
-#[instrument(name = "heartbeat_to_send_watchdog_timer", skip(cmd_rx))]
+#[instrument(name = "heartbeat_to_send_watchdog_timer", skip_all)]
 pub async fn heartbeat_generator_timer(tx_to_heartbeat: mpsc::Sender<Event>,
                                        mut cmd_rx: mpsc::Receiver<Event>,
                                        cancel: CancellationToken) {
 
-    info!("Info: iniciando heartbeat_generator_timer");
+    info!("iniciando heartbeat_generator_timer");
     loop {
         let duration = match cmd_rx.recv().await {
             Some(Event::InitTimer(d)) => d,
@@ -623,16 +623,16 @@ pub async fn heartbeat_generator_timer(tx_to_heartbeat: mpsc::Sender<Event>,
 
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido heartbeat_generator_timer");
+                info!("shutdown recibido heartbeat_generator_timer");
                 break;
             }
             _ = sleep(duration) => {
                 if tx_to_heartbeat.send(Event::Timeout).await.is_err() {
-                    error!("Error: no se pudo enviar evento Timeout");
+                    error!("no se pudo enviar evento Timeout");
                 }
             }
             Some(Event::StopTimer) = cmd_rx.recv() => {
-                debug!("Debug: watchdog timer de heartbeat_generator_timer, cancelado");
+                debug!("watchdog timer de heartbeat_generator_timer, cancelado");
             }
         }
     }
@@ -643,7 +643,7 @@ pub async fn heartbeat_generator_timer(tx_to_heartbeat: mpsc::Sender<Event>,
 ///
 /// Gestiona la cadencia y el tipo de mensaje de latido (Heartbeat) enviado a los hubs
 /// dependiendo del estado actual (Phase, Normal, SafeMode).
-#[instrument(name = "heartbeat_generator", skip(rx_from_fsm, cmd_rx, app_context))]
+#[instrument(name = "heartbeat_generator", skip_all)]
 pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                  tx_to_timer: mpsc::Sender<Event>,
                                  mut rx_from_fsm: mpsc::Receiver<Action>,
@@ -651,7 +651,7 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                  app_context: AppContext,
                                  cancel: CancellationToken) {
 
-    info!("Info: iniciando heartbeat_generator");
+    info!("iniciando heartbeat_generator");
     enum HeartbeatState {
         BalanceMode,
         Normal,
@@ -664,39 +664,39 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido heartbeat_generator");
+                info!("shutdown recibido heartbeat_generator");
                 break;
             }
             Some(action) = rx_from_fsm.recv() => {
                 match action {
                     Action::SendHeartbeatMessagePhase => {
-                        debug!("Debug: acción recibida en heartbeat_generator. Action::SendHeartbeatMessagePhase");
+                        debug!("acción recibida en heartbeat_generator. Action::SendHeartbeatMessagePhase");
                         beat = HeartbeatState::BalanceMode;
                         let duration = app_context.quorum.get_time_between_heartbeats_balance_mode();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
-                            error!("Error: no se pudo enviar evento InitTimer");
+                            error!("no se pudo enviar evento InitTimer");
                         }
                     },
                     Action::SendHeartbeatMessageNormal => {
-                        debug!("Debug: acción recibida en heartbeat_generator. Action::SendHeartbeatMessageNormal");
+                        debug!("acción recibida en heartbeat_generator. Action::SendHeartbeatMessageNormal");
                         beat = HeartbeatState::Normal;
                         let duration = app_context.quorum.get_time_between_heartbeats_normal();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
-                            error!("Error: no se pudo enviar evento InitTimer");
+                            error!("no se pudo enviar evento InitTimer");
                         }
                     },
                     Action::SendHeartbeatMessageSafeMode => {
-                        debug!("Debug: acción recibida en heartbeat_generator. Action::SendHeartbeatMessageSafeMode");
+                        debug!("acción recibida en heartbeat_generator. Action::SendHeartbeatMessageSafeMode");
                         beat = HeartbeatState::SafeMode;
                         let duration = app_context.quorum.get_time_between_heartbeats_safe_mode();
                         if tx_to_timer.send(Event::InitTimer(Duration::from_secs(duration))).await.is_err() {
-                            error!("Error: no se pudo enviar evento InitTimer");
+                            error!("no se pudo enviar evento InitTimer");
                         }
                     },
                     Action::StopSendHeartbeatMessagePhase | Action::StopSendHeartbeatMessageSafeMode => {
-                        debug!("Debug: acción recibida en heartbeat_generator. Action::StopHeartbeat");
+                        debug!("acción recibida en heartbeat_generator. Action::StopHeartbeat");
                         if tx_to_timer.send(Event::StopTimer).await.is_err() {
-                            error!("Error: no se pudo enviar evento StopTimer");
+                            error!("no se pudo enviar evento StopTimer");
                         }
                     }
                     _ => {}
@@ -712,7 +712,7 @@ pub async fn heartbeat_generator(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                     HeartbeatState::None => continue,
                 };
                 if tx_to_timer.send(Event::InitTimer(duration)).await.is_err() {
-                    error!("Error: no se pudo enviar evento de InitTimer");
+                    error!("no se pudo enviar evento de InitTimer");
                 }
             }
         }
@@ -734,19 +734,17 @@ fn build_metadata(app_context: &AppContext, destination: &str) -> Metadata {
 
 async fn send_balance_state(tx_to_core: &mpsc::Sender<FsmServiceResponse>,
                             metadata: Metadata,
-                            epoch: u32,
-                            sub_state: &str) {
+                            epoch: u32) {
 
     let state = MessageStateBalanceMode {
         metadata,
         state: "balance_mode".to_string(),
         balance_epoch: epoch,
-        sub_state: sub_state.to_string(),
-        duration: 5,
+        duration: 60,
     };
 
     if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::StateBalanceMode(state))).await.is_err() {
-        error!("Error: no se pudo enviar mensaje StateBalanceMode");
+        error!("no se pudo enviar mensaje StateBalanceMode");
     }
 }
 
@@ -764,7 +762,7 @@ async fn send_handshake(tx: &mpsc::Sender<FsmServiceResponse>,
                 balance_epoch: epoch,
             };
             if tx.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(msg))).await.is_err() {
-                error!("Error: no se pudo enviar mensaje HandshakeToHub");
+                error!("no se pudo enviar mensaje HandshakeToHub");
             }
         },
         SubStateBalanceMode::OutHandshake => {
@@ -774,7 +772,7 @@ async fn send_handshake(tx: &mpsc::Sender<FsmServiceResponse>,
                 balance_epoch: epoch,
             };
             if tx.send(FsmServiceResponse::ToHub(HubMessage::HandshakeToHub(msg))).await.is_err() {
-                error!("Error: no se pudo enviar mensaje HandshakeToHub");
+                error!("no se pudo enviar mensaje HandshakeToHub");
             }
         }
         _ => {}
@@ -785,19 +783,22 @@ async fn send_handshake(tx: &mpsc::Sender<FsmServiceResponse>,
 
 async fn send_phase_notification(tx_to_hub: &mpsc::Sender<FsmServiceResponse>,
                                  metadata: Metadata,
-                                 epoch: u32) {
+                                 epoch: u32,
+                                 phase: String,
+                                 protocol_settings: &ProtocolSettings) {
 
+    let jitter = fastrand::u32(0..=60);
     let phase = PhaseNotification {
         metadata,
-        state: "a".to_string(),
+        state: "balance_mode".to_string(),
         epoch,
-        phase: "a".to_string(),
-        frequency: 1,
-        jitter: 2,
+        phase,
+        frequency: protocol_settings.get_frequency_phase(),
+        jitter,
     };
 
     if tx_to_hub.send(FsmServiceResponse::ToHub(HubMessage::PhaseNotification(phase))).await.is_err() {
-        error!("Error: no se pudo enviar PhaseNotification");
+        error!("no se pudo enviar PhaseNotification");
     }
 }
 
@@ -810,7 +811,7 @@ async fn send_heartbeat(tx_to_core: &mpsc::Sender<FsmServiceResponse>, app_conte
     };
 
     if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat))).await.is_err() {
-        error!("Error: no se pudo enviar Heartbeat");
+        error!("no se pudo enviar Heartbeat");
     }
 }
 

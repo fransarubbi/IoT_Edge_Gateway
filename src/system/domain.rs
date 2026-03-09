@@ -11,10 +11,14 @@ use std::io;
 use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{fmt, reload, EnvFilter, Registry};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use crate::grpc::ToEdge;
 use crate::mqtt::domain::PayloadTopic;
 
+
+pub type TracingReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 /// Representación inmutable de la identidad y configuración base del dispositivo Edge.
 ///
@@ -35,6 +39,8 @@ pub struct System {
     /// Ruta relativa al archivo de base de datos SQLite (ej. `./data/edge.db`).
     pub db_path: String,
     pub buffer_size: usize,
+    /// Nivel de detalle de los logs (ej. `info`, `debug`, `warn`).
+    pub rust_log: String,
 }
 
 
@@ -76,16 +82,6 @@ pub enum ErrorType {
 
     #[error("Error de endpoint grpc")]
     Endpoint,
-}
-
-
-/// Banderas de configuración o estado del sistema (Diagnóstico).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Flag {
-    MosquittoConf,
-    MtlsConf,
-    MosquittoServiceInactive,
-    Null,
 }
 
 
@@ -131,7 +127,6 @@ pub struct Certs {
 /// Estados del proceso de arranque (Bootstrapping) del sistema.
 pub enum StateInit {
     CheckSystem,
-    ConfigSystem,
     InitSystem,
 }
 
@@ -144,13 +139,24 @@ pub enum StateInit {
 /// - **Nivel por defecto:** `INFO` (se puede sobreescribir con variable de entorno `RUST_LOG`).
 /// - **Target:** Desactivado (no muestra la ruta del módulo para limpiar la salida).
 /// - **Nivel:** Activado (muestra si es INFO, WARN, ERROR).
-pub fn init_tracing() {
-    let filter = EnvFilter::from_default_env()
-        .add_directive("info".parse().unwrap());
 
-    fmt()
-        .with_env_filter(filter)
+pub fn init_tracing() -> TracingReloadHandle {
+
+    let initial_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let (filter_layer, reload_handle) = reload::Layer::new(initial_filter);
+
+    let fmt_layer = fmt::layer()
         .with_target(false)
         .with_level(true)
+        .without_time()
+        .compact();
+
+    Registry::default()
+        .with(filter_layer)
+        .with(fmt_layer)
         .init();
+
+    reload_handle
 }

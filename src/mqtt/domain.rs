@@ -87,31 +87,31 @@ impl MqttService {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!("Info: Shutdown recibido MqttService");
+                    info!("shutdown recibido MqttService");
                     break;
                 }
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
                         MqttServiceCommand::Serialized(msg) => {
                             if tx_command.send(msg).await.is_err() {
-                                error!("Error: no se pudo enviar SerializedMessage desde MqttService");
+                                error!("no se pudo enviar SerializedMessage desde MqttService");
                             }
                         },
                         MqttServiceCommand::NetworksReady => {
                             if tx_command_net.send(cmd).await.is_err() {
-                                error!("Error: no se pudo enviar NetworksReady desde MqttService");
+                                error!("no se pudo enviar NetworksReady desde MqttService");
                             }
                         },
                         MqttServiceCommand::NetworksUpdated => {
                             if tx_command_net.send(cmd).await.is_err() {
-                                error!("Error: no se pudo enviar NetworksUpdated desde MqttService");
+                                error!("no se pudo enviar NetworksUpdated desde MqttService");
                             }
                         }
                     }
                 }
                 Some(msg) = rx_response.recv() => {
                     if self.sender.send(msg).await.is_err() {
-                        error!("Error: no se pudo enviar InternalEvent desde MqttService");
+                        error!("no se pudo enviar InternalEvent desde MqttService");
                     }
                 }
             }

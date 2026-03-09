@@ -15,20 +15,25 @@
 //! - **Downlink Remoto (`msg_from_server`):** Recibe instrucciones gRPC de la nube, las traduce
 //!   al modelo de dominio y las distribuye a la FSM o a los Hubs.
 
+
 use chrono::Utc;
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
 use tokio::sync::{mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware,
+                             DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg,
+                             HelloWorld, MessageServiceCommand, ServerMessage, HubMessage,
+                             MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh,
+                             HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode};
 use crate::database::domain::{TableDataVector};
 use crate::grpc;
 use crate::grpc::{to_edge, FromEdge, ToEdge,
                   FirmwareOutcome, SettingOk as SettOk,
                   Settings as Sett, SystemMetrics, HelloWorld as Hello};
-use crate::grpc::from_edge::Payload;  
+use crate::grpc::from_edge::Payload;
 use crate::network::domain::{NetworkManager};
 use crate::system::domain::{InternalEvent, System};
 
@@ -50,22 +55,22 @@ use crate::system::domain::{InternalEvent, System};
 ///   para evitar desbordar colas.
 /// - Resuelve dinámicamente el `topic`, `QoS` y flag de `Retain` a través del `NetworkManager`.
 /// - Llama a la función genérica `send` para serializar en **MessagePack** y despachar a la capa MQTT.
-#[instrument(name = "msg_to_hub", skip(app_context))]
+#[instrument(name = "msg_to_hub", skip_all)]
 pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
                         mut rx_internal: mpsc::Receiver<InternalEvent>,
                         mut rx_server_msg: mpsc::Receiver<ServerMessage>,
                         mut rx: mpsc::Receiver<MessageServiceCommand>,
-                        app_context: AppContext, 
+                        app_context: AppContext,
                         shutdown: CancellationToken) {
 
     let mut state = LocalStatus::Connected;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido msg_to_hub");
+                info!("shutdown recibido msg_to_hub");
                 break;
             }
-            
+
             Some(internal) = rx_internal.recv() => {
                 match internal {
                     InternalEvent::LocalConnected => state = LocalStatus::Connected,
@@ -78,7 +83,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
                 match msg {
                     ServerMessage::FromServerSettingsAck(ack) => {
                         if matches!(state, LocalStatus::Disconnected) {
-                            warn!("Warning: Mensaje descartado, broker desconectado");
+                            warn!("mensaje descartado, broker desconectado");
                             continue;
                         }
                         let topic_opt = {
@@ -88,8 +93,8 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
 
                         if let Some(t) = topic_opt {
                             match send(&tx_to_mqtt_local, t.topic, t.qos, HubMessage::FromServerSettingsAck(ack), false).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje del servidor al broker"),
+                                Ok(_) => debug!("serializacíon exitosa de mensaje FromServerSettingsAck"),
+                                Err(_) => error!("no se pudo serializar el mensaje FromServerSettingsAck"),
                             }
                         }
                     }
@@ -101,19 +106,19 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
                 match msg {
                     MessageServiceCommand::ToHub(to_hub) => {
                         if matches!(state, LocalStatus::Disconnected) {
-                            warn!("Warning: Mensaje descartado, broker desconectado");
+                            warn!("mensaje descartado, broker desconectado");
                             continue;
                         }
 
                         let topic_out = {
                             let manager = app_context.net_man.read().await;
-                            resolve_fsm_topic(&manager, &to_hub)
+                            resolve_fsm_topic(&manager, &to_hub, &tx_to_mqtt_local).await
                         };
 
                         if let Some((topic, qos, retain)) = topic_out {
                             match send(&tx_to_mqtt_local, topic, qos, to_hub, retain).await {
-                                Ok(_) => {}
-                                Err(_) => error!("Error: No se pudo serializar el mensaje de la FSM al broker"),
+                                Ok(_) => debug!("serialización exitosa de mensaje para el Hub"),
+                                Err(_) => error!("no se pudo serializar el mensaje de la FSM al broker"),
                             }
                         } else {
                             let topic_opt = {
@@ -123,8 +128,8 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
 
                             if let Some(t) = topic_opt {
                                 match send(&tx_to_mqtt_local, t.topic, t.qos, to_hub, false).await {
-                                    Ok(_) => {}
-                                    Err(_) => error!("Error: No se pudo serializar el mensaje del servidor al broker"),
+                                    Ok(_) => debug!("serialización exitosa de mensaje para el Hub"),
+                                    Err(_) => error!("No se pudo serializar el mensaje del servidor al broker"),
                                 }
                             }
                         }
@@ -141,27 +146,53 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
 ///
 /// Mensajes críticos como los cambios de estado operativos (`StateBalanceMode`, `StateNormal`)
 /// se publican con el flag `Retain = true` para que los dispositivos nuevos los reciban al conectar.
-fn resolve_fsm_topic(manager: &NetworkManager,
-                     msg: &HubMessage
+async fn resolve_fsm_topic(manager: &NetworkManager,
+                     msg: &HubMessage,
+                     tx_to_mqtt_local: &mpsc::Sender<MessageServiceResponse>
 ) -> Option<(String, u8, bool)> {
 
     match msg {
-        HubMessage::HandshakeToHub(_) =>
-            Some((manager.topic_handshake.topic.clone(), manager.topic_handshake.qos, false)),
+        HubMessage::HandshakeToHub(_) => {
+            debug!("resolviendo tópico para mensaje HandshakeToHub");
+            Some((manager.topic_handshake.topic.clone(), manager.topic_handshake.qos, false))
+        }
 
-        HubMessage::StateBalanceMode(_) =>
-            Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
+        HubMessage::StateBalanceMode(_) => {
+            debug!("resolviendo tópico para mensaje StateBalanceMode");
+            send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
+            Some((format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos, true))
+        }
 
-        HubMessage::StateNormal(_) =>
-            Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
+        HubMessage::StateNormal(_) => {
+            debug!("resolviendo tópico para mensaje StateNormal");
+            send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
+            Some((format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos, true))
+        }
 
-        HubMessage::StateSafeMode(_) =>
-            Some((manager.topic_state.topic.clone(), manager.topic_state.qos, true)),
+        HubMessage::StateSafeMode(_) => {
+            debug!("resolviendo tópico para mensaje StateSafeMode");
+            send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
+            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
+            Some((format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos, true))
+        }
 
-        HubMessage::Heartbeat(_) =>
-            Some((manager.topic_heartbeat.topic.clone(), manager.topic_heartbeat.qos, false)),
+        HubMessage::PhaseNotification(_) => {
+            debug!("resolviendo tópico para mensaje PhaseNotification");
+            Some((format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos, false))
+        }
+
+        HubMessage::Heartbeat(_) => {
+            debug!("resolviendo tópico para mensaje Heartbeat");
+            Some((manager.topic_heartbeat.topic.clone(), manager.topic_heartbeat.qos, false))
+        }
 
         HubMessage::Ping(_) => {
+            debug!("resolviendo tópico para mensaje Ping");
             if let Some(topic) = manager.get_topic_to_send_msg_to_hub(msg) {
                 Some((topic.topic, topic.qos, false))
             } else {
@@ -188,78 +219,147 @@ fn resolve_fsm_topic(manager: &NetworkManager,
 ///     directamente al módulo `msg_to_server`.
 /// 2.  Si el servidor externo está **Desconectado**, enruta la telemetría hacia `tx` (Canal general)
 ///     donde será interceptada por la base de datos (`dba_insert_task`) para almacenamiento temporal.
-#[instrument(name = "msg_from_hub", skip(rx))]
+#[instrument(name = "msg_from_hub", skip_all)]
 pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                           tx_to_msg_to_server: mpsc::Sender<ServerMessage>,
                           tx_to_msg_to_hub: mpsc::Sender<InternalEvent>,
-                          mut rx: mpsc::Receiver<MessageServiceCommand>, 
+                          mut rx: mpsc::Receiver<MessageServiceCommand>,
                           shutdown: CancellationToken) {
 
     let mut state: ServerStatus = ServerStatus::Connected;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido msg_from_hub");
+                info!("shutdown recibido msg_from_hub");
                 break;
             }
-            
+
             Some(msg) = rx.recv() => {
                 match msg {
                     MessageServiceCommand::Internal(internal) => {
                         match internal {
                             InternalEvent::LocalDisconnected => {
                                 if tx_to_msg_to_hub.send(InternalEvent::LocalDisconnected).await.is_err() {
-                                    error!("Error: No se pudo enviar el mensaje LocalDisconnected a msg_to_hub");
+                                    error!("no se pudo enviar el mensaje LocalDisconnected a msg_to_hub");
                                 }
                             },
                             InternalEvent::LocalConnected => {
                                 if tx_to_msg_to_hub.send(InternalEvent::LocalConnected).await.is_err() {
-                                    error!("Error: No se pudo enviar el mensaje LocalConnected a msg_to_hub");
+                                    error!("no se pudo enviar el mensaje LocalConnected a msg_to_hub");
                                 }
                             },
                             InternalEvent::IncomingMessage(message) => {
-                                if let Ok(decoded) = from_slice(&message.payload) {
+                                let topic = message.topic;
+                                let payload = message.payload;
+
+                                // Enrutar explícitamente según el sufijo del tópico
+                                let decoded: Option<HubMessage> = if topic.ends_with("data") {
+                                    from_slice::<Measurement>(&payload).ok().map(HubMessage::Report)
+                                } else if topic.ends_with("monitor") {
+                                    from_slice::<Monitor>(&payload).ok().map(HubMessage::Monitor)
+                                } else if topic.ends_with("alert_air") {
+                                    from_slice::<AlertAir>(&payload).ok().map(HubMessage::AlertAir)
+                                } else if topic.ends_with("alert_temp") {
+                                    from_slice::<AlertTh>(&payload).ok().map(HubMessage::AlertTem)
+                                } else if topic.ends_with("balance_mode_handshake") {
+                                    from_slice::<HandshakeFromHub>(&payload).ok().map(HubMessage::HandshakeFromHub)
+                                } else if topic.ends_with("hub_firmware_ok") {
+                                    from_slice::<FirmwareOk>(&payload).ok().map(HubMessage::FirmwareOk)
+                                } else if topic.ends_with("hub_setting_ok") {
+                                    from_slice::<SettingOk>(&payload).ok().map(HubMessage::FromHubSettingsAck)
+                                } else if topic.ends_with("setting") {
+                                    from_slice::<Settings>(&payload).ok().map(HubMessage::FromHubSettings)
+                                } else if topic.ends_with("ping") {
+                                    from_slice::<Ping>(&payload).ok().map(HubMessage::Ping)
+                                } else if topic.ends_with("empty_queue") {
+                                    from_slice::<EmptyQueue>(&payload).ok().map(HubMessage::EmptyQueue)
+                                        .or_else(|| from_slice::<EmptyQueueSafeMode>(&payload).ok().map(HubMessage::EmptyQueueSafe))
+                                } else {
+                                    None
+                                };
+
+                                // Procesar el mensaje decodificado
+                                if let Some(decoded_msg) = decoded {
                                     if matches!(state, ServerStatus::Connected) {
-                                        match decoded {
+                                        match decoded_msg {
                                             HubMessage::Report(report) => {
+                                                debug!("mensaje Report proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::Report(report)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
                                                 }
                                             },
                                             HubMessage::Monitor(monitor) => {
+                                                debug!("mensaje Monitor proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::Monitor(monitor)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
                                                 }
                                             },
                                             HubMessage::AlertAir(alert) => {
+                                                debug!("mensaje AlertAir proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::AlertAir(alert)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
                                                 }
                                             },
                                             HubMessage::AlertTem(alert) => {
+                                                debug!("mensaje AlertTemp proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::AlertTem(alert)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
+                                                }
+                                            },
+                                            HubMessage::HandshakeFromHub(_) => {
+                                                debug!("mensaje HandshakeFromHub proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje HandshakeFromHub");
+                                                }
+                                            },
+                                            HubMessage::FirmwareOk(_) => {
+                                                debug!("mensaje FirmwareOk proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje FirmwareOk");
                                                 }
                                             },
                                             HubMessage::FromHubSettings(settings) => {
+                                                debug!("mensaje FromHubSettings proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::FromHubSettings(settings)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
                                                 }
                                             },
                                             HubMessage::FromHubSettingsAck(ack) => {
+                                                debug!("mensaje FromHubSettingsAck proveniente del Hub");
                                                 if tx_to_msg_to_server.send(ServerMessage::FromHubSettingsAck(ack)).await.is_err() {
-                                                    error!("Error: no se pudo enviar el mensaje FromHub");
+                                                    error!("no se pudo enviar el mensaje FromHub");
                                                 }
-                                            }
+                                            },
+                                            HubMessage::Ping(_) => {
+                                                debug!("mensaje Ping proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje Ping");
+                                                }
+                                            },
+                                            HubMessage::EmptyQueue(_) => {
+                                                debug!("mensaje EmptyQueue proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje EmptyQueue");
+                                                }
+                                            },
+                                            HubMessage::EmptyQueueSafe(_) => {
+                                                debug!("mensaje EmptyQueueSafe proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje EmptyQueueSafe");
+                                                }
+                                            },
                                             _ => {}
                                         }
                                     } else {
-                                        if tx.send(MessageServiceResponse::FromHub(decoded)).await.is_err() {
-                                            error!("Error: no se pudo enviar el mensaje FromHub");
+                                        debug!("mensaje proveniente del Hub almacenado temporalmente");
+                                        if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                            error!("no se pudo enviar el mensaje FromHub");
                                         }
                                     }
+                                } else {
+                                    error!("no se pudo deserializar el mensaje del tópico: {}", topic);
                                 }
-                            },
+                            }
                             InternalEvent::ServerConnected => {
                                 state = ServerStatus::Connected;
                             }
@@ -290,21 +390,21 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
 /// - **Tiempo Real (`rx_from_hub`):** Datos recién llegados que pasaron el filtro de conexión.
 /// - **Datos Históricos (`Batch`):** Lotes de información extraídos de SQLite tras recuperar conexión.
 /// - **Comandos Internos:** Mensajes como `HelloWorld` para establecer sesión en la nube.
-#[instrument(name = "msg_to_server", skip(rx_from_hub, rx, app_context))]
+#[instrument(name = "msg_to_server", skip_all)]
 pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                            mut rx_from_hub: mpsc::Receiver<ServerMessage>,
                            mut rx: mpsc::Receiver<MessageServiceCommand>,
-                           app_context: AppContext, 
+                           app_context: AppContext,
                            shutdown: CancellationToken) {
 
     let mut state = ServerStatus::Connected;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido msg_to_server");
+                info!("shutdown recibido msg_to_server");
                 break;
             }
-            
+
             Some(msg) = rx.recv() => {
                 match msg {
                     MessageServiceCommand::Internal(internal) => {
@@ -320,12 +420,12 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                     },
                     MessageServiceCommand::Batch(batch) => {
                         if matches!(state, ServerStatus::Disconnected) {
-                            warn!("Warning: mensaje del hub descartado, servidor desconectado");
+                            warn!("mensaje del hub descartado, servidor desconectado");
                             continue;
                         }
                         match process_batch(batch, &tx_to_server, &app_context.system).await {
-                            Ok(_) => {},
-                            Err(_) => error!("Error: fallo en envío de batch al cliente gRPC"),
+                            Ok(_) => debug!("procesamiento batch exitoso"),
+                            Err(_) => error!("fallo en envío de batch al cliente gRPC"),
                         }
                     },
                     MessageServiceCommand::ToServer(server_message) => {
@@ -334,15 +434,16 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                             continue;
                         }
                         if let Some(proto_msg) = convert_to_proto_upload(server_message, app_context.system.id_edge.clone()) {
+                            debug!("mensaje para el servidor");
                             if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
                             }
                         }
                     },
                     MessageServiceCommand::GenerateHelloWorld => {
                         let metadata = Metadata {
                             sender_user_id: app_context.system.id_edge.clone(),
-                            destination_id: "Server0".to_string(),
+                            destination_id: "server0".to_string(),
                             timestamp: Utc::now().timestamp(),
                         };
                         let hello = HelloWorld {
@@ -351,7 +452,7 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                         };
                         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::HelloWorld(hello), app_context.system.id_edge.clone()) {
                             if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
                             }
                         }
                     }
@@ -361,12 +462,12 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
 
             Some(server_message) = rx_from_hub.recv() => {
                 if matches!(state, ServerStatus::Disconnected) {
-                    warn!("Warning: Mensaje del hub descartado, servidor desconectado");
+                    warn!("mensaje del hub descartado, servidor desconectado");
                     continue;
                 }
                 if let Some(proto_msg) = convert_to_proto_upload(server_message, app_context.system.id_edge.clone()) {
                     if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                        error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                        error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
                     }
                 }
             }
@@ -383,16 +484,16 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
 
     let payload = match msg {
         ServerMessage::HelloWorld(hello) => {
-           Some(Payload::HelloWorld(
-               Hello {
-                   metadata: Some(grpc::Metadata {
-                       sender_user_id: hello.metadata.sender_user_id,
-                       destination_id: hello.metadata.destination_id,
-                       timestamp: hello.metadata.timestamp,
-                   }),
-                   hello: hello.hello,
-               }
-           ))
+            Some(Payload::HelloWorld(
+                Hello {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: hello.metadata.sender_user_id,
+                        destination_id: hello.metadata.destination_id,
+                        timestamp: hello.metadata.timestamp,
+                    }),
+                    hello: hello.hello,
+                }
+            ))
         },
         ServerMessage::FromHubSettings(hub_settings) => {
             Some(Payload::Settings(
@@ -414,30 +515,30 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
         },
         ServerMessage::FromHubSettingsAck(hub_settings_ack) => {
             Some(Payload::SettingOk(
-                    SettOk {
-                        metadata: Some(grpc::Metadata {
-                            sender_user_id: hub_settings_ack.metadata.sender_user_id,
-                            destination_id: hub_settings_ack.metadata.destination_id,
-                            timestamp: hub_settings_ack.metadata.timestamp,
-                        }),
-                        network: hub_settings_ack.network,
-                        handshake: hub_settings_ack.handshake,
-                    }
+                SettOk {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: hub_settings_ack.metadata.sender_user_id,
+                        destination_id: hub_settings_ack.metadata.destination_id,
+                        timestamp: hub_settings_ack.metadata.timestamp,
+                    }),
+                    network: hub_settings_ack.network,
+                    handshake: hub_settings_ack.handshake,
+                }
             ))
         },
         ServerMessage::FirmwareOutcome(firmware_outcome) => {
             Some(Payload::FirmwareOutcome(
-                    FirmwareOutcome {
-                        metadata: Some(grpc::Metadata {
-                            sender_user_id: firmware_outcome.metadata.sender_user_id,
-                            destination_id: firmware_outcome.metadata.destination_id,
-                            timestamp: firmware_outcome.metadata.timestamp,
-                        }),
-                        network: firmware_outcome.network,
-                        is_ok: firmware_outcome.is_ok,
-                        percentage_ok: firmware_outcome.percentage_ok,
-                    }
-                ))
+                FirmwareOutcome {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: firmware_outcome.metadata.sender_user_id,
+                        destination_id: firmware_outcome.metadata.destination_id,
+                        timestamp: firmware_outcome.metadata.timestamp,
+                    }),
+                    network: firmware_outcome.network,
+                    is_ok: firmware_outcome.is_ok,
+                    percentage_ok: firmware_outcome.percentage_ok,
+                }
+            ))
         },
         ServerMessage::Report(report) => {
             Some(Payload::Measurement(grpc::Measurement {
@@ -534,7 +635,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
 /// Envuelve el `Payload` gRPC validado en la estructura final de transmisión `FromEdge`.
 fn generate_edge_upload(payload: Option<Payload>,
                         edge_id: String
-                       ) -> Option<FromEdge> {
+) -> Option<FromEdge> {
 
     if let Some(p) = payload {
         Some(FromEdge {
@@ -560,7 +661,7 @@ async fn process_batch(batch: TableDataVector,
     for row in batch.measurement {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Report(row), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
@@ -568,27 +669,27 @@ async fn process_batch(batch: TableDataVector,
     for row in batch.monitor {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Monitor(row), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
-    
+
     for row in batch.alert_air {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertAir(row), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
-    
+
     for row in batch.alert_th {
         if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertTem(row), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("Error: no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -604,19 +705,19 @@ async fn process_batch(batch: TableDataVector,
 ///
 /// Extrae la carga útil (`Payload`) de los mensajes Protobuf y delega la traducción
 /// al dominio a la función `handle_grpc_message`.
-#[instrument(name = "msg_from_server", skip(rx))]
+#[instrument(name = "msg_from_server", skip_all)]
 pub async fn msg_from_server(tx: mpsc::Sender<MessageServiceResponse>,
                              tx_to_msg_to_hub: mpsc::Sender<ServerMessage>,
-                             mut rx: mpsc::Receiver<MessageServiceCommand>, 
+                             mut rx: mpsc::Receiver<MessageServiceCommand>,
                              shutdown: CancellationToken) {
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido msg_from_server");
+                info!("shutdown recibido msg_from_server");
                 break;
             }
-            
+
             Some(msg) = rx.recv() => {
                 match msg {
                     MessageServiceCommand::Internal(internal) => {
@@ -651,7 +752,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     network: update_firmware.network,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::UpdateFirmware(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje UpdateFirmware a firmware");
+                    error!("no se pudo enviar mensaje UpdateFirmware a firmware");
                 }
             },
             to_edge::Payload::Settings(settings) => {
@@ -666,7 +767,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     energy_mode: settings.energy_mode,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::FromServerSettings(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje a network");
+                    error!("no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::DeleteHub(delete) => {
@@ -675,7 +776,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     network: delete.network,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::DeleteHub(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje a network");
+                    error!("no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::SettingOk(setting_ok) => {
@@ -685,7 +786,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     handshake: setting_ok.handshake,
                 };
                 if tx_to_msg_to_hub.send(ServerMessage::FromServerSettingsAck(msg)).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje al hub");
+                    error!("no se pudo enviar mensaje al hub");
                 }
             },
             to_edge::Payload::Network(network) => {
@@ -697,7 +798,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     delete_network: network.delete_network,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::Network(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje a network");
+                    error!("no se pudo enviar mensaje a network");
                 }
             },
             to_edge::Payload::Heartbeat(heartbeat) => {
@@ -706,7 +807,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     beat: true,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::Heartbeat(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje a heartbeat");
+                    error!("no se pudo enviar mensaje a heartbeat");
                 }
             },
             to_edge::Payload::HelloWorld(hello_ack) => {
@@ -715,7 +816,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     hello: hello_ack.hello,
                 };
                 if tx.send(MessageServiceResponse::FromServer(ServerMessage::HelloWorld(msg))).await.is_err() {
-                    error!("Error: no se pudo enviar mensaje HelloWorld a la fsm general");
+                    error!("no se pudo enviar mensaje HelloWorld a la fsm general");
                 }
             },
         }
@@ -760,8 +861,18 @@ where
             }
         }
         Err(e) => {
-            error!("Error: no se pudo serializar mensaje: {:?}", e);
+            error!("no se pudo serializar mensaje: {:?}", e);
         }
     }
     Ok(())
+}
+
+
+pub async fn send_clear_state(tx: &mpsc::Sender<MessageServiceResponse>,
+                               topic: String,
+                               qos: u8) {
+    let msg = SerializedMessage::new(topic, vec![], qos, true);
+    if tx.send(MessageServiceResponse::Serialized(msg)).await.is_err() {
+        error!("no se pudo serializar mensaje ClearState");
+    }
 }

@@ -89,42 +89,42 @@ impl FsmService {
         let child_token = token.child_token();
         let general_tx_to_fsm = tx_to_fsm.clone();
         handles.push(tokio::spawn(fsm(
-                                      tx_to_core,
-                                      general_tx_to_fsm,
-                                      general_tx_to_timer,
-                                      general_tx_to_heartbeat,
-                                      rx_command,
-                                      rx_from_fsm,
-                                      self.context.clone(),
-                                      child_token)));
+            tx_to_core,
+            general_tx_to_fsm,
+            general_tx_to_timer,
+            general_tx_to_heartbeat,
+            rx_command,
+            rx_from_fsm,
+            self.context.clone(),
+            child_token)));
 
         let child_token = token.child_token();
         handles.push(tokio::spawn(run_fsm(
-                                          tx_actions,
-                                          rx_event,
-                                          child_token)));
+            tx_actions,
+            rx_event,
+            child_token)));
 
         let child_token = token.child_token();
         let timer_tx_to_fsm = tx_to_fsm.clone();
         handles.push(tokio::spawn(fsm_watchdog_timer(
-                                            timer_tx_to_fsm,
-                                            rx_from_general,
-                                            child_token)));
+            timer_tx_to_fsm,
+            rx_from_general,
+            child_token)));
 
         let child_token = token.child_token();
         handles.push(tokio::spawn(heartbeat_generator_timer(
-                                            tx_to_heartbeat,
-                                            rx_from_heartbeat,
-                                            child_token)));
+            tx_to_heartbeat,
+            rx_from_heartbeat,
+            child_token)));
 
         let child_token = token.child_token();
         handles.push(tokio::spawn(heartbeat_generator(
-                                            heartbeat_tx_to_core,
-                                            heartbeat_tx_to_timer,
-                                            rx_heartbeat_from_general,
-                                            rx_from_heartbeat_watchdog,
-                                            self.context.clone(),
-                                            child_token)));
+            heartbeat_tx_to_core,
+            heartbeat_tx_to_timer,
+            rx_heartbeat_from_general,
+            rx_from_heartbeat_watchdog,
+            self.context.clone(),
+            child_token)));
 
         FsmRuntime {
             handles,
@@ -144,7 +144,7 @@ impl FsmService {
                 Some(ref mut rt) => {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            info!("Info: shutdown recibido FsmService");
+                            info!("shutdown recibido FsmService");
                             if let Some(rt) = runtime.take() {
                                 rt.cancel_token.cancel();
                                 for h in rt.handles {
@@ -158,17 +158,17 @@ impl FsmService {
                             match cmd {
                                 FsmServiceCommand::Epoch(epoch) => {
                                     if rt.tx_command.send(FsmServiceCommand::Epoch(epoch)).await.is_err() {
-                                        error!("Error: no se pudo enviar Epoch a fsm");
+                                        error!("no se pudo enviar Epoch a fsm");
                                     }
                                 },
                                 FsmServiceCommand::ErrorEpoch => {
                                     if rt.tx_command.send(FsmServiceCommand::ErrorEpoch).await.is_err() {
-                                        error!("Error: no se pudo enviar ErrorEpoch a fsm");
+                                        error!("no se pudo enviar ErrorEpoch a fsm");
                                     }
                                 },
                                 FsmServiceCommand::FromHub(hub_message) => {
                                     if rt.tx_command.send(FsmServiceCommand::FromHub(hub_message)).await.is_err() {
-                                        error!("Error: no se pudo enviar FromHub a fsm");
+                                        error!("no se pudo enviar FromHub a fsm");
                                     }
                                 },
                                 FsmServiceCommand::DeleteRuntime => {
@@ -185,7 +185,7 @@ impl FsmService {
 
                         Some(response) = rt.rx_response.recv() => {
                             if self.sender.send(response).await.is_err() {
-                                error!("Error: no se pudo enviar GetEpoch desde FsmService al Core");
+                                error!("no se pudo enviar FsmResponse desde FsmService al Core");
                             }
                         }
 
@@ -193,7 +193,7 @@ impl FsmService {
                             match heartbeat {
                                 FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat)) => {
                                     if self.sender.send(FsmServiceResponse::ToHub(HubMessage::Heartbeat(heartbeat))).await.is_err() {
-                                        error!("Error: no se pudo enviar Heartbeat desde FsmService al Core");
+                                        error!("no se pudo enviar Heartbeat desde FsmService al Core");
                                     }
                                 }
                                 _ => {}
@@ -204,10 +204,10 @@ impl FsmService {
                 None => {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            info!("Info: Shutdown recibido FsmService");
+                            info!("Shutdown recibido FsmService");
                             break;
                         }
-                        
+
                         Some(cmd) = self.receiver.recv() => {
                             match cmd {
                                 FsmServiceCommand::CreateRuntime => {
@@ -513,6 +513,7 @@ impl FsmState {
                 state_init_balance_mode_event_balance_epoch_not_ok(next_fsm)
             },
             (Some(SubStateBalanceMode::InHandshake), Event::Timeout) => {
+
                 let next_fsm = self.clone();
                 state_in_handshake_event_timeout(next_fsm)
             },
@@ -581,7 +582,8 @@ impl FsmState {
     /// Maneja transiciones cuando el estado global es `SafeMode`.
     fn step_safe_mode(&self, event: Event) -> Transition {
         if event == Event::Timeout || event == Event::QuorumSafeMode {
-            let next_fsm = self.clone();
+            let mut next_fsm = self.clone();
+            next_fsm.global = StateGlobal::Normal;
             let valid = TransitionValid {
                 change_state: next_fsm,
                 actions: vec![Action::StopSendHeartbeatMessageSafeMode],
@@ -862,7 +864,7 @@ pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido fsm_watchdog_timer");
+                info!("shutdown recibido fsm_watchdog_timer");
                 break;
             }
             _ = sleep(duration) => {
@@ -870,7 +872,7 @@ pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                 let _ = tx_to_fsm.send(Event::Timeout).await;
             }
             Some(Event::StopTimer) = cmd_rx.recv() => {
-                debug!("Debug: Watchdog timer de fsm general, cancelado");
+                debug!("Watchdog timer de fsm general, cancelado");
             }
         }
     }

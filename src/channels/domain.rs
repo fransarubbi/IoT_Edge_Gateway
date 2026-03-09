@@ -110,7 +110,7 @@ impl Channels {
     /// Retorna una instancia completa de `Channels` con todos los extremos conectados.
     pub fn new(buffer_size: usize) -> Self {
 
-        info!("Info: creando canales del sistema");
+        info!("creando canales del sistema");
 
         // 1. Data Service
         let (data_s2c_tx, data_s2c_rx) = mpsc::channel(buffer_size);

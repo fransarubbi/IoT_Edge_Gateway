@@ -118,7 +118,7 @@ impl Repository {
             match Self::new(path).await {
                 Ok(repo) => return repo,
                 Err(e) => {
-                    error!("Error: no se pudo inicializar repo: {:?}", e);
+                    error!("no se pudo inicializar repo: {:?}", e);
                     tokio::time::sleep(Duration::from_secs(WAIT_FOR)).await;
                 }
             }
@@ -141,7 +141,7 @@ impl Repository {
     /// - Cada tabla maneja su propia transacción o inserción atómica.
     /// - Si ocurre un error, la operación se aborta y retorna el error.
     pub async fn insert(&self, tdv: &TableDataVector) -> Result<(), sqlx::Error> {
-        debug!("Debug: insertando batch en base de datos");
+        debug!("insertando batch en base de datos");
         if !tdv.measurement.is_empty() {
             insert_measurement(&self.pool, &tdv.measurement).await?;
         }

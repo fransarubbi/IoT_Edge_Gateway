@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use std::fs;
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use crate::context::domain::AppContext;
@@ -83,19 +83,19 @@ impl GrpcService {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!("Info: Shutdown recibido GrpcService");
+                    info!("shutdown recibido GrpcService");
                     break;
                 }
 
                 Some(edge_upload) = self.receiver.recv() => {
                     if tx.send(edge_upload).await.is_err() {
-                        error!("Error: no se pudo enviar EdgeUpload a remote_grpc");
+                        error!("no se pudo enviar EdgeUpload a remote_grpc");
                     }
                 }
                 
                 Some(response) = rx_from_grpc.recv() => {
                     if self.sender.send(response).await.is_err() {
-                        error!("Error: no se pudo enviar InternalEvent desde remote_grpc");
+                        error!("no se pudo enviar InternalEvent desde remote_grpc");
                     }
                 }
             }
@@ -128,11 +128,11 @@ enum StateClient {
 /// Retorna `ErrorType::Endpoint` si la URL es inválida o la conexión inicial falla.
 async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Channel, ErrorType> {
     let ca_pem = fs::read(CA_EDGE_GRPC)
-        .map_err(|e| { error!("Error: fallo leyendo CA gRPC: {}", e); ErrorType::Generic })?;
+        .map_err(|e| { error!("fallo leyendo CA gRPC: {}", e); ErrorType::Generic })?;
     let cert_pem = fs::read(CRT_EDGE_GRPC)
-        .map_err(|e| { error!("Error: fallo leyendo Cert gRPC: {}", e); ErrorType::Generic })?;
+        .map_err(|e| { error!("fallo leyendo Cert gRPC: {}", e); ErrorType::Generic })?;
     let key_pem = fs::read(KEY_EDGE_GRPC)
-        .map_err(|e| { error!("Error: fallo leyendo Key gRPC: {}", e); ErrorType::Generic })?;
+        .map_err(|e| { error!("fallo leyendo Key gRPC: {}", e); ErrorType::Generic })?;
 
     let ca = Certificate::from_pem(ca_pem);
     let identity = Identity::from_pem(cert_pem, key_pem);
@@ -154,7 +154,7 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
         .keep_alive_while_idle(true);
 
     endpoint.connect().await.map_err(|e| {
-        error!("Error: no se pudo conectar gRPC: {}", e);
+        error!("no se pudo conectar gRPC: {}", e);
         ErrorType::Endpoint
     })
 }
@@ -167,6 +167,7 @@ async fn create_tls_channel(system: &crate::system::domain::System) -> Result<Ch
 /// - Leer del canal local para enviar al stream (Upstream).
 /// - Leer del stream para enviar al canal local (Downstream).
 /// - Ejecutar el retroceso (delay) de 5 segundos al producirse fallos.
+#[instrument(name = "grpc", skip_all)]
 async fn grpc(tx: mpsc::Sender<InternalEvent>,
               mut rx_outbound: mpsc::Receiver<FromEdge>,
               app_context: AppContext,
@@ -177,10 +178,10 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
     loop {
         match &mut state {
             StateClient::Init => {
-                info!("Info: intentando conectar gRPC");
+                info!("intentando conectar gRPC");
                 tokio::select! {
                     _ = shutdown.cancelled() => {
-                        info!("Info: shutdown recibido en grpc (Init)");
+                        info!("shutdown recibido en grpc (Init)");
                         break;
                     }
 
@@ -198,23 +199,23 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
 
                                 match grpc_client.connect_stream(request).await {
                                     Ok(response) => {
-                                        info!("Info: gRPC Conectado. Stream Bidireccional iniciado");
+                                        info!("gRPC Conectado. Stream Bidireccional iniciado");
 
                                         let inbound_stream = response.into_inner();
 
                                         if tx.send(InternalEvent::ServerConnected).await.is_err() {
-                                            error!("Error: no se pudo enviar el evento ServerConnected");
+                                            error!("no se pudo enviar el evento ServerConnected");
                                         }
                                         state = StateClient::Work { tx_session, inbound_stream };
                                     }
                                     Err(e) => {
-                                        error!("Error: {e}");
+                                        error!("{e}");
                                         state = StateClient::Error;
                                     }
                                 }
                             }
                             Err(e) => {
-                                error!("Error: {e}");
+                                error!("{e}");
                                 state = StateClient::Error;
                             }
                         }
@@ -224,7 +225,7 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
             StateClient::Work { tx_session, inbound_stream } => {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
-                        info!("Info: shutdown recibido gRPC (Work)");
+                        info!("shutdown recibido gRPC (Work)");
                         break;
                     }
 
@@ -233,12 +234,12 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         match msg_opt {
                             Some(msg) => {
                                 if let Err(e) = tx_session.send(msg).await {
-                                    warn!("Warning: stream de envío cerrado {e}");
+                                    warn!("stream de envío cerrado {e}");
                                     state = StateClient::Error;
                                 }
                             }
                             None => {
-                                info!("Info: canal de salida cerrado, terminando tarea remota");
+                                info!("canal de salida cerrado, terminando tarea remota");
                                 return;
                             }
                         }
@@ -249,15 +250,15 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                         match server_msg {
                             Some(Ok(download_msg)) => {
                                 if tx.send(InternalEvent::IncomingGrpc(download_msg)).await.is_err() {
-                                    error!("Error: no se pudo enviar el mensaje recibido del servidor");
+                                    error!("no se pudo enviar el mensaje recibido del servidor");
                                 }
                             }
                             Some(Err(e)) => {
-                                error!("Error: stream gRPC {e}");
+                                error!("stream gRPC {e}");
                                 state = StateClient::Error;
                             }
                             None => {
-                                warn!("Warning: stream cerrado por el servidor");
+                                warn!("stream cerrado por el servidor");
                                 state = StateClient::Error;
                             }
                         }
@@ -266,11 +267,11 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
             }
             StateClient::Error => {
                 if tx.send(InternalEvent::ServerDisconnected).await.is_err() {
-                    error!("Error: no se pudo enviar el evento ServerDisconnected");
+                    error!("no se pudo enviar el evento ServerDisconnected");
                 }
                 tokio::select! {
                     _ = shutdown.cancelled() => {
-                        info!("Info: shutdown recibido gRPC (Error)");
+                        info!("shutdown recibido gRPC (Error)");
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {

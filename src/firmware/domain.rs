@@ -114,7 +114,7 @@ impl FirmwareService {
                 Some(ref mut rt) => {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            info!("Info: shutdown recibido FirmwareService");
+                            info!("shutdown recibido FirmwareService");
                             if let Some(rt) = runtime.take() {
                                 rt.cancel_token.cancel();
                                 for h in rt.handles {
@@ -127,12 +127,12 @@ impl FirmwareService {
                             match cmd {
                                 FirmwareServiceCommand::Update(update) => {
                                     if rt.tx_msg.send(FirmwareServiceCommand::Update(update)).await.is_err() {
-                                        error!("Error: no se pudo enviar comando Update a update_firmware_task");
+                                        error!("no se pudo enviar comando Update a update_firmware_task");
                                     }
                                 },
                                 FirmwareServiceCommand::HubResponse(response) => {
                                     if rt.tx_msg.send(FirmwareServiceCommand::HubResponse(response)).await.is_err() {
-                                        error!("Error: no se pudo enviar mensaje HubResponse a update_firmware_task");
+                                        error!("no se pudo enviar mensaje HubResponse a update_firmware_task");
                                     }
                                 },
                                 FirmwareServiceCommand::DeleteRuntime => {
@@ -150,12 +150,12 @@ impl FirmwareService {
                             match response {
                                 FirmwareServiceResponse::HubCommand(response) => {
                                     if self.sender.send(FirmwareServiceResponse::HubCommand(response)).await.is_err() {
-                                        error!("Error: no se pudo enviar respuesta HubCommand al Core");
+                                        error!("no se pudo enviar respuesta HubCommand al Core");
                                     }
                                 },
                                 FirmwareServiceResponse::ServerAck(response) => {
                                     if self.sender.send(FirmwareServiceResponse::ServerAck(response)).await.is_err() {
-                                        error!("Error: no se pudo enviar respuesta ServerAck al Core");
+                                        error!("no se pudo enviar respuesta ServerAck al Core");
                                     }
                                 },
                             }
@@ -165,7 +165,7 @@ impl FirmwareService {
                 None => {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            info!("Info: shutdown recibido FirmwareService");
+                            info!("shutdown recibido FirmwareService");
                             break;
                         }
                         
@@ -510,15 +510,17 @@ async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
         // Estado ACTIVO: Corriendo temporizador
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Info: shutdown recibido firmware_watchdog_timer");
+                info!("shutdown recibido firmware_watchdog_timer");
                 break;
             }
             _ = sleep(duration) => {
                 // El tiempo se agotó
-                let _ = tx_to_fsm.send(Event::Timeout).await;
+                if tx_to_fsm.send(Event::Timeout).await.is_err() {
+                    error!("no se pudo enviar evento Timeout");
+                }
             }
             Some(Event::StopTimer) = cmd_rx.recv() => {
-                debug!("Debug: Watchdog timer de fsm firmware, cancelado");
+                debug!("watchdog timer de fsm firmware, cancelado");
             }
         }
     }

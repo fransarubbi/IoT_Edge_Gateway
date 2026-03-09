@@ -47,13 +47,13 @@ use crate::system::domain::InternalEvent;
 /// en lote cuando ocurre **una de dos condiciones**:
 /// - **Capacidad:** Alguno de los vectores internos del `TableDataVector` se llena (`is_some_vector_full`).
 /// - **Tiempo:** El temporizador definido por [`FLUSH_INTERVAL`] expira, evitando que los datos se queden estancados en memoria.
-#[instrument(name = "dba_insert_task", skip(repo))]
+#[instrument(name = "dba_insert_task", skip_all)]
 pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                              mut rx_cmd: mpsc::Receiver<DataCommandInsert>,
                              repo: Repository,
                              shutdown: CancellationToken) {
 
-    info!("Info: iniciando tarea dba_insert_task");
+    info!("iniciando tarea dba_insert_task");
 
     let mut tdv = TableDataVector::new();
     let mut timer = interval(FLUSH_INTERVAL);
@@ -62,12 +62,12 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido dba_insert_task");
+                info!("shutdown recibido dba_insert_task");
                 break;
             }
 
             _ = timer.tick() => {
-                debug!("Debug: se acabo el tiempo de batch en dba_insert_task");
+                debug!("se acabo el tiempo de batch en dba_insert_task");
                 if !tdv.is_empty() {
                     repo.insert(&tdv).await.ok();
                     tdv.clear();
@@ -77,7 +77,7 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
             Some(command) = rx_cmd.recv() => {
                 match command {
                     DataCommandInsert::InsertHubMessage(message) => {
-                        debug!("Debug: mensaje HubMessage entrante a dba_insert_task");
+                        debug!("mensaje HubMessage entrante a dba_insert_task");
                         sort_by_vectors(message, &mut tdv);
                         if tdv.is_some_vector_full() {
                             repo.insert(&tdv).await.ok();
@@ -89,19 +89,19 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Ok(networks) => {
                                 if networks == 0 {
                                     if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
-                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_insert_task");
+                                        error!("no se pudo enviar ThereAreNetworks desde dba_insert_task");
                                     }
                                 } 
                             }
-                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                            Err(e) => error!("no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                         match repo.insert_network(network).await {
                             Ok(_) => {
                                 if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
-                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo insertar NetworkRow en base de datos. {e}"),
+                            Err(e) => error!("no se pudo insertar NetworkRow en base de datos. {e}"),
                         }
                     },
                     DataCommandInsert::UpdateNetwork(network) => {
@@ -109,37 +109,37 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Ok(networks) => {
                                 if networks == 0 {
                                     if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
-                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_insert_task");
+                                        error!("no se pudo enviar ThereAreNetworks desde dba_insert_task");
                                     }
                                 } 
                             }
-                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                            Err(e) => error!("no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                         match repo.update_network(network).await {
                             Ok(_) => {
                                 if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
-                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo actualizar NetworkRow en base de datos. {e}"),
+                            Err(e) => error!("no se pudo actualizar NetworkRow en base de datos. {e}"),
                         }
                     },
                     DataCommandInsert::NewEpoch(epoch) => {
                         match repo.update_epoch(epoch).await {
                             Ok(_) => {}
-                            Err(e) => error!("Error: no se pudo insertar nuevo Epoch en base de datos. {e}"),
+                            Err(e) => error!("no se pudo insertar nuevo Epoch en base de datos. {e}"),
                         }
                     },
                     DataCommandInsert::InsertHub(hub) => {
                         match repo.insert_hub(hub).await {
                             Ok(_) => {}
-                            Err(e) => error!("Error: no se pudo insertar un nuevo Hub en base de datos. {e}"),
+                            Err(e) => error!("no se pudo insertar un nuevo Hub en base de datos. {e}"),
                         }
                     },
                     DataCommandInsert::UpdateHub(hub) => {
                         match repo.update_hub(hub).await {
                             Ok(_) => {}
-                            Err(e) => error!("Error: no se pudo actualizar Hub en base de datos. {e}"),
+                            Err(e) => error!("no se pudo actualizar Hub en base de datos. {e}"),
                         }
                     }
                 }
@@ -189,7 +189,7 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido dba_remove_task");
+                info!("shutdown recibido dba_remove_task");
                 break;
             }
             
@@ -199,32 +199,32 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
                         match repo.delete_network(&id).await {
                             Ok(_) => {
                                 if tx.send(DataServiceResponse::NetworksUpdated).await.is_err() {
-                                    error!("Error: no se pudo enviar NetworksUpdated desde dba_remove_task");
+                                    error!("no se pudo enviar NetworksUpdated desde dba_remove_task");
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo eliminar red con id: {id}. {e}"),
+                            Err(e) => error!("no se pudo eliminar red con id: {id}. {e}"),
                         }
                         match repo.get_number_of_networks().await {
                             Ok(networks) => {
                                 if networks == 0 {
                                     if tx.send(DataServiceResponse::NoNetworks).await.is_err() {
-                                        error!("Error: no se pudo enviar NoNetworks desde dba_remove_task");
+                                        error!("no se pudo enviar NoNetworks desde dba_remove_task");
                                     }
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                            Err(e) => error!("no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                     },
                     DataCommandDelete::DeleteAllHubByNetwork(id) => {
                         match repo.delete_hub_network(&id).await {
                             Ok(_) => {}
-                            Err(e) => error!("Error: no se pudo eliminar todos los hub de la red con id: {id}. {e}"),
+                            Err(e) => error!("no se pudo eliminar todos los hub de la red con id: {id}. {e}"),
                         }
                     },
                     DataCommandDelete::DeleteHub(id) => {
                         match repo.delete_hub(&id).await {
                             Ok(_) => {}
-                            Err(e) => error!("Error: no se pudo eliminar hub con id: {id}. {e}"),
+                            Err(e) => error!("no se pudo eliminar hub con id: {id}. {e}"),
                         }
                     },
                 }
@@ -245,14 +245,14 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
 /// 2. **Retransmitir telemetría atrasada:** Monitorea el estado de la conexión mediante `InternalEvent`.
 ///    Al detectar una transición de `Disconnected` a `Connected`, dispara el vaciado de los
 ///    datos almacenados en SQLite hacia el servidor exterior.
-#[instrument(name = "dba_get_task", skip(rx_from_core, repo))]
+#[instrument(name = "dba_get_task", skip_all)]
 pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                           mut rx_from_core: mpsc::Receiver<InternalEvent>,
                           mut rx_from: mpsc::Receiver<DataCommandGet>,
                           repo: Repository,
                           shutdown: CancellationToken) {
 
-    info!("Info: iniciando tarea dba_get_task");
+    info!("iniciando tarea dba_get_task");
 
     let mut state : ServerStatus = ServerStatus::Disconnected;
     let mut old_state : ServerStatus = ServerStatus::Disconnected;
@@ -260,18 +260,18 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                info!("Info: shutdown recibido dba_get_task");
+                info!("shutdown recibido dba_get_task");
                 break;
             }
             
             Some(internal) = rx_from_core.recv() => {
                 match internal {
                     InternalEvent::ServerConnected => {
-                        debug!("Debug: server connected entrante en dba_get_task");
+                        debug!("server connected entrante en dba_get_task");
                         state = ServerStatus::Connected;
                     },
                     InternalEvent::ServerDisconnected => {
-                        debug!("Debug: server disconnected entrante en dba_get_task");
+                        debug!("server disconnected entrante en dba_get_task");
                         state = ServerStatus::Disconnected;
                         old_state = ServerStatus::Disconnected;
                     }
@@ -279,7 +279,7 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                 }
 
                 if state == ServerStatus::Connected && old_state == ServerStatus::Disconnected {
-                    debug!("Debug: obtener batch en dba_get_task");
+                    debug!("obtener batch en dba_get_task");
                     old_state = state;
                     get_all_tables(&repo, &tx_to_core).await;
                 }
@@ -291,12 +291,12 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                         match repo.get_epoch().await {
                             Ok(epoch) => {
                                 if tx_to_core.send(DataServiceResponse::Epoch(epoch)).await.is_err() {
-                                    error!("Error: no se pudo enviar Epoch a DataService desde dba_get_task");
+                                    error!("no se pudo enviar Epoch a DataService desde dba_get_task");
                                 }
                             }
                             Err(_) => {
                                 if tx_to_core.send(DataServiceResponse::ErrorEpoch).await.is_err() {
-                                    error!("Error: no se pudo enviar ErrorEpoch a DataService desde dba_get_task");
+                                    error!("no se pudo enviar ErrorEpoch a DataService desde dba_get_task");
                                 }
                             }
                         }
@@ -306,27 +306,27 @@ pub async fn dba_get_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Ok(networks) => {
                                 if networks > 0 {
                                     if tx_to_core.send(DataServiceResponse::ThereAreNetworks).await.is_err() {
-                                        error!("Error: no se pudo enviar ThereAreNetworks desde dba_get_task");
+                                        error!("no se pudo enviar ThereAreNetworks desde dba_get_task");
                                     }
                                 } 
                             }
-                            Err(e) => error!("Error: no se pudo obtener el total de redes presentes en el sistema. {e}"),
+                            Err(e) => error!("no se pudo obtener el total de redes presentes en el sistema. {e}"),
                         }
                         match repo.get_all_network().await {
                             Ok(networks) => {
                                 if tx_to_core.send(DataServiceResponse::BatchNetwork(networks)).await.is_err() {
-                                    error!("Error: no se pudo enviar BatchNetwork desde dba_get_task");
+                                    error!("no se pudo enviar BatchNetwork desde dba_get_task");
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo obtener todas las redes de la base de datos. {e}"),
+                            Err(e) => error!("no se pudo obtener todas las redes de la base de datos. {e}"),
                         }
                         match repo.get_all_hubs().await {
                             Ok(hubs) => {
                                 if tx_to_core.send(DataServiceResponse::BatchHub(hubs)).await.is_err() {
-                                    error!("Error: no se pudo enviar BatchHub desde dba_get_task");
+                                    error!("no se pudo enviar BatchHub desde dba_get_task");
                                 }
                             }
-                            Err(e) => error!("Error: no se pudo obtener todos los hubs de la base de datos. {e}"),
+                            Err(e) => error!("no se pudo obtener todos los hubs de la base de datos. {e}"),
                         }
                     }
                 }
@@ -351,13 +351,13 @@ async fn get_all_tables(repo: &Repository, tx: &mpsc::Sender<DataServiceResponse
                     break;
                 }
                 if tx.send(DataServiceResponse::Batch(tdv)).await.is_err() {
-                    error!("Error: canal cerrado, no se pudo enviar pop batch");
+                    error!("canal cerrado, no se pudo enviar pop batch");
                     break;
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             },
             Err(e) => {
-                error!("Error: no se pudo hacer pop batch. {}", e);
+                error!("no se pudo hacer pop batch. {}", e);
                 break;
             }
         }
