@@ -488,7 +488,7 @@ impl FsmState {
 
                 let valid = TransitionValid {
                     change_state: next_fsm,
-                    actions: vec![Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)],
+                    actions: vec![],
                 };
                 Transition::Valid(valid)
             }
