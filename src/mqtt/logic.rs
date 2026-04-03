@@ -264,6 +264,8 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
     debug!("suscribiendo a tópicos mqtt");
     let mut subs = HashMap::new();
 
+    subs.insert(manager.topic_linkage_request.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&manager.topic_linkage_request.qos)});
+
     for net in manager.networks.values() {
         subs.insert(net.topic_data.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_data.qos)});
         subs.insert(net.topic_monitor.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_monitor.qos)});

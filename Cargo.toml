@@ -1,6 +1,6 @@
 [package]
 name = "iot_edge_gateway"
-version = "0.19.3"
+version = "0.20.0"
 edition = "2024"
 
 [dependencies]

@@ -282,6 +282,11 @@ impl Core {
                             if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksUpdated).await.is_err() {
                                 error!("no se pudo enviar NetworksUpdated desde Core");
                             }
+                        },
+                        DataServiceResponse::HubInserted(hub) => {
+                            if self.core_to_message_service.send(MessageServiceCommand::GenerateLinkageAck(hub)).await.is_err() {
+                                error!("no se pudo enviar GenerateLinkageAck desde Core");
+                            }
                         }
                     }
                 }
@@ -360,27 +365,11 @@ impl Core {
                                         error!("no se pudo enviar AlertTem desde Core");
                                     }
                                 },
-                                HubMessage::FromHubSettings(_) => {
-                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
-                                        error!("no se pudo enviar FromHubSettings desde Core");
-                                    }
-                                    if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
-                                        error!("no se pudo enviar FromHubSettings desde Core");
-                                    }
-                                },
-                                HubMessage::FromHubSettingsAck(_) => {
-                                    if self.core_to_data_service.send(DataServiceCommand::Hub(from_hub.clone())).await.is_err() {
-                                        error!("no se pudo enviar FromHubSettingsAck desde Core");
-                                    }
-                                    if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
-                                        error!("no se pudo enviar FromHubSettingsAck desde Core");
-                                    }
-                                }
                                 HubMessage::FirmwareOk(firmware) => {
                                     if self.core_to_firmware_service.send(FirmwareServiceCommand::HubResponse(firmware)).await.is_err() {
                                         error!("no se pudo enviar FirmwareOk desde Core");
                                     }
-                                }
+                                },
                                 HubMessage::HandshakeFromHub(_) => {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
                                         error!("no se pudo enviar HandshakeFromHub desde Core");
@@ -400,7 +389,12 @@ impl Core {
                                     if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
                                         error!("no se pudo enviar Ping desde Core");
                                     }
-                                }
+                                },
+                                HubMessage::LinkageRequest(_) => {
+                                    if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
+                                        error!("no se pudo enviar LinkageRequest desde Core");
+                                    }
+                                },
                                 _ => {}
                             }
                         },
@@ -495,11 +489,6 @@ impl Core {
                                         error!("no se pudo enviar DeleteHub desde Core");
                                     }
                                 },
-                                DataServiceCommand::UpdateHub(id) => {
-                                    if self.core_to_data_service.send(DataServiceCommand::UpdateHub(id)).await.is_err() {
-                                        error!("no se pudo enviar UpdateHub desde Core");
-                                    }
-                                }
                                 _ => {}
                             }
                         }
@@ -508,6 +497,11 @@ impl Core {
                                 error!("no se pudo enviar NetworksReady desde Core");
                             }
                         },
+                        NetworkServiceResponse::GenerateLinkageAck(id) => {
+                            if self.core_to_message_service.send(MessageServiceCommand::GenerateLinkageAck(id)).await.is_err() {
+                                error!("no se pudo enviar NetworksReady desde Core");
+                            }
+                        }
                     }
                 }
             }

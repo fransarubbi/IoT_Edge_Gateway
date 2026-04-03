@@ -13,7 +13,7 @@
 //!   que agrupan los payloads para su enrutamiento.
 //! - **Utilidades:** Funciones de casting para transformar modelos de memoria en filas de base de datos (`..._row`).
 
-
+use chrono::Utc;
 use serde::{Serialize, Deserialize};
 use sqlx::FromRow;
 use tokio::sync::mpsc;
@@ -41,6 +41,7 @@ pub enum MessageServiceCommand {
     Batch(TableDataVector),
     ToHub(HubMessage),
     ToServer(ServerMessage),
+    GenerateLinkageAck(String)
 }
 
 
@@ -216,7 +217,12 @@ impl MessageService {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
-                                }
+                                },
+                                HubMessage::LinkageAck(_) => {
+                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
+                                        error!("no se pudo enviar mensaje a msg_to_hub");
+                                    }
+                                },
                                 _ => {}
                             }
                         },
@@ -273,6 +279,20 @@ impl MessageService {
                         MessageServiceCommand::GenerateHelloWorld => {
                             if tx_command_to_server.send(cmd).await.is_err() {
                                 error!("no se pudo enviar GenerateHelloWorld a msg_to_server");
+                            }
+                        },
+                        MessageServiceCommand::GenerateLinkageAck(hub) => {
+                            let metadata = Metadata {
+                                sender_user_id: self.context.system.id_edge.clone(),
+                                destination_id: hub,
+                                timestamp: Utc::now().timestamp(),
+                            };
+                            let msg = LinkageAck {
+                                metadata,
+                                linkage_ack: true,
+                            };
+                            if tx_command_to_hub.send(MessageServiceCommand::ToHub(HubMessage::LinkageAck(msg))).await.is_err() {
+                                error!("no se pudo enviar mensaje a msg_to_hub");
                             }
                         }
                     }
@@ -401,16 +421,8 @@ impl Settings {
     /// - `network`: ID de la red a la que se asocia este dispositivo.
     pub fn cast_settings_to_hub_row(self, network: String) -> HubRow {
         let mut hr = HubRow::default();
-        hr.metadata.sender_user_id = self.metadata.sender_user_id;
-        hr.metadata.destination_id = self.metadata.destination_id;
-        hr.metadata.timestamp = self.metadata.timestamp;
         hr.network_id = network;
-        hr.wifi_ssid = self.wifi_ssid;
-        hr.wifi_password = self.wifi_password;
-        hr.mqtt_uri = self.mqtt_uri;
         hr.device_name = self.device_name;
-        hr.sample = self.sample;
-        hr.energy_mode = self.energy_mode;
         hr
     }
 }
@@ -581,6 +593,33 @@ pub struct EmptyQueueSafeMode {
 }
 
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LinkageRequest {
+    pub metadata: Metadata,
+    pub device_name: String,
+    pub network: String,
+    pub linkage_request: bool,
+}
+
+
+impl LinkageRequest {
+    pub fn cast_to_hub_row(self) -> HubRow {
+        let mut hr = HubRow::default();
+        hr.id = self.metadata.sender_user_id;
+        hr.device_name = self.device_name;
+        hr.network_id = self.network;
+        hr
+    }
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LinkageAck {
+    pub metadata: Metadata,
+    pub linkage_ack: bool,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum HubMessage {
@@ -596,6 +635,7 @@ pub enum HubMessage {
     EmptyQueue(EmptyQueue),
     EmptyQueueSafe(EmptyQueueSafeMode),
     Ping(Ping),
+    LinkageRequest(LinkageRequest),
 
     // Mensajes para el Hub
     UpdateFirmware(UpdateFirmware),
@@ -610,6 +650,7 @@ pub enum HubMessage {
     StateBalanceMode(MessageStateBalanceMode),
     StateNormal(MessageStateNormal),
     StateSafeMode(MessageStateSafeMode),
+    LinkageAck(LinkageAck)
 }
 
 
