@@ -23,7 +23,6 @@ use crate::message::domain::Measurement;
 /// - `destination_type`: tipo de destino lógico del mensaje.
 /// - `destination_id`: identificador del destino.
 /// - `timestamp`: instante de generación de la medición (formato texto).
-/// - `topic_where_arrive`: tópico donde se recibió el mensaje.
 /// - `ipv4addr`: dirección IPv4 del nodo.
 /// - `wifi_ssid`: SSID de la red WiFi.
 /// - `pulse_counter`: contador de pulsos.

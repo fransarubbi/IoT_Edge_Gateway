@@ -23,11 +23,7 @@ use tokio::sync::{mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware,
-                             DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg,
-                             HelloWorld, MessageServiceCommand, ServerMessage, HubMessage,
-                             MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh,
-                             HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh, HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode, LinkageRequest};
 use crate::database::domain::{TableDataVector};
 use crate::grpc;
 use crate::grpc::{to_edge, FromEdge, ToEdge,
@@ -112,7 +108,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
 
                         let topic_out = {
                             let manager = app_context.net_man.read().await;
-                            resolve_fsm_topic(&manager, &to_hub, &tx_to_mqtt_local).await
+                            resolve_static_topic(&manager, &to_hub, &tx_to_mqtt_local).await
                         };
 
                         if let Some((topic, qos, retain)) = topic_out {
@@ -146,7 +142,7 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
 ///
 /// Mensajes críticos como los cambios de estado operativos (`StateBalanceMode`, `StateNormal`)
 /// se publican con el flag `Retain = true` para que los dispositivos nuevos los reciban al conectar.
-async fn resolve_fsm_topic(manager: &NetworkManager,
+async fn resolve_static_topic(manager: &NetworkManager,
                      msg: &HubMessage,
                      tx_to_mqtt_local: &mpsc::Sender<MessageServiceResponse>
 ) -> Option<(String, u8, bool)> {
@@ -155,42 +151,36 @@ async fn resolve_fsm_topic(manager: &NetworkManager,
         HubMessage::HandshakeToHub(_) => {
             debug!("resolviendo tópico para mensaje HandshakeToHub");
             Some((manager.topic_handshake.topic.clone(), manager.topic_handshake.qos, false))
-        }
-
+        },
         HubMessage::StateBalanceMode(_) => {
             debug!("resolviendo tópico para mensaje StateBalanceMode");
             send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
             Some((format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos, true))
-        }
-
+        },
         HubMessage::StateNormal(_) => {
             debug!("resolviendo tópico para mensaje StateNormal");
             send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
             Some((format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos, true))
-        }
-
+        },
         HubMessage::StateSafeMode(_) => {
             debug!("resolviendo tópico para mensaje StateSafeMode");
             send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
             send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
             Some((format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos, true))
-        }
-
+        },
         HubMessage::PhaseNotification(_) => {
             debug!("resolviendo tópico para mensaje PhaseNotification");
             Some((format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos, false))
-        }
-
+        },
         HubMessage::Heartbeat(_) => {
             debug!("resolviendo tópico para mensaje Heartbeat");
             Some((manager.topic_heartbeat.topic.clone(), manager.topic_heartbeat.qos, false))
-        }
-
+        },
         HubMessage::Ping(_) => {
             debug!("resolviendo tópico para mensaje Ping");
             if let Some(topic) = manager.get_topic_to_send_msg_to_hub(msg) {
@@ -199,7 +189,10 @@ async fn resolve_fsm_topic(manager: &NetworkManager,
                 None
             }
         },
-
+        HubMessage::LinkageAck(_) => {
+            debug!("resolviendo tópico para mensaje LinkageAck");
+            Some((manager.topic_linkage_ack.topic.clone(), manager.topic_linkage_ack.qos, false))
+        },
         _ => None,
     }
 }
@@ -271,6 +264,8 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                                     from_slice::<Settings>(&payload).ok().map(HubMessage::FromHubSettings)
                                 } else if topic.ends_with("ping") {
                                     from_slice::<Ping>(&payload).ok().map(HubMessage::Ping)
+                                } else if topic.ends_with("linkage_request") {
+                                    from_slice::<LinkageRequest>(&payload).ok().map(HubMessage::LinkageRequest)
                                 } else if topic.ends_with("empty_queue") {
                                     from_slice::<EmptyQueue>(&payload).ok().map(HubMessage::EmptyQueue)
                                         .or_else(|| from_slice::<EmptyQueueSafeMode>(&payload).ok().map(HubMessage::EmptyQueueSafe))
@@ -346,6 +341,12 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                                                 debug!("mensaje EmptyQueueSafe proveniente del Hub");
                                                 if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
                                                     error!("no se pudo enviar el mensaje EmptyQueueSafe");
+                                                }
+                                            },
+                                            HubMessage::LinkageRequest(_) => {
+                                                debug!("mensaje LinkageRequest proveniente del Hub");
+                                                if tx.send(MessageServiceResponse::FromHub(decoded_msg)).await.is_err() {
+                                                    error!("no se pudo enviar el mensaje LinkageRequest");
                                                 }
                                             },
                                             _ => {}

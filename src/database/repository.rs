@@ -45,7 +45,7 @@ use crate::database::domain::{TableDataVector};
 use crate::database::tables::alert_air::{create_table_alert_air, insert_alert_air, pop_batch_alert_air};
 use crate::database::tables::alert_temp::{create_table_alert_temp, insert_alert_temp, pop_batch_alert_temp};
 use crate::database::tables::balance_epoch::{create_table_balance_epoch, get_balance_epoch, insert_balance_epoch};
-use crate::database::tables::hub::{create_table_hub, delete_hub_according_to_id, delete_hub_according_to_network, get_all_hubs, insert_hub_table, upsert_hub};
+use crate::database::tables::hub::{count_hubs, create_table_hub, delete_hub_according_to_id, delete_hub_according_to_network, get_all_hubs, insert_hub_table};
 use crate::database::tables::measurement::{create_table_measurement, insert_measurement, pop_batch_measurement};
 use crate::database::tables::monitor::{create_table_monitor, insert_monitor, pop_batch_monitor};
 use crate::database::tables::network::{count_networks, create_table_network, delete_network_database, get_all_network_data, insert_network_database, upsert_network};
@@ -211,6 +211,12 @@ impl Repository {
         Ok(rows)
     }
 
+    /// Obtiene el número total de hubs del sistema.
+    pub async fn get_number_of_hubs(&self) -> Result<i64, sqlx::Error> {
+        let rows = count_hubs(&self.pool).await?;
+        Ok(rows)
+    }
+
     
     // --- Métodos de Gestión de Balance Epoch ---
     
@@ -259,12 +265,6 @@ impl Repository {
     pub async fn get_all_hubs(&self) -> Result<Vec<HubRow>, sqlx::Error> {
         let rows = get_all_hubs(&self.pool).await?;
         Ok(rows)
-    }
-
-    /// Actualiza o inserta un Hub en la base de datos.
-    pub async fn update_hub(&self, data: HubRow) -> Result<(), sqlx::Error> {
-        upsert_hub(&self.pool, data).await?;
-        Ok(())
     }
 }
 
@@ -327,11 +327,6 @@ async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// Ejecuta un `DELETE ... RETURNING *` sobre la tabla indicada,
 /// devolviendo los registros eliminados como un vector del tipo `T`.
 ///
-/// # Seguridad
-///
-/// El nombre de la tabla se inserta con comillas dobles para evitar
-/// problemas con palabras reservadas, pero **debe ser confiable**
-/// (no provenir de input externo no validado).
 pub async fn pop_batch_generic<T>(pool: &SqlitePool,
                                   table: &str,
 ) -> Result<Vec<T>, sqlx::Error>
@@ -346,7 +341,7 @@ where
         DELETE FROM "{table}"
         WHERE id IN (
             SELECT id FROM "{table}"
-            WHERE topic_where_arrive = ?
+            ORDER BY id ASC
             LIMIT ?
         )
         RETURNING *

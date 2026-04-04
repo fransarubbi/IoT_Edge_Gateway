@@ -24,17 +24,9 @@ pub async fn create_table_hub(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
     pool.execute(
         r#"
         CREATE TABLE IF NOT EXISTS hub (
-            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender_user_id       TEXT NOT NULL UNIQUE,
-            destination_id       TEXT NOT NULL,
-            timestamp            INTEGER NOT NULL,
+            id                   TEXT NOT NULL PRIMARY KEY,
             network_id           TEXT NOT NULL,
-            wifi_ssid            TEXT NOT NULL,
-            wifi_password        TEXT NOT NULL,
-            mqtt_uri             TEXT NOT NULL,
-            device_name          TEXT NOT NULL,
-            sample               INTEGER NOT NULL,
-            energy_mode          INTEGER NOT NULL
+            device_name          TEXT NOT NULL
         );
         "#
     )
@@ -58,30 +50,16 @@ pub async fn insert_hub_table(pool: &SqlitePool,
     sqlx::query(
         r#"
             INSERT INTO hub (
-                sender_user_id,
-                destination_id,
-                timestamp,
+                id,
                 network_id,
-                wifi_ssid,
-                wifi_password,
-                mqtt_uri,
-                device_name,
-                sample,
-                energy_mode
+                device_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?)
             "#
     )
-        .bind(data.metadata.sender_user_id)
-        .bind(data.metadata.destination_id)
-        .bind(data.metadata.timestamp)
+        .bind(data.id)
         .bind(data.network_id)
-        .bind(data.wifi_ssid)
-        .bind(data.wifi_password)
-        .bind(data.mqtt_uri)
         .bind(data.device_name)
-        .bind(data.sample)
-        .bind(data.energy_mode)
         .execute(pool)
         .await?;
 
@@ -130,52 +108,6 @@ pub async fn delete_hub_according_to_id(pool: &SqlitePool, id: &str) -> Result<(
 }
 
 
-/// Función que inserta o actualiza un Hub si ya existe.
-pub async fn upsert_hub(pool: &SqlitePool, data: HubRow) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        INSERT INTO hub (
-            sender_user_id,
-            destination_id,
-            timestamp,
-            network_id,
-            wifi_ssid,
-            wifi_password,
-            mqtt_uri,
-            device_name,
-            sample,
-            energy_mode
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(sender_user_id) DO UPDATE SET
-            destination_id     = excluded.destination_id,
-            timestamp          = excluded.timestamp,
-            network_id         = excluded.network_id,
-            wifi_ssid          = excluded.wifi_ssid,
-            wifi_password      = excluded.wifi_password,
-            mqtt_uri           = excluded.mqtt_uri,
-            device_name        = excluded.device_name,
-            sample             = excluded.sample,
-            energy_mode        = excluded.energy_mode
-        "#
-    )
-        .bind(&data.metadata.sender_user_id)
-        .bind(&data.metadata.destination_id)
-        .bind(&data.metadata.timestamp)
-        .bind(&data.network_id)
-        .bind(&data.wifi_ssid)
-        .bind(&data.wifi_password)
-        .bind(&data.mqtt_uri)
-        .bind(&data.device_name)
-        .bind(data.sample)
-        .bind(data.energy_mode)
-        .execute(pool)
-        .await?;
-
-    Ok(())
-}
-
-
 /// Recupera todos los Hubs registrados en el sistema.
 ///
 /// Mapea automáticamente las filas SQL a la estructura `HubRow`.
@@ -189,4 +121,15 @@ pub async fn get_all_hubs(pool: &SqlitePool) -> Result<Vec<HubRow>, sqlx::Error>
         .await?;
 
     Ok(result)
+}
+
+
+pub async fn count_hubs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let query = format!("SELECT COUNT(*) FROM {}", "hub");
+
+    let count: i64 = sqlx::query_scalar(&query)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(count)
 }

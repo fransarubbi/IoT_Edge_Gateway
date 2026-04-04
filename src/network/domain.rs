@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use crate::context::domain::AppContext;
 use crate::database::domain::DataServiceCommand;
-use crate::message::domain::{HubMessage, Metadata, ServerMessage};
+use crate::message::domain::{HubMessage, ServerMessage};
 use crate::network::logic::{network_admin, network_dba};
 
 
@@ -40,6 +40,8 @@ pub enum NetworkServiceResponse {
     DataCommand(DataServiceCommand),
     /// Señal de sincronización indicando que las redes fueron cargadas en memoria.
     NetworksReady,
+    /// Wrapper de mensaje para finalizar el envío de LinkageRequest.
+    GenerateLinkageAck(String),
 }
 
 
@@ -191,6 +193,8 @@ pub struct NetworkManager {
     pub topic_handshake: Topic,
     pub topic_state: Topic,
     pub topic_heartbeat: Topic,
+    pub topic_linkage_request: Topic,
+    pub topic_linkage_ack: Topic
 }
 
 
@@ -203,12 +207,17 @@ impl NetworkManager {
         let t_handshake = format!("iot/{id_system}/handshake");
         let t_state = format!("iot/{id_system}/state");
         let t_heartbeat = format!("iot/{id_system}/heartbeat");
+        let t_linkage_req = format!("iot/{id_system}/linkage_request");
+        let t_linkage_ack = format!("iot/{id_system}/linkage_ack");
+
         Self {
             networks: HashMap::new(),
             hubs: HashMap::new(),
             topic_handshake: Topic::new(t_handshake, 1),
             topic_state: Topic::new(t_state, 1),
             topic_heartbeat: Topic::new(t_heartbeat, 0),
+            topic_linkage_request: Topic::new(t_linkage_req, 1),
+            topic_linkage_ack: Topic::new(t_linkage_ack, 1),
         }
     }
 
@@ -263,10 +272,20 @@ impl NetworkManager {
 
     /// Preguntar si existe un determinado Hub por ID.
     pub fn search_hub(&self, id_net: &str, id_hub: &str) -> bool {
-        if let Some(hubs_set) = self.hubs.get(id_net) {
-            return hubs_set.iter().any(|hub| hub.id == id_hub);
+        if !self.networks.contains_key(id_net) {
+            // Si la red no existe, retornamos true para que el sistema
+            // lo ignore y no intente guardarlo.
+            return true;
         }
-        true  // si la red no existe, retorna true para no guardar datos en network_task
+
+        // Si la red existe, verificamos si el hub está en el HashSet
+        if let Some(hubs_set) = self.hubs.get(id_net) {
+            hubs_set.iter().any(|hub| hub.id == id_hub)
+        } else {
+            // La red es válida, pero el HashSet de hubs para esta red
+            // aún no se ha creado (0 hubs registrados). Por ende, es falso.
+            false
+        }
     }
 
     /// Obtener un id de un Hub aleatorio perteneciente a una determinada red.
@@ -488,7 +507,6 @@ pub enum NetworkChanged {
 #[derive(Debug, PartialEq, Clone)]
 pub enum HubChanged {
     Insert(HubRow),
-    Update(HubRow),
     Delete(String),
 }
 
@@ -497,32 +515,24 @@ pub enum HubChanged {
 #[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
 pub struct Hub {
     pub id: String,
-    pub device_name: String,
-    pub energy_mode: u32,
+    pub device_name: String
 }
 
 
 /// DTO (Data Transfer Object) para mapear Hubs físicos desde la tabla SQL.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
 pub struct HubRow {
-    #[sqlx(flatten)]
-    pub metadata: Metadata,
-    pub network_id: String,
-    pub wifi_ssid: String,
-    pub wifi_password: String,
-    pub mqtt_uri: String,
+    pub id: String,
     pub device_name: String,
-    pub sample: u32,
-    pub energy_mode: u32,
+    pub network_id: String,
 }
 
 
 impl HubRow {
     pub fn cast_to_hub(self) -> Hub {
         let mut hub = Hub::default();
-        hub.id = self.metadata.sender_user_id;
+        hub.id = self.id;
         hub.device_name = self.device_name;
-        hub.energy_mode = self.energy_mode;
         hub
     }
 }

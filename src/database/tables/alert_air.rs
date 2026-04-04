@@ -24,7 +24,6 @@ use crate::message::domain::AlertAir;
 /// - `destination_type`: tipo de destino lógico del mensaje.
 /// - `destination_id`: identificador del destino.
 /// - `timestamp`: instante de generación de la medición (formato texto).
-/// - `topic_where_arrive`: tópico donde se recibió el mensaje.
 /// - `co2_initial_ppm`: ppm de CO₂ estable previo a la alarma.
 /// - `co2_actual_ppm`: ppm de CO₂ en alarma.
 ///

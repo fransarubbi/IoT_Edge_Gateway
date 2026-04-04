@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use tokio::sync::{mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::database::domain::DataServiceCommand;
 use crate::message::domain::{ActiveHub, DeleteHub, HubMessage, 
@@ -111,28 +111,21 @@ pub async fn network_admin(tx_to_insert_network: mpsc::Sender<NetworkChanged>,
             
             Some(msg_from_hub) = rx_from_hub.recv() => {
                 match msg_from_hub {
-                    HubMessage::FromHubSettings(settings) => {
-                        let id = settings.network.clone();
+                    HubMessage::LinkageRequest(request) => {
+                        let id = request.network.clone();
                         let mut manager = app_context.net_man.write().await;
-                        if !manager.search_hub(&id, &settings.metadata.sender_user_id) {
-                            let hub_row = settings.cast_settings_to_hub_row(id.clone());
+                        if !manager.search_hub(&id, &request.metadata.sender_user_id) {
+                            debug!("Hub con id {} ha solicitado unirse a la red {}", request.metadata.sender_user_id, id);
+                            let hub_row = request.cast_to_hub_row();
                             manager.add_hub(id, hub_row.clone().cast_to_hub());
                             drop(manager);
                             if tx_to_insert_hub.send(HubChanged::Insert(hub_row)).await.is_err() {
                                 error!("no se pudo notificar a network_dba_task que un nuevo Hub debe insertarse");
                             }
-                        }
-                    },
-                    HubMessage::FromHubSettingsAck(settings_ok) => {
-                        let id = settings_ok.network.clone();
-                        if let Some(hub_row) = hub_hash_aux.get_mut(&id) {
-                            if let Some(row) = hub_row.iter().find(|r| r.metadata.sender_user_id == settings_ok.metadata.sender_user_id) {
-                                if tx_to_insert_hub.send(HubChanged::Update(row.clone())).await.is_err() {
-                                    error!("no se pudo notificar a network_dba_task que un Hub debe actualizarse");
-                                }
-                                let mut manager = app_context.net_man.write().await;
-                                manager.remove_hub(&id, &row.metadata.sender_user_id);
-                                manager.add_hub(id, row.clone().cast_to_hub());
+                        } else {
+                            debug!("Hub con id {} ha solicitado unirse a la red {} pero ya está registrado", request.metadata.sender_user_id, id);
+                            if tx_to_core.send(NetworkServiceResponse::GenerateLinkageAck(request.metadata.sender_user_id)).await.is_err() {
+                                error!("no se pudo enviar NetworksReady desde network_admin")
                             }
                         }
                     },
@@ -317,11 +310,6 @@ pub async fn network_dba(tx: mpsc::Sender<DataServiceCommand>,
                     HubChanged::Delete(id) => {
                         if tx.send(DataServiceCommand::DeleteHub(id)).await.is_err() {
                             error!("Error: no se pudo enviar comando DeleteHub");
-                        }
-                    },
-                    HubChanged::Update(hub) => {
-                        if tx.send(DataServiceCommand::UpdateHub(hub)).await.is_err() {
-                            error!("Error: no se pudo enviar comando UpdateHub");
                         }
                     }
                 }

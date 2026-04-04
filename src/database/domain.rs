@@ -27,7 +27,6 @@ pub enum DataServiceCommand {
     GetEpoch,
     NewHub(HubRow),
     DeleteHub(String),
-    UpdateHub(HubRow),
     NewNetwork(NetworkRow),
     DeleteNetwork(String),
     UpdateNetwork(NetworkRow),
@@ -47,6 +46,7 @@ pub enum DataServiceResponse {
     NoNetworks,
     ThereAreNetworks,
     NetworksUpdated,
+    HubInserted(String),
 }
 
 
@@ -71,8 +71,7 @@ pub enum DataCommandInsert {
     InsertNetwork(NetworkRow),
     UpdateNetwork(NetworkRow),
     NewEpoch(u32),
-    InsertHub(HubRow),
-    UpdateHub(HubRow),
+    InsertHub(HubRow)
 }
 
 
@@ -145,11 +144,6 @@ impl DataService {
                         DataServiceCommand::NewHub(row) => {
                             if tx_command_insert.send(DataCommandInsert::InsertHub(row)).await.is_err() {
                                 error!("no se pudo enviar comando InsertHub a dba_insert_task");
-                            }
-                        },
-                        DataServiceCommand::UpdateHub(hub) => {
-                            if tx_command_insert.send(DataCommandInsert::UpdateHub(hub)).await.is_err() {
-                                error!("no se pudo enviar comando UpdateHub a dba_insert_task");
                             }
                         },
                         DataServiceCommand::NewNetwork(network) => {

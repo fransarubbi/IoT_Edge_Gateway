@@ -23,7 +23,6 @@ use crate::message::domain::AlertTh;
 /// - `destination_type`: tipo de destino lógico del mensaje.
 /// - `destination_id`: identificador del destino.
 /// - `timestamp`: instante de generación de la medición (formato texto).
-/// - `topic_where_arrive`: tópico donde se recibió el mensaje.
 /// - `initial_temp`: temperatura estable previa a la alarma.
 /// - `actual_temp`: temperatura de alarma.
 ///

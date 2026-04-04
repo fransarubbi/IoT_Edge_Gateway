@@ -23,7 +23,6 @@ use crate::message::domain::Monitor;
 /// - `destination_type`: tipo de destino lógico del mensaje.
 /// - `destination_id`: identificador del destino.
 /// - `timestamp`: instante de generación de la medición (formato texto).
-///  - `topic_where_arrive`: tópico donde se recibió el mensaje.
 /// - `mem_free`: memoria RAM libre total del nodo.
 /// - `mem_free_hm`: heap libre mínimo.
 /// - `mem_free_block`: bloque de memoria más grande.
