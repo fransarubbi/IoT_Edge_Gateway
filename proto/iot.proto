@@ -24,6 +24,10 @@ message FromEdge {
     SettingOk setting_ok = 8;
     FirmwareOutcome firmware_outcome = 9;
     HelloWorld hello_world = 10;
+    MeasurementBatch measurement_batch = 11;
+    MonitorBatch monitor_batch = 12;
+    AlertAirBatch alert_air_batch = 13;
+    AlertThBatch alert_th_batch = 14;
   }
 }
 
@@ -92,6 +96,22 @@ message Monitor {
   string wifi_ssid = 13;
   int32 wifi_rssi = 14;
   int64 active_time = 15;
+}
+
+message MeasurementBatch {
+  repeated Measurement measurements = 1;
+}
+
+message MonitorBatch {
+  repeated Monitor monitors = 1;
+}
+
+message AlertAirBatch {
+  repeated AlertAir alerts = 1;
+}
+
+message AlertThBatch {
+  repeated AlertTh alerts = 1;
 }
 
 message Settings {

@@ -626,6 +626,85 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 wifi_signal_dbm: metrics.wifi_signal_dbm.unwrap_or(0),
             }))
         },
+        ServerMessage::ReportBatch(reports) => {
+            let proto_measurements = reports.into_iter().map(|r| grpc::Measurement {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: r.metadata.sender_user_id,
+                    destination_id: r.metadata.destination_id,
+                    timestamp: r.metadata.timestamp,
+                }),
+                network: r.network,
+                pulse_counter: r.pulse_counter,
+                pulse_max_duration: r.pulse_max_duration,
+                temperature: r.temperature,
+                humidity: r.humidity,
+                co2_ppm: r.co2_ppm,
+                sample: r.sample as u32,
+            }).collect();
+
+            Some(Payload::MeasurementBatch(grpc::MeasurementBatch {
+                measurements: proto_measurements,
+            }))
+        },
+        ServerMessage::MonitorBatch(monitors) => {
+            let proto_monitors = monitors.into_iter().map(|m| grpc::Monitor {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: m.metadata.sender_user_id,
+                    destination_id: m.metadata.destination_id,
+                    timestamp: m.metadata.timestamp,
+                }),
+                network: m.network,
+                mem_free: m.mem_free,
+                mem_free_hm: m.mem_free_hm,
+                mem_free_block: m.mem_free_block,
+                mem_free_internal: m.mem_free_internal,
+                stack_free_min_coll: m.stack_free_min_coll,
+                stack_free_min_pub: m.stack_free_min_pub,
+                stack_free_min_mic: m.stack_free_min_mic,
+                stack_free_min_th: m.stack_free_min_th,
+                stack_free_min_air: m.stack_free_min_air,
+                stack_free_min_mon: m.stack_free_min_mon,
+                wifi_ssid: m.wifi_ssid,
+                wifi_rssi: m.wifi_rssi as i32,
+                active_time: m.active_time,
+            }).collect();
+
+            Some(Payload::MonitorBatch(grpc::MonitorBatch {
+                monitors: proto_monitors,
+            }))
+        },
+        ServerMessage::AlertAirBatch(alerts) => {
+            let proto_alerts = alerts.into_iter().map(|a| grpc::AlertAir {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: a.metadata.sender_user_id,
+                    destination_id: a.metadata.destination_id,
+                    timestamp: a.metadata.timestamp,
+                }),
+                network: a.network,
+                co2_initial_ppm: a.co2_initial_ppm,
+                co2_actual_ppm: a.co2_actual_ppm,
+            }).collect();
+
+            Some(Payload::AlertAirBatch(grpc::AlertAirBatch {
+                alerts: proto_alerts,
+            }))
+        },
+        ServerMessage::AlertTemBatch(alerts) => {
+            let proto_alerts = alerts.into_iter().map(|a| grpc::AlertTh {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: a.metadata.sender_user_id,
+                    destination_id: a.metadata.destination_id,
+                    timestamp: a.metadata.timestamp,
+                }),
+                network: a.network,
+                initial_temp: a.initial_temp,
+                actual_temp: a.actual_temp,
+            }).collect();
+
+            Some(Payload::AlertThBatch(grpc::AlertThBatch {
+                alerts: proto_alerts,
+            }))
+        },
         _ => None,
     };
 
@@ -659,34 +738,34 @@ async fn process_batch(batch: TableDataVector,
                        system: &System
 ) -> Result<(), ()> {
 
-    for row in batch.measurement {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Report(row), system.id_edge.clone()) {
+    if !batch.measurement.is_empty() {
+        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::ReportBatch(batch.measurement), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar batch de measurements al cliente gRPC");
             }
         }
     }
 
-    for row in batch.monitor {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::Monitor(row), system.id_edge.clone()) {
+    if !batch.monitor.is_empty() {
+        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::MonitorBatch(batch.monitor), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar batch de monitors al cliente gRPC");
             }
         }
     }
 
-    for row in batch.alert_air {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertAir(row), system.id_edge.clone()) {
+    if !batch.alert_air.is_empty() {
+        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertAirBatch(batch.alert_air), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar batch de alert_air al cliente gRPC");
             }
         }
     }
 
-    for row in batch.alert_th {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertTem(row), system.id_edge.clone()) {
+    if !batch.alert_th.is_empty() {
+        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertTemBatch(batch.alert_th), system.id_edge.clone()) {
             if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
-                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                error!("no se puede enviar batch de alert_th al cliente gRPC");
             }
         }
     }
