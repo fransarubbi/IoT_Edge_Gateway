@@ -403,6 +403,7 @@ pub struct Network {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
     pub metadata: Metadata,
+    pub message_id: u64,
     pub network: String,
     pub wifi_ssid: String,
     pub wifi_password: String,
@@ -529,6 +530,7 @@ pub struct ActiveHub {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingOk {
     pub metadata: Metadata,
+    pub message_id: u64,
     pub network: String,
     pub handshake: bool,
 }

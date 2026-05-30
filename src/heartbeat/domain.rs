@@ -380,7 +380,7 @@ fn compute_on_entry(old: &FsmHeartbeat, new: &FsmHeartbeat) -> Action {
 /// # Argumentos
 /// * `tx_to_fsm`: Canal para notificar el Timeout a la FSM.
 /// * `cmd_rx`: Canal para recibir órdenes (`InitTimer`, `StopTimer`).
-#[instrument(name = "watchdog_timer_for_heartbeat", skip(cmd_rx))]
+#[instrument(name = "watchdog_timer_for_heartbeat", skip_all)]
 pub async fn watchdog_timer_for_heartbeat(tx_to_fsm: mpsc::Sender<Event>,
                                           mut cmd_rx: mpsc::Receiver<Event>,
                                           shutdown: CancellationToken) {

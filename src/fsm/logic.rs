@@ -77,6 +77,9 @@ pub async fn fsm(tx_to_core: mpsc::Sender<FsmServiceResponse>,
                                     StateOfSession::InHandshake | StateOfSession::OutHandshake | StateOfSession::RepeatHandshake => {
                                         if handshake.balance_epoch == current_epoch {
                                             session.insert_handshake(handshake.metadata.sender_user_id, handshake.balance_epoch);
+                                            if tx_to_fsm.send(Event::NewMessageHandshake).await.is_err() {
+                                                error!("no se pudo enviar evento NewMessageHandshake");
+                                            }
                                         }
                                     },
                                     _ => {}
@@ -217,6 +220,10 @@ async fn handle_action(action: Action,
                 },
             }
         },
+        Action::CalculateQuorum => {
+            debug!("acción recibida Action::CalculateQuorum");
+            quorum_algorithm(session, tx_to_fsm, app_context).await;
+        },
         Action::OnEntryPhase(sub_p) => {
             debug!("acción recibida Action::OnEntryPhase");
             session.reset_total_attempts();
@@ -350,7 +357,8 @@ async fn quorum_algorithm(session: &mut UpdateSession,
         let manager = app_context.net_man.read().await;
         let total_hubs = manager.get_total_hubs();
         drop(manager);
-        let threshold = PERCENTAGE - (session.get_total_attempts() * 5.0 - 5.0);
+        let penalty = (session.get_total_attempts() - 1.0).max(0.0) * 5.0;
+        let threshold = PERCENTAGE - penalty;
 
         if (((session.get_total_handshake() as f64 / total_hubs as f64) * 100.0) >= threshold) && threshold > 10.0 {
             debug!("quorum aprobado");

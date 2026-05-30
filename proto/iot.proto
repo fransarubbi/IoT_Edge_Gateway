@@ -116,19 +116,21 @@ message AlertThBatch {
 
 message Settings {
   Metadata metadata = 1;
-  string network = 2;
-  string wifi_ssid = 3;
-  string wifi_password = 4;
-  string mqtt_uri = 5;
-  string device_name = 6;
-  uint32 sample = 7;
-  uint32 energy_mode = 8;
+  uint64 message_id = 2;
+  string network = 3;
+  string wifi_ssid = 4;
+  string wifi_password = 5;
+  string mqtt_uri = 6;
+  string device_name = 7;
+  uint32 sample = 8;
+  uint32 energy_mode = 9;
 }
 
 message SettingOk {
   Metadata metadata = 1;
-  string network = 2;
-  bool handshake = 3;
+  uint64 message_id = 2;
+  string network = 3;
+  bool handshake = 4;
 }
 
 message Network {

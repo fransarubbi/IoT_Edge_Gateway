@@ -504,6 +504,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                         destination_id: hub_settings.metadata.destination_id,
                         timestamp: hub_settings.metadata.timestamp,
                     }),
+                    message_id: hub_settings.message_id,
                     network: hub_settings.network,
                     wifi_ssid: hub_settings.wifi_ssid,
                     wifi_password: hub_settings.wifi_password,
@@ -522,6 +523,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                         destination_id: hub_settings_ack.metadata.destination_id,
                         timestamp: hub_settings_ack.metadata.timestamp,
                     }),
+                    message_id: hub_settings_ack.message_id,
                     network: hub_settings_ack.network,
                     handshake: hub_settings_ack.handshake,
                 }
@@ -838,6 +840,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
             to_edge::Payload::Settings(settings) => {
                 let msg = Settings {
                     metadata: extract_metadata(settings.metadata),
+                    message_id: settings.message_id,
                     network: settings.network,
                     wifi_ssid: settings.wifi_ssid,
                     wifi_password: settings.wifi_password,
@@ -862,6 +865,7 @@ async fn handle_grpc_message(proto_msg: ToEdge,
             to_edge::Payload::SettingOk(setting_ok) => {
                 let msg = SettingOk {
                     metadata: extract_metadata(setting_ok.metadata),
+                    message_id: setting_ok.message_id,
                     network: setting_ok.network,
                     handshake: setting_ok.handshake,
                 };

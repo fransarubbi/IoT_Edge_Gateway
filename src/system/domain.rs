@@ -148,8 +148,12 @@ pub fn init_tracing() -> TracingReloadHandle {
     let (filter_layer, reload_handle) = reload::Layer::new(initial_filter);
 
     let fmt_layer = fmt::layer()
+        .pretty()
         .with_target(false)
+        .with_file(true)
         .with_level(true)
+        .with_line_number(true)
+        .with_thread_ids(false)
         .without_time()
         .compact();
 

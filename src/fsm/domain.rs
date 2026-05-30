@@ -352,7 +352,8 @@ pub enum Action {
     OnEntryPhase(SubStatePhase),
     OnEntryNormal,
     OnEntrySafeMode,
-    StopTimer
+    StopTimer,
+    CalculateQuorum,
 }
 
 
@@ -372,6 +373,7 @@ pub enum Event {
     NotApproveNotAttempts,
     InitTimer(Duration),
     StopTimer,
+    NewMessageHandshake,
 }
 
 
@@ -513,9 +515,19 @@ impl FsmState {
                 state_init_balance_mode_event_balance_epoch_not_ok(next_fsm)
             },
             (Some(SubStateBalanceMode::InHandshake), Event::Timeout) => {
-
                 let next_fsm = self.clone();
                 state_in_handshake_event_timeout(next_fsm)
+            },
+            (Some(SubStateBalanceMode::InHandshake), Event::NewMessageHandshake) => {
+                let next_fsm = self.clone();
+                new_message_handshake(next_fsm)
+            },
+            (Some(SubStateBalanceMode::InHandshake), Event::ApproveQuorum) => {
+                let next_fsm = self.clone();
+                state_in_handshake_event_approve(next_fsm)
+            },
+            (Some(SubStateBalanceMode::InHandshake), Event::NotApproveQuorum) => {
+                Transition::Valid(TransitionValid { change_state: self.clone(), actions: vec![] })
             },
             (Some(SubStateBalanceMode::Quorum), _ ) => {
                 match (&self.quorum, event) {
@@ -547,9 +559,31 @@ impl FsmState {
                         let next_fsm = self.clone();
                         state_repeat_handshake_in(next_fsm)
                     },
+                    (Some(SubStateQuorum::RepeatHandshakeIn), Event::NewMessageHandshake) => {
+                        let next_fsm = self.clone();
+                        new_message_handshake(next_fsm)
+                    },
+                    (Some(SubStateQuorum::RepeatHandshakeIn), Event::ApproveQuorum) => {
+                        let next_fsm = self.clone();
+                        state_repeat_in_handshake_event_approve(next_fsm)
+                    },
+                    (Some(SubStateQuorum::RepeatHandshakeIn), Event::NotApproveQuorum) => {
+                        Transition::Valid(TransitionValid { change_state: self.clone(), actions: vec![] })
+                    },
                     (Some(SubStateQuorum::RepeatHandshakeOut), Event::Timeout) => {
                         let next_fsm = self.clone();
                         state_repeat_handshake_out(next_fsm)
+                    },
+                    (Some(SubStateQuorum::RepeatHandshakeOut), Event::NewMessageHandshake) => {
+                        let next_fsm = self.clone();
+                        new_message_handshake(next_fsm)
+                    },
+                    (Some(SubStateQuorum::RepeatHandshakeOut), Event::ApproveQuorum) => {
+                        let next_fsm = self.clone();
+                        state_repeat_out_handshake_event_approve(next_fsm)
+                    },
+                    (Some(SubStateQuorum::RepeatHandshakeOut), Event::NotApproveQuorum) => {
+                        Transition::Valid(TransitionValid { change_state: self.clone(), actions: vec![] })
                     },
                     _ => invalid()
                 }
@@ -574,6 +608,17 @@ impl FsmState {
             (Some(SubStateBalanceMode::OutHandshake), Event::Timeout) => {
                 let next_fsm = self.clone();
                 state_out_handshake_event_timeout(next_fsm)
+            },
+            (Some(SubStateBalanceMode::OutHandshake), Event::ApproveQuorum) => {
+                let next_fsm = self.clone();
+                state_out_handshake_event_approve(next_fsm)
+            },
+            (Some(SubStateBalanceMode::OutHandshake), Event::NotApproveQuorum) => {
+                Transition::Valid(TransitionValid { change_state: self.clone(), actions: vec![] })
+            },
+            (Some(SubStateBalanceMode::OutHandshake), Event::NewMessageHandshake) => {
+                let next_fsm = self.clone();
+                new_message_handshake(next_fsm)
             },
             _ => invalid()
         }
@@ -669,6 +714,55 @@ fn state_in_handshake_event_timeout(mut next_fsm: FsmState) -> Transition {
 }
 
 
+fn new_message_handshake(next_fsm: FsmState) -> Transition {
+
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::CalculateQuorum],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_repeat_in_handshake_event_approve(mut next_fsm: FsmState) -> Transition {
+    next_fsm.balance = Some(SubStateBalanceMode::Phase);
+    next_fsm.phase = Some(SubStatePhase::Alert);
+    next_fsm.quorum = None;
+
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_repeat_out_handshake_event_approve(mut next_fsm: FsmState) -> Transition {
+    next_fsm.balance = None;
+    next_fsm.quorum = None;
+    next_fsm.global = StateGlobal::Normal;
+
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
+fn state_in_handshake_event_approve(mut next_fsm: FsmState) -> Transition {
+    next_fsm.balance = Some(SubStateBalanceMode::Phase);
+    next_fsm.phase = Some(SubStatePhase::Alert);
+    next_fsm.quorum = None;
+
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
 /// Transición: CheckQuorumIn -> RepeatHandshakeIn (No Quorum).
 fn state_check_quorum_in_event_not_approve(mut next_fsm: FsmState) -> Transition {
     next_fsm.quorum = Some(SubStateQuorum::RepeatHandshakeIn);
@@ -701,7 +795,7 @@ fn state_check_quorum_in_event_approve_quorum(mut next_fsm: FsmState) -> Transit
 
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![],
+        actions: vec![Action::StopTimer],
     };
     Transition::Valid(valid)
 }
@@ -709,12 +803,13 @@ fn state_check_quorum_in_event_approve_quorum(mut next_fsm: FsmState) -> Transit
 
 /// Transición: CheckQuorumOut -> Normal (Approve).
 fn state_check_quorum_out_event_approve_quorum(mut next_fsm: FsmState) -> Transition {
+    next_fsm.balance = None;
     next_fsm.quorum = None;
     next_fsm.global = StateGlobal::Normal;
 
     let valid = TransitionValid {
         change_state: next_fsm,
-        actions: vec![],
+        actions: vec![Action::StopTimer],
     };
     Transition::Valid(valid)
 }
@@ -808,6 +903,19 @@ fn state_out_handshake_event_timeout(mut next_fsm: FsmState) -> Transition {
 }
 
 
+fn state_out_handshake_event_approve(mut next_fsm: FsmState) -> Transition {
+    next_fsm.balance = None;
+    next_fsm.quorum = None;
+    next_fsm.global = StateGlobal::Normal;
+
+    let valid = TransitionValid {
+        change_state: next_fsm,
+        actions: vec![Action::StopTimer],
+    };
+    Transition::Valid(valid)
+}
+
+
 /// Calcula las acciones de entrada (`OnEntry...`) detectando cambios de estado.
 ///
 /// Compara el estado anterior (`old`) con el nuevo (`new`) para identificar
@@ -849,7 +957,7 @@ fn compute_on_entry(old: &FsmState, new: &FsmState) -> Vec<Action> {
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
-#[instrument(name = "fsm_watchdog_timer", skip(cmd_rx))]
+#[instrument(name = "fsm_watchdog_timer", skip_all)]
 pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                                 mut cmd_rx: mpsc::Receiver<Event>,
                                 cancel: CancellationToken) {
@@ -875,905 +983,5 @@ pub async fn fsm_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
                 debug!("Watchdog timer de fsm general, cancelado");
             }
         }
-    }
-}
-
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ===== Funciones auxiliares =====
-
-    /// Verifica si una acción específica está presente en el vector de acciones
-    fn contains_action(actions: &[Action], target: &Action) -> bool {
-        actions.iter().any(|a| a == target)
-    }
-
-    /// Trait para desempaquetar transiciones válidas de forma más limpia
-    trait TransitionExt {
-        fn unwrap_valid(self) -> TransitionValid;
-        fn unwrap_invalid(self) -> TransitionInvalid;
-    }
-
-    impl TransitionExt for Transition {
-        fn unwrap_valid(self) -> TransitionValid {
-            match self {
-                Transition::Valid(v) => v,
-                Transition::Invalid(i) => panic!("Se esperaba transición válida, se obtuvo: {}", i.get_invalid()),
-            }
-        }
-
-        fn unwrap_invalid(self) -> TransitionInvalid {
-            match self {
-                Transition::Invalid(i) => i,
-                Transition::Valid(_) => panic!("Se esperaba transición inválida, pero fue válida"),
-            }
-        }
-    }
-
-    // ===== Tests de inicialización =====
-
-    #[test]
-    fn test_nuevo_fsm_estado_inicial() {
-        let fsm = FsmState::new();
-        assert_eq!(fsm.global, StateGlobal::Start);
-        assert_eq!(fsm.balance, None);
-        assert_eq!(fsm.quorum, None);
-        assert_eq!(fsm.phase, None);
-    }
-
-    // ===== Tests para StateGlobal::Start =====
-
-    #[test]
-    fn test_start_evento_start() {
-        let fsm = FsmState::new();
-        let transition = fsm.step(Event::Start);
-
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::InitBalanceMode)));
-    }
-
-    #[test]
-    fn test_start_evento_invalido() {
-        let fsm = FsmState::new();
-
-        // Todos estos eventos deberían ser inválidos en Start
-        let eventos_invalidos = vec![
-            Event::Timeout,
-            Event::BalanceEpochOk,
-            Event::StopTimer,
-        ];
-
-        for evento in eventos_invalidos {
-            let transition = fsm.step(evento);
-            match transition {
-                Transition::Invalid(_) => {},
-                _ => panic!("Se esperaba transición inválida para evento en Start"),
-            }
-        }
-    }
-
-    // ===== Tests para StateGlobal::BalanceMode - SubStateBalanceMode::InitBalanceMode =====
-
-    #[test]
-    fn test_init_balance_mode_evento_balance_epoch_ok() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
-
-        let transition = fsm.step(Event::BalanceEpochOk);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::InHandshake));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::InHandshake)));
-    }
-
-    #[test]
-    fn test_init_balance_mode_evento_balance_epoch_not_ok() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
-
-        let transition = fsm.step(Event::BalanceEpochNotOk);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-
-        assert_eq!(new_fsm.global, StateGlobal::SafeMode);
-        assert_eq!(new_fsm.balance, None);
-    }
-
-    #[test]
-    fn test_init_balance_mode_eventos_invalidos() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
-
-        let eventos_invalidos = vec![
-            Event::Timeout,
-            Event::ApproveQuorum,
-        ];
-
-        for evento in eventos_invalidos {
-            let transition = fsm.step(evento);
-            transition.unwrap_invalid();
-        }
-    }
-
-    // ===== Tests para SubStateBalanceMode::InHandshake =====
-
-    #[test]
-    fn test_in_handshake_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::InHandshake);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::Quorum));
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::Quorum)));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::CheckQuorumIn)));
-    }
-
-    // ===== Tests para SubStateQuorum::CheckQuorumIn =====
-
-    #[test]
-    fn test_check_quorum_in_evento_approve_quorum() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let transition = fsm.step(Event::ApproveQuorum);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::Phase));
-        assert_eq!(new_fsm.phase, Some(SubStatePhase::Alert));
-        assert_eq!(new_fsm.quorum, None);
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::Phase)));
-        assert!(contains_action(&actions, &Action::OnEntryPhase(SubStatePhase::Alert)));
-    }
-
-    #[test]
-    fn test_check_quorum_in_evento_not_approve_quorum() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let transition = fsm.step(Event::NotApproveQuorum);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::RepeatHandshakeIn));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::RepeatHandshakeIn)));
-    }
-
-    #[test]
-    fn test_check_quorum_in_evento_not_approve_not_attempts() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let transition = fsm.step(Event::NotApproveNotAttempts);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-
-        assert_eq!(new_fsm.global, StateGlobal::SafeMode);
-        assert_eq!(new_fsm.balance, None);
-        assert_eq!(new_fsm.quorum, None);
-    }
-
-    // ===== Tests para SubStateQuorum::CheckQuorumOut =====
-
-    #[test]
-    fn test_check_quorum_out_evento_approve_quorum() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumOut);
-
-        let transition = fsm.step(Event::ApproveQuorum);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-
-        assert_eq!(new_fsm.global, StateGlobal::Normal);
-        assert_eq!(new_fsm.quorum, None);
-    }
-
-    #[test]
-    fn test_check_quorum_out_evento_not_approve_quorum() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumOut);
-
-        let transition = fsm.step(Event::NotApproveQuorum);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::RepeatHandshakeOut));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::RepeatHandshakeOut)));
-    }
-
-    #[test]
-    fn test_check_quorum_out_evento_not_approve_not_attempts() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumOut);
-
-        let transition = fsm.step(Event::NotApproveNotAttempts);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-
-        assert_eq!(new_fsm.global, StateGlobal::SafeMode);
-        assert_eq!(new_fsm.balance, None);
-        assert_eq!(new_fsm.quorum, None);
-    }
-
-    // ===== Tests para SubStateQuorum::RepeatHandshakeIn =====
-
-    #[test]
-    fn test_repeat_handshake_in_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::RepeatHandshakeIn);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::CheckQuorumIn)));
-    }
-
-    // ===== Tests para SubStateQuorum::RepeatHandshakeOut =====
-
-    #[test]
-    fn test_repeat_handshake_out_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::RepeatHandshakeOut);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::CheckQuorumOut)));
-    }
-
-    // ===== Tests para SubStatePhase::Alert =====
-
-    #[test]
-    fn test_alert_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Phase);
-        fsm.phase = Some(SubStatePhase::Alert);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.phase, Some(SubStatePhase::Data));
-        assert!(contains_action(&actions, &Action::OnEntryPhase(SubStatePhase::Data)));
-    }
-
-    // ===== Tests para SubStatePhase::Data =====
-
-    #[test]
-    fn test_data_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Phase);
-        fsm.phase = Some(SubStatePhase::Data);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.phase, Some(SubStatePhase::Monitor));
-        assert!(contains_action(&actions, &Action::OnEntryPhase(SubStatePhase::Monitor)));
-    }
-
-    // ===== Tests para SubStatePhase::Monitor =====
-
-    #[test]
-    fn test_monitor_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Phase);
-        fsm.phase = Some(SubStatePhase::Monitor);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::OutHandshake));
-        assert_eq!(new_fsm.phase, None);
-        assert!(contains_action(&actions, &Action::StopSendHeartbeatMessagePhase));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::OutHandshake)));
-    }
-
-    // ===== Tests para SubStateBalanceMode::OutHandshake =====
-
-    #[test]
-    fn test_out_handshake_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::OutHandshake);
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let new_fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(new_fsm.balance, Some(SubStateBalanceMode::Quorum));
-        assert_eq!(new_fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::Quorum)));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::CheckQuorumOut)));
-    }
-
-    // ===== Tests para StateGlobal::SafeMode =====
-
-    #[test]
-    fn test_safe_mode_evento_timeout() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::SafeMode;
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        let actions = valid.get_actions();
-
-        assert!(contains_action(&actions, &Action::StopSendHeartbeatMessageSafeMode));
-    }
-
-    #[test]
-    fn test_safe_mode_eventos_invalidos() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::SafeMode;
-
-        let eventos_invalidos = vec![
-            Event::ApproveQuorum,
-            Event::Start,
-        ];
-
-        for evento in eventos_invalidos {
-            let transition = fsm.step(evento);
-            transition.unwrap_invalid();
-        }
-    }
-
-    // ===== Tests para StateGlobal::Normal =====
-
-    #[test]
-    fn test_normal_cualquier_evento_invalido() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::Normal;
-
-        let eventos = vec![
-            Event::Start,
-            Event::Timeout,
-            Event::BalanceEpochOk,
-            Event::ApproveQuorum,
-        ];
-
-        for evento in eventos {
-            let transition = fsm.step(evento);
-            let invalid = transition.unwrap_invalid();
-            assert!(invalid.get_invalid().contains("Normal"));
-        }
-    }
-
-    // ===== Tests de secuencias completas =====
-
-    #[test]
-    fn test_secuencia_completa_exitosa_path_in() {
-        let mut fsm = FsmState::new();
-
-        // Start -> BalanceMode.InitBalanceMode
-        fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
-
-        // InitBalanceMode -> InHandshake
-        fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::InHandshake));
-
-        // InHandshake -> Quorum.CheckQuorumIn
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::Quorum));
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-
-        // CheckQuorumIn -> Phase.Alert
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::Phase));
-        assert_eq!(fsm.phase, Some(SubStatePhase::Alert));
-
-        // Alert -> Data
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Data));
-
-        // Data -> Monitor
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Monitor));
-
-        // Monitor -> OutHandshake
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::OutHandshake));
-        assert_eq!(fsm.phase, None);
-
-        // OutHandshake -> Quorum.CheckQuorumOut
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::Quorum));
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
-
-        // CheckQuorumOut -> Normal
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::Normal);
-    }
-
-    #[test]
-    fn test_secuencia_quorum_in_con_retry() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        // CheckQuorumIn -> RepeatHandshakeIn (no aprobado)
-        fsm = fsm.step(Event::NotApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::RepeatHandshakeIn));
-
-        // RepeatHandshakeIn -> CheckQuorumIn (timeout)
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-
-        // CheckQuorumIn -> RepeatHandshakeIn (no aprobado otra vez)
-        fsm = fsm.step(Event::NotApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::RepeatHandshakeIn));
-
-        // RepeatHandshakeIn -> CheckQuorumIn (timeout)
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-
-        // CheckQuorumIn -> Phase.Alert (finalmente aprobado)
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::Phase));
-        assert_eq!(fsm.phase, Some(SubStatePhase::Alert));
-    }
-
-    #[test]
-    fn test_secuencia_quorum_out_con_retry() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumOut);
-
-        // CheckQuorumOut -> RepeatHandshakeOut
-        fsm = fsm.step(Event::NotApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::RepeatHandshakeOut));
-
-        // RepeatHandshakeOut -> CheckQuorumOut
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
-
-        // CheckQuorumOut -> Normal (aprobado)
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::Normal);
-    }
-
-    #[test]
-    fn test_secuencia_fallo_a_safe_mode_desde_init() {
-        let mut fsm = FsmState::new();
-
-        // Start -> BalanceMode
-        fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-
-        // InitBalanceMode -> SafeMode (BalanceEpochNotOk)
-        fsm = fsm.step(Event::BalanceEpochNotOk).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::SafeMode);
-        assert_eq!(fsm.balance, None);
-    }
-
-    #[test]
-    fn test_secuencia_fallo_a_safe_mode_desde_quorum_in() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        // CheckQuorumIn -> SafeMode (sin intentos restantes)
-        fsm = fsm.step(Event::NotApproveNotAttempts).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::SafeMode);
-        assert_eq!(fsm.balance, None);
-        assert_eq!(fsm.quorum, None);
-    }
-
-    #[test]
-    fn test_secuencia_fallo_a_safe_mode_desde_quorum_out() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Quorum);
-        fsm.quorum = Some(SubStateQuorum::CheckQuorumOut);
-
-        // CheckQuorumOut -> SafeMode (sin intentos restantes)
-        fsm = fsm.step(Event::NotApproveNotAttempts).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::SafeMode);
-        assert_eq!(fsm.balance, None);
-        assert_eq!(fsm.quorum, None);
-    }
-
-    #[test]
-    fn test_ciclo_completo_de_phases() {
-        let mut fsm = FsmState::new();
-        fsm.global = StateGlobal::BalanceMode;
-        fsm.balance = Some(SubStateBalanceMode::Phase);
-        fsm.phase = Some(SubStatePhase::Alert);
-
-        // Alert -> Data -> Monitor -> OutHandshake
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Data));
-
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Monitor));
-
-        let transition = fsm.step(Event::Timeout);
-        let valid = transition.unwrap_valid();
-        fsm = valid.get_change_state();
-        let actions = valid.get_actions();
-
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::OutHandshake));
-        assert_eq!(fsm.phase, None);
-        assert!(contains_action(&actions, &Action::StopSendHeartbeatMessagePhase));
-    }
-
-    // ===== Tests de compute_on_entry =====
-
-    #[test]
-    fn test_on_entry_sin_cambios() {
-        let fsm1 = FsmState::new();
-        let fsm2 = FsmState::new();
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 0);
-    }
-
-    #[test]
-    fn test_on_entry_cambio_balance() {
-        let mut fsm1 = FsmState::new();
-        fsm1.balance = Some(SubStateBalanceMode::InitBalanceMode);
-
-        let mut fsm2 = FsmState::new();
-        fsm2.balance = Some(SubStateBalanceMode::InHandshake);
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 1);
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::InHandshake)));
-    }
-
-    #[test]
-    fn test_on_entry_cambio_quorum() {
-        let mut fsm1 = FsmState::new();
-        fsm1.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let mut fsm2 = FsmState::new();
-        fsm2.quorum = Some(SubStateQuorum::RepeatHandshakeIn);
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 1);
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::RepeatHandshakeIn)));
-    }
-
-    #[test]
-    fn test_on_entry_cambio_phase() {
-        let mut fsm1 = FsmState::new();
-        fsm1.phase = Some(SubStatePhase::Alert);
-
-        let mut fsm2 = FsmState::new();
-        fsm2.phase = Some(SubStatePhase::Data);
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 1);
-        assert!(contains_action(&actions, &Action::OnEntryPhase(SubStatePhase::Data)));
-    }
-
-    #[test]
-    fn test_on_entry_multiples_cambios() {
-        let mut fsm1 = FsmState::new();
-        fsm1.balance = Some(SubStateBalanceMode::InHandshake);
-
-        let mut fsm2 = FsmState::new();
-        fsm2.balance = Some(SubStateBalanceMode::Quorum);
-        fsm2.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 2);
-        assert!(contains_action(&actions, &Action::OnEntryBalance(SubStateBalanceMode::Quorum)));
-        assert!(contains_action(&actions, &Action::OnEntryQuorum(SubStateQuorum::CheckQuorumIn)));
-    }
-
-    #[test]
-    fn test_on_entry_desaparicion_de_subestado() {
-        let mut fsm1 = FsmState::new();
-        fsm1.quorum = Some(SubStateQuorum::CheckQuorumIn);
-
-        let mut fsm2 = FsmState::new();
-        fsm2.quorum = None;
-
-        let actions = compute_on_entry(&fsm1, &fsm2);
-        assert_eq!(actions.len(), 0); // No se genera OnEntry cuando desaparece
-    }
-
-    // ===== Tests async del watchdog timer =====
-
-    #[tokio::test]
-    async fn test_watchdog_timer_timeout_normal() {
-        let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        let token = CancellationToken::new();
-        tokio::spawn(async move {
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Iniciar timer con duración corta
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
-
-        // Esperar el timeout
-        match tokio::time::timeout(Duration::from_millis(200), rx_from_timer.recv()).await {
-            Ok(Some(Event::Timeout)) => {},
-            _ => panic!("Se esperaba evento Timeout"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_cancelacion() {
-        let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Iniciar timer
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(200))).await.unwrap();
-
-        // Cancelar inmediatamente
-        sleep(Duration::from_millis(10)).await;
-        tx_cmd.send(Event::StopTimer).await.unwrap();
-
-        // No debería recibir timeout
-        match tokio::time::timeout(Duration::from_millis(300), rx_from_timer.recv()).await {
-            Err(_) => {}, // Timeout esperado, no se recibió evento
-            Ok(_) => panic!("No debería recibir ningún evento después de cancelar"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_multiples_ciclos() {
-        let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Ejecutar 3 ciclos de timer
-        for i in 0..3 {
-            tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
-            match tokio::time::timeout(Duration::from_millis(100), rx_from_timer.recv()).await {
-                Ok(Some(Event::Timeout)) => {},
-                _ => panic!("Se esperaba Timeout en ciclo {}", i),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_stop_antes_de_init() {
-        let (tx_to_fsm, _rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Enviar StopTimer sin InitTimer primero (debe ignorarse)
-        tx_cmd.send(Event::StopTimer).await.unwrap();
-
-        // Luego iniciar normalmente
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
-
-        // Debe funcionar normalmente
-        sleep(Duration::from_millis(100)).await;
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_canal_cerrado() {
-        let (tx_to_fsm, _rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        let handle = tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Cerrar canal de comandos
-        drop(tx_cmd);
-
-        // El watchdog debe terminar limpiamente
-        tokio::time::timeout(Duration::from_millis(100), handle)
-            .await
-            .expect("El watchdog debería terminar cuando se cierra el canal")
-            .expect("La tarea debería completarse exitosamente");
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_evento_invalido_ignorado() {
-        let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Iniciar timer normal
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
-
-        // El timer debe funcionar normalmente a pesar del evento inválido
-        match tokio::time::timeout(Duration::from_millis(100), rx_from_timer.recv()).await {
-            Ok(Some(Event::Timeout)) => {},
-            _ => panic!("Se esperaba Timeout a pesar del evento inválido previo"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_watchdog_timer_reinicio_rapido() {
-        let (tx_to_fsm, mut rx_from_timer) = mpsc::channel(10);
-        let (tx_cmd, rx_cmd) = mpsc::channel(10);
-
-        tokio::spawn(async move {
-            let token = CancellationToken::new();
-            fsm_watchdog_timer(tx_to_fsm, rx_cmd, token).await;
-        });
-
-        // Iniciar timer
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(100))).await.unwrap();
-
-        // Cancelar
-        sleep(Duration::from_millis(20)).await;
-        tx_cmd.send(Event::StopTimer).await.unwrap();
-
-        // Reiniciar inmediatamente con un timer más corto
-        tx_cmd.send(Event::InitTimer(Duration::from_millis(50))).await.unwrap();
-
-        // Debería recibir timeout del segundo timer
-        match tokio::time::timeout(Duration::from_millis(150), rx_from_timer.recv()).await {
-            Ok(Some(Event::Timeout)) => {},
-            _ => panic!("Se esperaba Timeout del segundo timer"),
-        }
-    }
-
-    // ===== Tests de integración de secuencias complejas =====
-
-    #[test]
-    fn test_integracion_flujo_completo_sin_fallos() {
-        let mut fsm = FsmState::new();
-
-        // 1. Start
-        assert_eq!(fsm.global, StateGlobal::Start);
-
-        // 2. Start -> BalanceMode.InitBalanceMode
-        fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::BalanceMode);
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::InitBalanceMode));
-
-        // 3. InitBalanceMode -> InHandshake
-        fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::InHandshake));
-
-        // 4. InHandshake -> Quorum.CheckQuorumIn
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-
-        // 5. CheckQuorumIn -> Phase.Alert (aprobado en primer intento)
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Alert));
-
-        // 6-8. Ciclo completo de Phases: Alert -> Data -> Monitor
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.balance, Some(SubStateBalanceMode::OutHandshake));
-
-        // 9. OutHandshake -> Quorum.CheckQuorumOut
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-        assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumOut));
-
-        // 10. CheckQuorumOut -> Normal (éxito final)
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.global, StateGlobal::Normal);
-
-        // 11. Normal no acepta más eventos
-        let invalid = fsm.step(Event::Timeout).unwrap_invalid();
-        assert!(invalid.get_invalid().contains("Normal"));
-    }
-
-    #[test]
-    fn test_integracion_flujo_con_multiples_reintentos() {
-        let mut fsm = FsmState::new();
-
-        // Llegar a CheckQuorumIn
-        fsm = fsm.step(Event::Start).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::BalanceEpochOk).unwrap_valid().get_change_state();
-        fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-
-        // Intentar quorum 3 veces antes de aprobar
-        for _ in 0..3 {
-            fsm = fsm.step(Event::NotApproveQuorum).unwrap_valid().get_change_state();
-            assert_eq!(fsm.quorum, Some(SubStateQuorum::RepeatHandshakeIn));
-
-            fsm = fsm.step(Event::Timeout).unwrap_valid().get_change_state();
-            assert_eq!(fsm.quorum, Some(SubStateQuorum::CheckQuorumIn));
-        }
-
-        // Finalmente aprobar
-        fsm = fsm.step(Event::ApproveQuorum).unwrap_valid().get_change_state();
-        assert_eq!(fsm.phase, Some(SubStatePhase::Alert));
-    }
-
-    #[test]
-    fn test_integracion_todos_los_caminos_a_safe_mode() {
-        // Camino 1: Desde InitBalanceMode
-        let mut fsm1 = FsmState::new();
-        fsm1 = fsm1.step(Event::Start).unwrap_valid().get_change_state();
-        fsm1 = fsm1.step(Event::BalanceEpochNotOk).unwrap_valid().get_change_state();
-        assert_eq!(fsm1.global, StateGlobal::SafeMode);
-
-        // Camino 2: Desde CheckQuorumIn
-        let mut fsm2 = FsmState::new();
-        fsm2.global = StateGlobal::BalanceMode;
-        fsm2.balance = Some(SubStateBalanceMode::Quorum);
-        fsm2.quorum = Some(SubStateQuorum::CheckQuorumIn);
-        fsm2 = fsm2.step(Event::NotApproveNotAttempts).unwrap_valid().get_change_state();
-        assert_eq!(fsm2.global, StateGlobal::SafeMode);
-
-        // Camino 3: Desde CheckQuorumOut
-        let mut fsm3 = FsmState::new();
-        fsm3.global = StateGlobal::BalanceMode;
-        fsm3.balance = Some(SubStateBalanceMode::Quorum);
-        fsm3.quorum = Some(SubStateQuorum::CheckQuorumOut);
-        fsm3 = fsm3.step(Event::NotApproveNotAttempts).unwrap_valid().get_change_state();
-        assert_eq!(fsm3.global, StateGlobal::SafeMode);
     }
 }

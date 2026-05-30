@@ -121,6 +121,11 @@ impl MetricsCollector {
         }
     }
 
+    
+    pub fn prep_cpu_refresh(&mut self) {
+        self.system.refresh_cpu_usage();
+    }
+
     /// Actualiza y retorna las métricas actuales del sistema.
     ///
     /// Este método refresca la información de hardware de forma incremental

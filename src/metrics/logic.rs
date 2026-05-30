@@ -71,6 +71,11 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
             Some(msg) = rx_from_timer.recv() => {
                 match msg {
                     MetricsTimerEvent::Timeout => {
+                        metrics.prep_cpu_refresh();
+
+                        // Definimos nuestra ventana de observación instantánea
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+
                         let metadata = Metadata {
                             sender_user_id: app_context.system.id_edge.clone(),
                             destination_id: "server0".to_string(),

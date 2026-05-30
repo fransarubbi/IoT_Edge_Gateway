@@ -23,9 +23,9 @@ pub mod fsm {
 
 pub mod grpc_service {
     pub const TLS_CERT_TIMEOUT_SECS: u64 = 10;
-    pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
-    pub const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
-    pub const CA_EDGE_GRPC : &str = "/etc/mosquitto/certs/root.crt";
+    pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 20;
+    pub const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 40;
+    pub const CA_EDGE_GRPC : &str = "/etc/mosquitto/certs/ca_manager_root.crt";
     pub const CRT_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge_fullchain.crt";
     pub const KEY_EDGE_GRPC : &str = "/etc/mosquitto/certs/edge_rust.key";
 }
@@ -40,7 +40,7 @@ pub mod mqtt_service {
     pub const BUFFER_SIZE: usize = 1000;
     pub const MTLS_PORT: u16 = 8883;
     pub const KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
-    pub const CA_EDGE_MQTT : &str = "/etc/mosquitto/certs/root.crt";
-    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge.crt";
+    pub const CA_EDGE_MQTT : &str = "/etc/mosquitto/certs/ca_manager_root.crt";
+    pub const CRT_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge_fullchain.crt";
     pub const KEY_EDGE_MQTT : &str = "/etc/mosquitto/certs/edge_rust.key";
 }
