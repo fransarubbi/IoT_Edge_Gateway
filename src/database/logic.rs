@@ -67,7 +67,6 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
             }
 
             _ = timer.tick() => {
-                debug!("se acabo el tiempo de batch en dba_insert_task");
                 if !tdv.is_empty() {
                     repo.insert(&tdv).await.ok();
                     tdv.clear();
@@ -77,7 +76,7 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
             Some(command) = rx_cmd.recv() => {
                 match command {
                     DataCommandInsert::InsertHubMessage(message) => {
-                        debug!("mensaje HubMessage entrante a dba_insert_task");
+                        debug!("mensaje HubMessage entrante a dba_insert_task (No Hay Conexión con Servidor)");
                         sort_by_vectors(message, &mut tdv);
                         if tdv.is_some_vector_full() {
                             repo.insert(&tdv).await.ok();
@@ -85,9 +84,10 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                         }
                     },
                     DataCommandInsert::InsertNetwork(network) => {
-                        match repo.insert_network(network).await {
+                        match repo.insert_network(network.clone()).await {
                             Ok(_) => {
-                                info!("nueva Red insertada en la base de datos");
+                                let id = network.id_network;
+                                info!("nueva red con id {id} insertada en la base de datos");
                                 if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
                                     error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
                                 }
@@ -96,9 +96,10 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                         }
                     },
                     DataCommandInsert::UpdateNetwork(network) => {
-                        match repo.update_network(network).await {
+                        match repo.update_network(network.clone()).await {
                             Ok(_) => {
-                                info!("red actualizada en base de datos");
+                                let id = network.id_network;
+                                info!("red con {id} actualizada en base de datos");
                                 if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
                                     error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
                                 }
@@ -109,7 +110,7 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                     DataCommandInsert::NewEpoch(epoch) => {
                         match repo.update_epoch(epoch).await {
                             Ok(_) => {
-                                info!("nuevo Epoch insertado en la base de datos");
+                                info!("nuevo Epoch {epoch} insertado en la base de datos");
                             }
                             Err(e) => error!("no se pudo insertar nuevo Epoch en base de datos. {e}"),
                         }
@@ -121,7 +122,8 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                                 if networks > 0 {
                                     match repo.insert_hub(hub.clone()).await {
                                         Ok(_) => {
-                                            info!("nuevo Hub insertado en la base de datos");
+                                            let id = hub.id.clone();
+                                            info!("nuevo Hub con id {id} insertado en la base de datos");
                                             if tx_to_core.send(DataServiceResponse::HubInserted(hub.id)).await.is_err() {
                                                 error!("no se pudo enviar HubInserted desde dba_insert_task");
                                             }
@@ -129,7 +131,10 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                                                 error!("no se pudo enviar ThereAreNetworks desde dba_insert_task");
                                             }
                                         }
-                                        Err(e) => error!("no se pudo insertar un nuevo Hub en base de datos. {e}"),
+                                        Err(e) => {
+                                            let id = hub.id;
+                                            error!("no se pudo insertar un nuevo Hub con id {id} en base de datos. {e}")
+                                        },
                                     }
                                 } else {
                                     info!("no se puede insertar el hub, debido a que no hay redes en la base de datos");

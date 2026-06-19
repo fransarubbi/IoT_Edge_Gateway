@@ -320,6 +320,11 @@ impl Core {
                             if self.core_to_data_service.send(DataServiceCommand::GetEpoch).await.is_err() {
                                 error!("no se pudo enviar GetEpoch desde Core");
                             }
+                        },
+                        FsmServiceResponse::EdgeState(state) => {
+                            if self.core_to_message_service.send(MessageServiceCommand::GenerateEdgeState(state)).await.is_err() {
+                                error!("no se pudo enviar GenerateEdgeState desde Core");
+                            }
                         }
                     }
                 }

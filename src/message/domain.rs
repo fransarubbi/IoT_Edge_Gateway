@@ -41,7 +41,8 @@ pub enum MessageServiceCommand {
     Batch(TableDataVector),
     ToHub(HubMessage),
     ToServer(ServerMessage),
-    GenerateLinkageAck(String)
+    GenerateLinkageAck(String),
+    GenerateEdgeState(String),
 }
 
 
@@ -294,6 +295,11 @@ impl MessageService {
                             if tx_command_to_hub.send(MessageServiceCommand::ToHub(HubMessage::LinkageAck(msg))).await.is_err() {
                                 error!("no se pudo enviar mensaje a msg_to_hub");
                             }
+                        },
+                        MessageServiceCommand::GenerateEdgeState(state) => {
+                            if tx_command_to_server.send(MessageServiceCommand::GenerateEdgeState(state)).await.is_err() {
+                                error!("no se pudo enviar GenerateEdgeState a msg_to_server");
+                            }
                         }
                     }
                 }
@@ -378,6 +384,12 @@ pub struct Monitor {
     pub stack_free_min_th: i64,
     pub stack_free_min_air: i64,
     pub stack_free_min_mon: i64,
+    pub stack_https_handle: i64,
+    pub stack_health_handle: i64,
+    pub stack_parser_handle: i64,
+    pub stack_converter_handle: i64,
+    pub stack_heartbeat_handle: i64,
+    pub stack_fsm_handle: i64,
     pub wifi_ssid: String,
     pub wifi_rssi: i8,
     pub active_time: i64,
@@ -499,6 +511,13 @@ pub struct Heartbeat {
 pub struct HelloWorld {
     pub metadata: Metadata,
     pub hello: bool,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeState {
+    pub metadata: Metadata,
+    pub state: String,
 }
 
 
@@ -681,6 +700,7 @@ pub enum ServerMessage {
     MonitorBatch(Vec<Monitor>),
     AlertAirBatch(Vec<AlertAir>),
     AlertTemBatch(Vec<AlertTh>),
+    EdgePeriodic(EdgeState),
 }
 
 

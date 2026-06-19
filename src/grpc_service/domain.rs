@@ -178,7 +178,6 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
     loop {
         match &mut state {
             StateClient::Init => {
-                info!("intentando conectar gRPC");
                 tokio::select! {
                     _ = shutdown.cancelled() => {
                         info!("shutdown recibido en grpc (Init)");
@@ -209,7 +208,7 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                                         state = StateClient::Work { tx_session, inbound_stream };
                                     }
                                     Err(e) => {
-                                        error!("{e}");
+                                        error!("falló la conexión gRPC. {e}");
                                         state = StateClient::Error;
                                     }
                                 }
@@ -233,7 +232,7 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                     msg_opt = rx_outbound.recv() => {
                         match msg_opt {
                             Some(msg) => {
-                                if let Err(e) = tx_session.send(msg).await {
+                                if let Err(e) = tx_session.send(msg.clone()).await {
                                     warn!("stream de envío cerrado {e}");
                                     state = StateClient::Error;
                                 }
@@ -254,7 +253,7 @@ async fn grpc(tx: mpsc::Sender<InternalEvent>,
                                 }
                             }
                             Some(Err(e)) => {
-                                error!("stream gRPC {e}");
+                                error!("{e}");
                                 state = StateClient::Error;
                             }
                             None => {

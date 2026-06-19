@@ -28,6 +28,7 @@ message FromEdge {
     MonitorBatch monitor_batch = 12;
     AlertAirBatch alert_air_batch = 13;
     AlertThBatch alert_th_batch = 14;
+    EdgeState edge_state = 15;
   }
 }
 
@@ -93,9 +94,15 @@ message Monitor {
   int64 stack_free_min_th = 10;
   int64 stack_free_min_air = 11;
   int64 stack_free_min_mon = 12;
-  string wifi_ssid = 13;
-  int32 wifi_rssi = 14;
-  int64 active_time = 15;
+  int64 stack_https_handle = 13;
+  int64 stack_health_handle = 14;
+  int64 stack_parser_handle = 15;
+  int64 stack_converter_handle = 16;
+  int64 stack_heartbeat_handle = 17;
+  int64 stack_fsm_handle = 18;
+  string wifi_ssid = 19;
+  int32 wifi_rssi = 20;
+  int64 active_time = 21;
 }
 
 message MeasurementBatch {
@@ -188,4 +195,9 @@ message SystemMetrics {
   uint64 network_tx_bytes = 11;
   int32 wifi_rssi = 12;
   int32 wifi_signal_dbm = 13;
+}
+
+message EdgeState {
+  Metadata metadata = 1;
+  string state = 2;
 }

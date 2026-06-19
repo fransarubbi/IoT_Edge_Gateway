@@ -221,15 +221,19 @@ pub async fn mqtt(tx: mpsc::Sender<InternalEvent>,
                     msg = rx_msg.recv() => {   // Enviar mensajes
                         match msg {
                             Some(msg) => {
+                                let topic = msg.get_topic().to_string();
                                 let res = client.publish(
                                     msg.get_topic().to_string(),
                                     cast_qos(&msg.get_qos()),
                                     msg.get_retain(),
                                     msg.get_payload()
                                 ).await;
-
+                                
                                 if let Err(e) = res {
                                     error!("publicando mensaje: {e}");
+                                }
+                                else {
+                                    debug!("mensaje mqtt enviado con éxito. Tópico {topic}");
                                 }
                             },
                             None => {   // El canal se cerró

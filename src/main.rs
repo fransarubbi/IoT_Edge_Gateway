@@ -46,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let tracing_handle = init_tracing();
+
+    info!("Iniciando sistema Edge...");
+
     let app_context = init_fsm().await?;
 
     let new_filter = EnvFilter::new(app_context.system.rust_log.clone());

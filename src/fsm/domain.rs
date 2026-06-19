@@ -23,7 +23,7 @@ use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 use crate::context::domain::AppContext;
-use crate::fsm::logic::{fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
+use crate::fsm::logic::{edge_state, fsm, heartbeat_generator, heartbeat_generator_timer, run_fsm};
 use crate::message::domain::{HubMessage};
 
 
@@ -31,6 +31,7 @@ pub enum FsmServiceResponse {
     NewEpoch(u32),
     GetEpoch,
     ToHub(HubMessage),
+    EdgeState(String),
 }
 
 
@@ -78,6 +79,7 @@ impl FsmService {
 
         let (tx_command, rx_command) = mpsc::channel::<FsmServiceCommand>(50);
         let (tx_to_core, rx_response) = mpsc::channel::<FsmServiceResponse>(50);
+        let (tx_to_edge_state, rx_from_fsm_to_edge) = mpsc::channel::<StateGlobal>(50);
         let (tx_to_fsm, rx_event) = mpsc::channel::<Event>(50);
         let (general_tx_to_timer, rx_from_general) = mpsc::channel::<Event>(50);
         let (general_tx_to_heartbeat, rx_heartbeat_from_general) = mpsc::channel::<Action>(50);
@@ -88,14 +90,23 @@ impl FsmService {
 
         let child_token = token.child_token();
         let general_tx_to_fsm = tx_to_fsm.clone();
+        let general_tx_to_core = tx_to_core.clone();
         handles.push(tokio::spawn(fsm(
-            tx_to_core,
+            general_tx_to_core,
             general_tx_to_fsm,
             general_tx_to_timer,
             general_tx_to_heartbeat,
+            tx_to_edge_state,
             rx_command,
             rx_from_fsm,
             self.context.clone(),
+            child_token)));
+
+        let child_token = token.child_token();
+        let general_tx_to_core = tx_to_core.clone();
+        handles.push(tokio::spawn(edge_state(
+            general_tx_to_core,
+            rx_from_fsm_to_edge,
             child_token)));
 
         let child_token = token.child_token();
