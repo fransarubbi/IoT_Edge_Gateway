@@ -88,23 +88,50 @@ pub async fn dba_insert_task(tx_to_core: mpsc::Sender<DataServiceResponse>,
                             Ok(_) => {
                                 let id = network.id_network;
                                 info!("nueva red con id {id} insertada en la base de datos");
-                                if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
+                                if tx_to_core.send(DataServiceResponse::NetworksUpdated((id, 100))).await.is_err() {
                                     error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
                                 }
                             }
-                            Err(e) => error!("no se pudo insertar NetworkRow en base de datos. {e}"),
+                            Err(e) => {
+                                error!("no se pudo insertar NetworkRow en base de datos. {e}");
+                                if tx_to_core.send(DataServiceResponse::NetworksUpdated((network.id_network, 101))).await.is_err() {
+                                    error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                }
+                            },
                         }
                     },
                     DataCommandInsert::UpdateNetwork(network) => {
                         match repo.update_network(network.clone()).await {
                             Ok(_) => {
-                                let id = network.id_network;
-                                info!("red con {id} actualizada en base de datos");
-                                if tx_to_core.send(DataServiceResponse::NetworksUpdated).await.is_err() {
-                                    error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                if network.active == true {
+                                    let id = network.id_network;
+                                    info!("red con {id} activada. Modificación exitosa en base de datos");
+                                    if tx_to_core.send(DataServiceResponse::NetworksUpdated((id, 300))).await.is_err() {
+                                        error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    }
+                                } else {
+                                    let id = network.id_network;
+                                    info!("red con {id} desactivada. Modificación exitosa en base de datos");
+                                    if tx_to_core.send(DataServiceResponse::NetworksUpdated((id, 400))).await.is_err() {
+                                        error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    }
                                 }
                             }
-                            Err(e) => error!("no se pudo actualizar NetworkRow en base de datos. {e}"),
+                            Err(e) => {
+                                if network.active == true {
+                                    let id = network.id_network;
+                                    error!("Falló la actualización en la base de datos de la red con {id}. Estado que se quería cargar: activada. {e}");
+                                    if tx_to_core.send(DataServiceResponse::NetworksUpdated((id, 301))).await.is_err() {
+                                        error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    }
+                                } else {
+                                    let id = network.id_network;
+                                    error!("Falló la actualización en la base de datos de la red con {id}. Estado que se quería cargar: desactivada. {e}");
+                                    if tx_to_core.send(DataServiceResponse::NetworksUpdated((id, 401))).await.is_err() {
+                                        error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                    }
+                                }
+                            }
                         }
                     },
                     DataCommandInsert::NewEpoch(epoch) => {
@@ -199,11 +226,16 @@ pub async fn dba_remove_task(tx: mpsc::Sender<DataServiceResponse>,
                     DataCommandDelete::DeleteNetwork(id) => {
                         match repo.delete_network(&id).await {
                             Ok(_) => {
-                                if tx.send(DataServiceResponse::NetworksUpdated).await.is_err() {
+                                if tx.send(DataServiceResponse::NetworksUpdated((id, 200))).await.is_err() {
                                     error!("no se pudo enviar NetworksUpdated desde dba_remove_task");
                                 }
                             }
-                            Err(e) => error!("no se pudo eliminar red con id: {id}. {e}"),
+                            Err(e) => {
+                                error!("no se pudo eliminar red con id: {id}. {e}");
+                                if tx.send(DataServiceResponse::NetworksUpdated((id, 201))).await.is_err() {
+                                    error!("no se pudo enviar NetworksUpdated desde dba_insert_task");
+                                }
+                            },
                         }
                         match repo.get_number_of_networks().await {
                             Ok(networks) => {

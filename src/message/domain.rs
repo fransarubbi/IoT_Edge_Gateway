@@ -43,6 +43,7 @@ pub enum MessageServiceCommand {
     ToServer(ServerMessage),
     GenerateLinkageAck(String),
     GenerateEdgeState(String),
+    GenerateNetworkAck((String, u32)),
 }
 
 
@@ -300,6 +301,11 @@ impl MessageService {
                             if tx_command_to_server.send(MessageServiceCommand::GenerateEdgeState(state)).await.is_err() {
                                 error!("no se pudo enviar GenerateEdgeState a msg_to_server");
                             }
+                        },
+                        MessageServiceCommand::GenerateNetworkAck(code) => {
+                            if tx_command_to_server.send(MessageServiceCommand::GenerateNetworkAck(code)).await.is_err() {
+                                error!("no se pudo enviar GenerateNetworkAck a msg_to_server");
+                            }
                         }
                     }
                 }
@@ -406,6 +412,29 @@ pub struct Network {
     pub name_network: String,
     pub active: bool,
     pub delete_network: bool,
+}
+
+
+/// Definición del mensaje NetworkAck
+///
+/// Utilizado para responder al servidor cuando recibe un mensaje de tipo
+/// Network y asi confirmar que fue efectiva la comunicación.
+/// El campo `code_of_ack` contiene un código que representa el ack para un tipo de mensaje específico.
+///
+/// Códigos:
+/// 100: Mensaje de ack para la creación de una nueva red (Éxito).
+/// 101: Mensaje de ack para la creación de una nueva red (Fracaso).
+/// 200: Mensaje de ack para la eliminación de una red existente (Éxito).
+/// 201: Mensaje de ack para la eliminación de una red existente (Fracaso).
+/// 300: Mensaje de ack para la activación de una red existente (Éxito).
+/// 301: Mensaje de ack para la activación de una red existente (Fracaso).
+/// 400: Mensaje de ack para la desactivación de una red existente (Éxito).
+/// 401: Mensaje de ack para la desactivación de una red existente (Fracaso).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAck {
+    pub metadata: Metadata,
+    pub id_network: String,
+    pub code_of_ack: u32,
 }
 
 
@@ -701,6 +730,7 @@ pub enum ServerMessage {
     AlertAirBatch(Vec<AlertAir>),
     AlertTemBatch(Vec<AlertTh>),
     EdgePeriodic(EdgeState),
+    NetworkAck(NetworkAck),
 }
 
 

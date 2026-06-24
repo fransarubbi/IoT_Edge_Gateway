@@ -278,9 +278,12 @@ impl Core {
                                 error!("no se pudo enviar BatchHub desde Core");
                             }
                         },
-                        DataServiceResponse::NetworksUpdated => {
+                        DataServiceResponse::NetworksUpdated(code) => {
                             if self.core_to_mqtt_service.send(MqttServiceCommand::NetworksUpdated).await.is_err() {
                                 error!("no se pudo enviar NetworksUpdated desde Core");
+                            }
+                            if self.core_to_message_service.send(MessageServiceCommand::GenerateNetworkAck(code)).await.is_err() {
+                                error!("no se pudo enviar GenerateNetworkAck desde Core");
                             }
                         },
                         DataServiceResponse::HubInserted(hub) => {
