@@ -45,7 +45,7 @@ pub enum DataServiceResponse {
     ErrorEpoch,
     NoNetworks,
     ThereAreNetworks,
-    NetworksUpdated,
+    NetworksUpdated((String, u32)),
     HubInserted(String),
 }
 

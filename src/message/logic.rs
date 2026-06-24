@@ -23,12 +23,12 @@ use tokio::sync::{mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh, HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode, LinkageRequest, EdgeState};
+use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh, HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode, LinkageRequest, EdgeState, NetworkAck};
 use crate::database::domain::{TableDataVector};
 use crate::grpc;
 use crate::grpc::{to_edge, FromEdge, ToEdge,
                   FirmwareOutcome, SettingOk as SettOk,
-                  Settings as Sett, SystemMetrics, HelloWorld as Hello, EdgeState as StateEdge};
+                  Settings as Sett, SystemMetrics, HelloWorld as Hello, EdgeState as StateEdge, NetworkAck as AckNetwork};
 use crate::grpc::from_edge::Payload;
 use crate::network::domain::{NetworkManager};
 use crate::system::domain::{InternalEvent, System};
@@ -475,7 +475,24 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
                                 error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
                             }
                         }
-                    }
+                    },
+                    MessageServiceCommand::GenerateNetworkAck(code) => {
+                        let metadata = Metadata {
+                            sender_user_id: app_context.system.id_edge.clone(),
+                            destination_id: "server0".to_string(),
+                            timestamp: Utc::now().timestamp(),
+                        };
+                        let msg = NetworkAck {
+                            metadata,
+                            id_network: code.0,
+                            code_of_ack: code.1,
+                        };
+                        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::NetworkAck(msg), app_context.system.id_edge.clone()) {
+                            if tx_to_server.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+                                error!("no se puede enviar mensaje EdgeUpload al cliente gRPC");
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -526,6 +543,20 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                         timestamp: edge_state.metadata.timestamp,
                     }),
                     state: edge_state.state,
+                }
+            ))
+        },
+        ServerMessage::NetworkAck(network_ack) => {
+            debug!("serializando mensaje NetworkAck para el servidor");
+            Some(Payload::NetworkAck(
+                AckNetwork {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: network_ack.metadata.sender_user_id,
+                        destination_id: network_ack.metadata.destination_id,
+                        timestamp: network_ack.metadata.timestamp,
+                    }),
+                    id_network: network_ack.id_network,
+                    code_of_ack: network_ack.code_of_ack,
                 }
             ))
         },
