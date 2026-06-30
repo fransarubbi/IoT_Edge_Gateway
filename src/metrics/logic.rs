@@ -11,16 +11,14 @@
 //! 2.  **`metrics_timer`**: Un temporizador dedicado que actúa como "despertador".
 //!
 
-
-use chrono::Utc;
-use tokio::time::{sleep, Duration};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument};
 use crate::context::domain::AppContext;
 use crate::message::domain::{Metadata, ServerMessage};
 use crate::metrics::domain::MetricsCollector;
-
+use chrono::Utc;
+use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, instrument};
 
 /// Eventos de control para la coordinación del temporizador de métricas.
 ///
@@ -32,7 +30,6 @@ pub enum MetricsTimerEvent {
     /// Evento emitido cuando el tiempo de espera ha concluido.
     Timeout,
 }
-
 
 /// Orquestador principal de métricas del sistema.
 ///
@@ -48,15 +45,20 @@ pub enum MetricsTimerEvent {
 /// * `app_context` - Contexto global de la aplicación, utilizado para obtener IDs de dispositivo y configuración.
 ///
 #[instrument(name = "system_metrics", skip_all)]
-pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>, 
-                            tx_to_timer: mpsc::Sender<MetricsTimerEvent>, 
-                            mut rx_from_timer: mpsc::Receiver<MetricsTimerEvent>, 
-                            app_context: AppContext,
-                            shutdown: CancellationToken) {
-
+pub async fn system_metrics(
+    tx_to_server: mpsc::Sender<ServerMessage>,
+    tx_to_timer: mpsc::Sender<MetricsTimerEvent>,
+    mut rx_from_timer: mpsc::Receiver<MetricsTimerEvent>,
+    app_context: AppContext,
+    shutdown: CancellationToken,
+) {
     let mut metrics = MetricsCollector::new();
 
-    if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(180))).await.is_err() {
+    if tx_to_timer
+        .send(MetricsTimerEvent::InitTimer(Duration::from_secs(120)))
+        .await
+        .is_err()
+    {
         error!("no se pudo enviar evento InitTimer a metrics_timer");
         return;
     }
@@ -86,7 +88,7 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
                         if tx_to_server.send(msg).await.is_err() {
                             error!("no se pudo enviar mensaje de métricas a MetricsService");
                         }
-                        if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(180))).await.is_err() {
+                        if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(120))).await.is_err() {
                             error!("no se pudo enviar evento InitTimer a metrics_timer");
                         }
                     },
@@ -96,7 +98,6 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
         }
     }
 }
-
 
 /// Tarea asíncrona dedicada al temporizador (Ticker).
 ///
@@ -114,10 +115,11 @@ pub async fn system_metrics(tx_to_server: mpsc::Sender<ServerMessage>,
 /// * `cmd_rx` - Canal por donde recibe las instrucciones `InitTimer(Duration)`.
 ///
 #[instrument(name = "metrics_timer", skip_all)]
-pub async fn metrics_timer(tx_to_metrics: mpsc::Sender<MetricsTimerEvent>,
-                           mut cmd_rx: mpsc::Receiver<MetricsTimerEvent>,
-                           shutdown: CancellationToken) {
-
+pub async fn metrics_timer(
+    tx_to_metrics: mpsc::Sender<MetricsTimerEvent>,
+    mut cmd_rx: mpsc::Receiver<MetricsTimerEvent>,
+    shutdown: CancellationToken,
+) {
     loop {
         let duration = match cmd_rx.recv().await {
             Some(MetricsTimerEvent::InitTimer(d)) => d,
