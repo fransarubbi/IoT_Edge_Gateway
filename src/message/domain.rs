@@ -13,19 +13,18 @@
 //!   que agrupan los payloads para su enrutamiento.
 //! - **Utilidades:** Funciones de casting para transformar modelos de memoria en filas de base de datos (`..._row`).
 
+use crate::context::domain::AppContext;
+use crate::database::domain::TableDataVector;
+use crate::grpc::FromEdge;
+use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
+use crate::network::domain::HubRow;
+use crate::system::domain::InternalEvent;
 use chrono::Utc;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use crate::context::domain::AppContext;
-use crate::database::domain::TableDataVector;
-use crate::grpc::{FromEdge};
-use crate::message::logic::{msg_from_hub, msg_from_server, msg_to_hub, msg_to_server};
-use crate::network::domain::HubRow;
-use crate::system::domain::InternalEvent;
-
 
 pub enum MessageServiceResponse {
     EdgeUpload(FromEdge),
@@ -33,7 +32,6 @@ pub enum MessageServiceResponse {
     FromHub(HubMessage),
     FromServer(ServerMessage),
 }
-
 
 pub enum MessageServiceCommand {
     GenerateHelloWorld,
@@ -46,63 +44,74 @@ pub enum MessageServiceCommand {
     GenerateNetworkAck((String, u32)),
 }
 
-
 pub struct MessageService {
     sender: mpsc::Sender<MessageServiceResponse>,
     receiver: mpsc::Receiver<MessageServiceCommand>,
     context: AppContext,
 }
 
-
 impl MessageService {
-    pub fn new(sender: mpsc::Sender<MessageServiceResponse>,
-               receiver: mpsc::Receiver<MessageServiceCommand>,
-               context: AppContext) -> Self {
+    pub fn new(
+        sender: mpsc::Sender<MessageServiceResponse>,
+        receiver: mpsc::Receiver<MessageServiceCommand>,
+        context: AppContext,
+    ) -> Self {
         Self {
             sender,
             receiver,
-            context
+            context,
         }
     }
 
     pub async fn run(mut self, shutdown: CancellationToken) {
-
         let (tx, mut rx) = mpsc::channel::<MessageServiceResponse>(100);
         let (tx_to_msg_to_hub, rx_internal) = mpsc::channel::<InternalEvent>(100);
         let (tx_command_to_hub, rx_command_to_hub) = mpsc::channel::<MessageServiceCommand>(100);
-        let (tx_command_from_hub, rx_command_from_hub) = mpsc::channel::<MessageServiceCommand>(100);
-        let (tx_command_to_server, rx_command_to_server) = mpsc::channel::<MessageServiceCommand>(100);
+        let (tx_command_from_hub, rx_command_from_hub) =
+            mpsc::channel::<MessageServiceCommand>(100);
+        let (tx_command_to_server, rx_command_to_server) =
+            mpsc::channel::<MessageServiceCommand>(100);
         let (tx_server_to_msg_to_hub, rx_server_msg) = mpsc::channel::<ServerMessage>(100);
         let (tx_from_hub_to_server, rx_from_hub) = mpsc::channel::<ServerMessage>(100);
-        let (tx_command_from_server, rx_command_from_server) = mpsc::channel::<MessageServiceCommand>(100);
+        let (tx_command_from_server, rx_command_from_server) =
+            mpsc::channel::<MessageServiceCommand>(100);
 
         let tx_to_mqtt_local = tx.clone();
-        tokio::spawn(msg_to_hub(tx_to_mqtt_local,
-                                rx_internal,
-                                rx_server_msg,
-                                rx_command_to_hub,
-                                self.context.clone(),
-                                shutdown.clone()));
+        tokio::spawn(msg_to_hub(
+            tx_to_mqtt_local,
+            rx_internal,
+            rx_server_msg,
+            rx_command_to_hub,
+            self.context.clone(),
+            shutdown.clone(),
+        ));
 
         let tx_response_from_hub = tx.clone();
-        tokio::spawn(msg_from_hub(tx_response_from_hub,
-                                  tx_from_hub_to_server,
-                                  tx_to_msg_to_hub,
-                                  rx_command_from_hub,
-                                  shutdown.clone()));
+        tokio::spawn(msg_from_hub(
+            tx_response_from_hub,
+            tx_from_hub_to_server,
+            tx_to_msg_to_hub,
+            rx_command_from_hub,
+            self.context.clone(),
+            shutdown.clone(),
+        ));
 
         let tx_to_server = tx.clone();
-        tokio::spawn(msg_to_server(tx_to_server,
-                                   rx_from_hub,
-                                   rx_command_to_server,
-                                   self.context.clone(),
-                                   shutdown.clone()));
+        tokio::spawn(msg_to_server(
+            tx_to_server,
+            rx_from_hub,
+            rx_command_to_server,
+            self.context.clone(),
+            shutdown.clone(),
+        ));
 
         let tx_from_server = tx.clone();
-        tokio::spawn(msg_from_server(tx_from_server,
-                                     tx_server_to_msg_to_hub,
-                                     rx_command_from_server,
-                                     shutdown.clone()));
+        tokio::spawn(msg_from_server(
+            tx_from_server,
+            tx_server_to_msg_to_hub,
+            rx_command_from_server,
+            shutdown.clone(),
+        ));
 
         loop {
             tokio::select! {
@@ -110,7 +119,7 @@ impl MessageService {
                     info!("shutdown recibido MessageService");
                     break;
                 }
-                
+
                 Some(cmd) = self.receiver.recv() => {
                     match cmd {
                         MessageServiceCommand::Internal(internal) => {
@@ -320,8 +329,6 @@ impl MessageService {
     }
 }
 
-
-
 /// Metadatos estándar para todos los mensajes del sistema.
 ///
 /// Proporciona contexto de trazabilidad, origen y destino para cada paquete de datos.
@@ -331,7 +338,6 @@ pub struct Metadata {
     pub destination_id: String,
     pub timestamp: i64,
 }
-
 
 /// Mediciones de sensores ambientales y operativos.
 ///
@@ -349,7 +355,6 @@ pub struct Measurement {
     pub sample: u16,
 }
 
-
 /// Alerta de calidad de aire.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertAir {
@@ -360,7 +365,6 @@ pub struct AlertAir {
     pub co2_actual_ppm: f32,
 }
 
-
 /// Alerta de Temperatura y Humedad.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertTh {
@@ -370,7 +374,6 @@ pub struct AlertTh {
     pub initial_temp: f32,
     pub actual_temp: f32,
 }
-
 
 /// Datos de telemetría y salud del Hub.
 ///
@@ -401,7 +404,6 @@ pub struct Monitor {
     pub active_time: i64,
 }
 
-
 /// Definición de una Red lógica.
 ///
 /// Utilizada para agrupar dispositivos bajo un mismo identificador de red.
@@ -413,7 +415,6 @@ pub struct Network {
     pub active: bool,
     pub delete_network: bool,
 }
-
 
 /// Definición del mensaje NetworkAck
 ///
@@ -437,7 +438,6 @@ pub struct NetworkAck {
     pub code_of_ack: u32,
 }
 
-
 /// Configuración remota para un dispositivo (Hub/Nodo).
 ///
 /// Contiene credenciales WiFi/MQTT y parámetros operativos.
@@ -454,9 +454,7 @@ pub struct Settings {
     pub energy_mode: u32,
 }
 
-
 impl Settings {
-
     /// Convierte la configuración recibida en un registro de Hub (`HubRow`) para persistencia.
     ///
     /// # Parámetros
@@ -469,7 +467,6 @@ impl Settings {
     }
 }
 
-
 /// Mensaje de Handshake enviado HACIA el Hub (Downlink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
@@ -478,7 +475,6 @@ pub struct HandshakeToHub {
     pub balance_epoch: u32,
 }
 
-
 /// Mensaje de Handshake proveniente del Hub (Uplink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
@@ -486,7 +482,6 @@ pub struct HandshakeFromHub {
     pub state: String,
     pub balance_epoch: u32,
 }
-
 
 /// Notificación de cambio a Modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -497,14 +492,12 @@ pub struct MessageStateBalanceMode {
     pub duration: u32,
 }
 
-
 /// Notificación de cambio a Modo Normal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageStateNormal {
     pub metadata: Metadata,
     pub state: String,
 }
-
 
 /// Notificación de cambio a Modo Seguro (Safe Mode).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -514,7 +507,6 @@ pub struct MessageStateSafeMode {
     pub frequency: u32,
     pub jitter: u32,
 }
-
 
 /// Notificación de cambio de Fase dentro del modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -527,7 +519,6 @@ pub struct PhaseNotification {
     pub jitter: u32,
 }
 
-
 /// Mensaje de latido (Heartbeat) para indicar a los Hubs que el Edge está vivo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Heartbeat {
@@ -535,20 +526,17 @@ pub struct Heartbeat {
     pub beat: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HelloWorld {
     pub metadata: Metadata,
     pub hello: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EdgeState {
     pub metadata: Metadata,
     pub state: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ping {
@@ -557,22 +545,19 @@ pub struct Ping {
     pub ping: bool,
 }
 
-
 /// Comando para eliminar un Hub del registro.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteHub {
-    pub metadata: Metadata,  // El destination_id es el hub destino
+    pub metadata: Metadata, // El destination_id es el hub destino
     pub network: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveHub {
-    pub metadata: Metadata,  // El destination_id es el hub destino
+    pub metadata: Metadata, // El destination_id es el hub destino
     pub network: String,
     pub active: bool,
 }
-
 
 /// Confirmación de recepción de configuración (Handshake bidireccional).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,13 +568,11 @@ pub struct SettingOk {
     pub handshake: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateFirmware {
     pub metadata: Metadata,
     pub network: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FirmwareOk {
@@ -598,7 +581,6 @@ pub struct FirmwareOk {
     pub is_ok: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FirmwareOutcome {
     pub metadata: Metadata,
@@ -606,7 +588,6 @@ pub struct FirmwareOutcome {
     pub is_ok: bool,
     pub percentage_ok: f32,
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SystemMetrics {
@@ -625,7 +606,6 @@ pub struct SystemMetrics {
     pub wifi_signal_dbm: Option<i32>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EmptyQueue {
     pub metadata: Metadata,
@@ -634,14 +614,12 @@ pub struct EmptyQueue {
     pub queue_empty: bool,
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EmptyQueueSafeMode {
     pub metadata: Metadata,
     pub state: String,
     pub queue_empty: bool,
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkageRequest {
@@ -650,7 +628,6 @@ pub struct LinkageRequest {
     pub network: String,
     pub linkage_request: bool,
 }
-
 
 impl LinkageRequest {
     pub fn cast_to_hub_row(self) -> HubRow {
@@ -662,13 +639,11 @@ impl LinkageRequest {
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkageAck {
     pub metadata: Metadata,
     pub linkage_ack: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -700,9 +675,8 @@ pub enum HubMessage {
     StateBalanceMode(MessageStateBalanceMode),
     StateNormal(MessageStateNormal),
     StateSafeMode(MessageStateSafeMode),
-    LinkageAck(LinkageAck)
+    LinkageAck(LinkageAck),
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -717,7 +691,7 @@ pub enum ServerMessage {
 
     // Mensajes para el Server
     FirmwareOutcome(FirmwareOutcome),
-    HelloWorld(HelloWorld),  // y proveniente del server tambien
+    HelloWorld(HelloWorld), // y proveniente del server tambien
     FromHubSettings(Settings),
     FromHubSettingsAck(SettingOk),
     Report(Measurement),
@@ -733,16 +707,19 @@ pub enum ServerMessage {
     NetworkAck(NetworkAck),
 }
 
-
 /// Estado de conexión con el servidor remoto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerStatus { Connected, Disconnected }
-
+pub enum ServerStatus {
+    Connected,
+    Disconnected,
+}
 
 /// Estado de conexión con el broker MQTT local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalStatus { Connected, Disconnected }
-
+pub enum LocalStatus {
+    Connected,
+    Disconnected,
+}
 
 /// Representación final de un mensaje listo para ser enviado por MQTT.
 ///
@@ -755,12 +732,8 @@ pub struct SerializedMessage {
     retain: bool,
 }
 
-
 impl SerializedMessage {
-    pub fn new(topic: String,
-               payload: Vec<u8>,
-               qos: u8,
-               retain: bool) -> Self {
+    pub fn new(topic: String, payload: Vec<u8>, qos: u8, retain: bool) -> Self {
         Self {
             topic,
             payload,

@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "iot_edge_gateway"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "chrono",
  "fastrand",

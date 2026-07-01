@@ -15,24 +15,30 @@
 //! - **Downlink Remoto (`msg_from_server`):** Recibe instrucciones gRPC de la nube, las traduce
 //!   al modelo de dominio y las distribuye a la FSM o a los Hubs.
 
-
+use crate::context::domain::AppContext;
+use crate::database::domain::TableDataVector;
+use crate::grpc;
+use crate::grpc::from_edge::Payload;
+use crate::grpc::{
+    EdgeState as StateEdge, FirmwareOutcome, FromEdge, HelloWorld as Hello,
+    NetworkAck as AckNetwork, SettingOk as SettOk, Settings as Sett, SystemMetrics, ToEdge,
+    to_edge,
+};
+use crate::message::domain::{
+    AlertAir, AlertTh, DeleteHub, EdgeState, EmptyQueue, EmptyQueueSafeMode, FirmwareOk,
+    HandshakeFromHub, Heartbeat as HeartbeatMsg, HelloWorld, HubMessage, LinkageRequest,
+    LocalStatus, Measurement, MessageServiceCommand, MessageServiceResponse, Metadata, Monitor,
+    Network, NetworkAck, Ping, SerializedMessage, ServerMessage, ServerStatus, SettingOk, Settings,
+    UpdateFirmware,
+};
+use crate::network::domain::NetworkManager;
+use crate::system::domain::{InternalEvent, System};
 use chrono::Utc;
 use rmp_serde::{from_slice, to_vec};
 use serde::Serialize;
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
-use crate::context::domain::AppContext;
-use crate::message::domain::{SerializedMessage, ServerStatus, LocalStatus, Metadata, UpdateFirmware, DeleteHub, Settings, SettingOk, Network, Heartbeat as HeartbeatMsg, HelloWorld, MessageServiceCommand, ServerMessage, HubMessage, MessageServiceResponse, Measurement, Monitor, AlertAir, AlertTh, HandshakeFromHub, FirmwareOk, Ping, EmptyQueue, EmptyQueueSafeMode, LinkageRequest, EdgeState, NetworkAck};
-use crate::database::domain::{TableDataVector};
-use crate::grpc;
-use crate::grpc::{to_edge, FromEdge, ToEdge,
-                  FirmwareOutcome, SettingOk as SettOk,
-                  Settings as Sett, SystemMetrics, HelloWorld as Hello, EdgeState as StateEdge, NetworkAck as AckNetwork};
-use crate::grpc::from_edge::Payload;
-use crate::network::domain::{NetworkManager};
-use crate::system::domain::{InternalEvent, System};
-
 
 /// Gestor de mensajes salientes hacia el Hub (Downlink Local).
 ///
@@ -52,13 +58,14 @@ use crate::system::domain::{InternalEvent, System};
 /// - Resuelve dinámicamente el `topic`, `QoS` y flag de `Retain` a través del `NetworkManager`.
 /// - Llama a la función genérica `send` para serializar en **MessagePack** y despachar a la capa MQTT.
 #[instrument(name = "msg_to_hub", skip_all)]
-pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
-                        mut rx_internal: mpsc::Receiver<InternalEvent>,
-                        mut rx_server_msg: mpsc::Receiver<ServerMessage>,
-                        mut rx: mpsc::Receiver<MessageServiceCommand>,
-                        app_context: AppContext,
-                        shutdown: CancellationToken) {
-
+pub async fn msg_to_hub(
+    tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
+    mut rx_internal: mpsc::Receiver<InternalEvent>,
+    mut rx_server_msg: mpsc::Receiver<ServerMessage>,
+    mut rx: mpsc::Receiver<MessageServiceCommand>,
+    app_context: AppContext,
+    shutdown: CancellationToken,
+) {
     let mut state = LocalStatus::Connected;
     loop {
         tokio::select! {
@@ -137,61 +144,134 @@ pub async fn msg_to_hub(tx_to_mqtt_local: mpsc::Sender<MessageServiceResponse>,
     }
 }
 
-
 /// Extrae el tópico MQTT, el nivel QoS y la bandera Retain específicos para mensajes de estado y control (FSM).
 ///
 /// Mensajes críticos como los cambios de estado operativos (`StateBalanceMode`, `StateNormal`)
 /// se publican con el flag `Retain = true` para que los dispositivos nuevos los reciban al conectar.
-async fn resolve_static_topic(manager: &NetworkManager,
-                     msg: &HubMessage,
-                     tx_to_mqtt_local: &mpsc::Sender<MessageServiceResponse>
+async fn resolve_static_topic(
+    manager: &NetworkManager,
+    msg: &HubMessage,
+    tx_to_mqtt_local: &mpsc::Sender<MessageServiceResponse>,
 ) -> Option<(String, u8, bool)> {
-
     match msg {
-        HubMessage::HandshakeToHub(_) => {
-            Some((manager.topic_handshake.topic.clone(), manager.topic_handshake.qos, false))
-        },
+        HubMessage::HandshakeToHub(_) => Some((
+            manager.topic_handshake.topic.clone(),
+            manager.topic_handshake.qos,
+            false,
+        )),
         HubMessage::StateBalanceMode(_) => {
-            send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
-            Some((format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos, true))
-        },
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/normal", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/safe", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/phase", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            Some((
+                format!("{}/balance", manager.topic_state.topic),
+                manager.topic_state.qos,
+                true,
+            ))
+        }
         HubMessage::StateNormal(_) => {
-            send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
-            Some((format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos, true))
-        },
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/balance", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/safe", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/phase", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            Some((
+                format!("{}/normal", manager.topic_state.topic),
+                manager.topic_state.qos,
+                true,
+            ))
+        }
         HubMessage::StateSafeMode(_) => {
-            send_clear_state(&tx_to_mqtt_local, format!("{}/normal", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/balance", manager.topic_state.topic), manager.topic_state.qos).await;
-            send_clear_state(&tx_to_mqtt_local, format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos).await;
-            Some((format!("{}/safe", manager.topic_state.topic), manager.topic_state.qos, true))
-        },
-        HubMessage::PhaseNotification(_) => {
-            Some((format!("{}/phase", manager.topic_state.topic), manager.topic_state.qos, false))
-        },
-        HubMessage::Heartbeat(_) => {
-            Some((manager.topic_heartbeat.topic.clone(), manager.topic_heartbeat.qos, false))
-        },
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/normal", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/balance", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            send_clear_state(
+                &tx_to_mqtt_local,
+                format!("{}/phase", manager.topic_state.topic),
+                manager.topic_state.qos,
+            )
+            .await;
+            Some((
+                format!("{}/safe", manager.topic_state.topic),
+                manager.topic_state.qos,
+                true,
+            ))
+        }
+        HubMessage::PhaseNotification(_) => Some((
+            format!("{}/phase", manager.topic_state.topic),
+            manager.topic_state.qos,
+            false,
+        )),
+        HubMessage::Heartbeat(_) => Some((
+            manager.topic_heartbeat.topic.clone(),
+            manager.topic_heartbeat.qos,
+            false,
+        )),
         HubMessage::Ping(_) => {
             if let Some(topic) = manager.get_topic_to_send_msg_to_hub(msg) {
                 Some((topic.topic, topic.qos, false))
             } else {
                 None
             }
-        },
-        HubMessage::LinkageAck(_) => {
-            Some((manager.topic_linkage_ack.topic.clone(), manager.topic_linkage_ack.qos, false))
-        },
+        }
+        HubMessage::LinkageAck(_) => Some((
+            manager.topic_linkage_ack.topic.clone(),
+            manager.topic_linkage_ack.qos,
+            false,
+        )),
+        HubMessage::ActiveHub(active_hub) => {
+            if let Some(n) = manager.networks.get(&active_hub.network) {
+                Some((
+                    n.topic_active_hub.topic.clone(),
+                    n.topic_active_hub.qos,
+                    true,
+                ))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
 
-
 // -------------------------------------------------------------------------------------------------
-
 
 /// Procesador de mensajes entrantes del Hub (Uplink Local).
 ///
@@ -205,12 +285,14 @@ async fn resolve_static_topic(manager: &NetworkManager,
 /// 2.  Si el servidor externo está **Desconectado**, enruta la telemetría hacia `tx` (Canal general)
 ///     donde será interceptada por la base de datos (`dba_insert_task`) para almacenamiento temporal.
 #[instrument(name = "msg_from_hub", skip_all)]
-pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
-                          tx_to_msg_to_server: mpsc::Sender<ServerMessage>,
-                          tx_to_msg_to_hub: mpsc::Sender<InternalEvent>,
-                          mut rx: mpsc::Receiver<MessageServiceCommand>,
-                          shutdown: CancellationToken) {
-
+pub async fn msg_from_hub(
+    tx: mpsc::Sender<MessageServiceResponse>,
+    tx_to_msg_to_server: mpsc::Sender<ServerMessage>,
+    tx_to_msg_to_hub: mpsc::Sender<InternalEvent>,
+    mut rx: mpsc::Receiver<MessageServiceCommand>,
+    app_context: AppContext,
+    shutdown: CancellationToken,
+) {
     let mut state: ServerStatus = ServerStatus::Connected;
     loop {
         tokio::select! {
@@ -270,31 +352,47 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                                     if matches!(state, ServerStatus::Connected) {
                                         match decoded_msg {
                                             HubMessage::Report(report) => {
-                                                let id = report.metadata.sender_user_id.clone();
-                                                debug!("mensaje Report proveniente del Hub {id}");
-                                                if tx_to_msg_to_server.send(ServerMessage::Report(report)).await.is_err() {
-                                                    error!("no se pudo enviar el mensaje Report");
+                                                let network = report.network.clone();
+                                                let manager = app_context.net_man.read().await;
+                                                if manager.is_active(&network) {
+                                                    let id = report.metadata.sender_user_id.clone();
+                                                    debug!("mensaje Report proveniente del Hub {id}");
+                                                    if tx_to_msg_to_server.send(ServerMessage::Report(report)).await.is_err() {
+                                                        error!("no se pudo enviar el mensaje Report");
+                                                    }
                                                 }
                                             },
                                             HubMessage::Monitor(monitor) => {
-                                                let id = monitor.metadata.sender_user_id.clone();
-                                                debug!("mensaje Monitor proveniente del Hub {id}");
-                                                if tx_to_msg_to_server.send(ServerMessage::Monitor(monitor)).await.is_err() {
-                                                    error!("no se pudo enviar el mensaje Monitor");
+                                                let network = monitor.network.clone();
+                                                let manager = app_context.net_man.read().await;
+                                                if manager.is_active(&network) {
+                                                    let id = monitor.metadata.sender_user_id.clone();
+                                                    debug!("mensaje Monitor proveniente del Hub {id}");
+                                                    if tx_to_msg_to_server.send(ServerMessage::Monitor(monitor)).await.is_err() {
+                                                        error!("no se pudo enviar el mensaje Monitor");
+                                                    }
                                                 }
                                             },
                                             HubMessage::AlertAir(alert) => {
-                                                let id = alert.metadata.sender_user_id.clone();
-                                                debug!("mensaje AlertAir proveniente del Hub {id}");
-                                                if tx_to_msg_to_server.send(ServerMessage::AlertAir(alert)).await.is_err() {
-                                                    error!("no se pudo enviar el mensaje AlertAir");
+                                                let network = alert.network.clone();
+                                                let manager = app_context.net_man.read().await;
+                                                if manager.is_active(&network) {
+                                                    let id = alert.metadata.sender_user_id.clone();
+                                                    debug!("mensaje AlertAir proveniente del Hub {id}");
+                                                    if tx_to_msg_to_server.send(ServerMessage::AlertAir(alert)).await.is_err() {
+                                                        error!("no se pudo enviar el mensaje AlertAir");
+                                                    }
                                                 }
                                             },
                                             HubMessage::AlertTem(alert) => {
-                                                let id = alert.metadata.sender_user_id.clone();
-                                                debug!("mensaje AlertTemp proveniente del Hub {id}");
-                                                if tx_to_msg_to_server.send(ServerMessage::AlertTem(alert)).await.is_err() {
-                                                    error!("no se pudo enviar el mensaje AlertTem");
+                                                let network = alert.network.clone();
+                                                let manager = app_context.net_man.read().await;
+                                                if manager.is_active(&network) {
+                                                    let id = alert.metadata.sender_user_id.clone();
+                                                    debug!("mensaje AlertTemp proveniente del Hub {id}");
+                                                    if tx_to_msg_to_server.send(ServerMessage::AlertTem(alert)).await.is_err() {
+                                                        error!("no se pudo enviar el mensaje AlertTem");
+                                                    }
                                                 }
                                             },
                                             HubMessage::HandshakeFromHub(ref handshake) => {
@@ -312,10 +410,14 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
                                                 }
                                             },
                                             HubMessage::FromHubSettings(settings) => {
-                                                let id = settings.metadata.sender_user_id.clone();
-                                                debug!("mensaje FromHubSettings proveniente del Hub {id}");
-                                                if tx_to_msg_to_server.send(ServerMessage::FromHubSettings(settings)).await.is_err() {
-                                                    error!("no se pudo enviar el mensaje FromHub");
+                                                let network = settings.network.clone();
+                                                let manager = app_context.net_man.read().await;
+                                                if manager.is_active(&network) {
+                                                    let id = settings.metadata.sender_user_id.clone();
+                                                    debug!("mensaje FromHubSettings proveniente del Hub {id}");
+                                                    if tx_to_msg_to_server.send(ServerMessage::FromHubSettings(settings)).await.is_err() {
+                                                        error!("no se pudo enviar el mensaje FromHub");
+                                                    }
                                                 }
                                             },
                                             HubMessage::FromHubSettingsAck(ack) => {
@@ -381,9 +483,7 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
     }
 }
 
-
 // -------------------------------------------------------------------------------------------------
-
 
 /// Gestor de mensajes salientes hacia el Servidor (Uplink Remoto vía gRPC).
 ///
@@ -396,12 +496,13 @@ pub async fn msg_from_hub(tx: mpsc::Sender<MessageServiceResponse>,
 /// - **Datos Históricos (`Batch`):** Lotes de información extraídos de SQLite tras recuperar conexión.
 /// - **Comandos Internos:** Mensajes como `HelloWorld` para establecer sesión en la nube.
 #[instrument(name = "msg_to_server", skip_all)]
-pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
-                           mut rx_from_hub: mpsc::Receiver<ServerMessage>,
-                           mut rx: mpsc::Receiver<MessageServiceCommand>,
-                           app_context: AppContext,
-                           shutdown: CancellationToken) {
-
+pub async fn msg_to_server(
+    tx_to_server: mpsc::Sender<MessageServiceResponse>,
+    mut rx_from_hub: mpsc::Receiver<ServerMessage>,
+    mut rx: mpsc::Receiver<MessageServiceCommand>,
+    app_context: AppContext,
+    shutdown: CancellationToken,
+) {
     let mut state = ServerStatus::Connected;
     loop {
         tokio::select! {
@@ -512,104 +613,90 @@ pub async fn msg_to_server(tx_to_server: mpsc::Sender<MessageServiceResponse>,
     }
 }
 
-
 /// Mapea las estructuras internas de dominio (`ServerMessage`) a los tipos generados
 /// por Protobuf (`FromEdge` / `Payload`).
 ///
 /// Este es el punto de traducción formal antes de que la capa de red gRPC envíe los bytes.
 fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEdge> {
-
     let payload = match msg {
         ServerMessage::HelloWorld(hello) => {
             debug!("serializando mensaje HelloWorld para el servidor");
-            Some(Payload::HelloWorld(
-                Hello {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: hello.metadata.sender_user_id,
-                        destination_id: hello.metadata.destination_id,
-                        timestamp: hello.metadata.timestamp,
-                    }),
-                    hello: hello.hello,
-                }
-            ))
-        },
+            Some(Payload::HelloWorld(Hello {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: hello.metadata.sender_user_id,
+                    destination_id: hello.metadata.destination_id,
+                    timestamp: hello.metadata.timestamp,
+                }),
+                hello: hello.hello,
+            }))
+        }
         ServerMessage::EdgePeriodic(edge_state) => {
             debug!("serializando mensaje EdgeState para el servidor");
-            Some(Payload::EdgeState(
-                StateEdge {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: edge_state.metadata.sender_user_id,
-                        destination_id: edge_state.metadata.destination_id,
-                        timestamp: edge_state.metadata.timestamp,
-                    }),
-                    state: edge_state.state,
-                }
-            ))
-        },
+            Some(Payload::EdgeState(StateEdge {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: edge_state.metadata.sender_user_id,
+                    destination_id: edge_state.metadata.destination_id,
+                    timestamp: edge_state.metadata.timestamp,
+                }),
+                state: edge_state.state,
+            }))
+        }
         ServerMessage::NetworkAck(network_ack) => {
             debug!("serializando mensaje NetworkAck para el servidor");
-            Some(Payload::NetworkAck(
-                AckNetwork {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: network_ack.metadata.sender_user_id,
-                        destination_id: network_ack.metadata.destination_id,
-                        timestamp: network_ack.metadata.timestamp,
-                    }),
-                    id_network: network_ack.id_network,
-                    code_of_ack: network_ack.code_of_ack,
-                }
-            ))
-        },
+            Some(Payload::NetworkAck(AckNetwork {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: network_ack.metadata.sender_user_id,
+                    destination_id: network_ack.metadata.destination_id,
+                    timestamp: network_ack.metadata.timestamp,
+                }),
+                id_network: network_ack.id_network,
+                code_of_ack: network_ack.code_of_ack,
+            }))
+        }
         ServerMessage::FromHubSettings(hub_settings) => {
             debug!("serializando mensaje FromHubSettings para el servidor");
-            Some(Payload::Settings(
-                Sett {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: hub_settings.metadata.sender_user_id,
-                        destination_id: hub_settings.metadata.destination_id,
-                        timestamp: hub_settings.metadata.timestamp,
-                    }),
-                    message_id: hub_settings.message_id,
-                    network: hub_settings.network,
-                    wifi_ssid: hub_settings.wifi_ssid,
-                    wifi_password: hub_settings.wifi_password,
-                    mqtt_uri: hub_settings.mqtt_uri,
-                    device_name: hub_settings.device_name,
-                    sample: hub_settings.sample,
-                    energy_mode: hub_settings.energy_mode,
-                }
-            ))
-        },
+            Some(Payload::Settings(Sett {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: hub_settings.metadata.sender_user_id,
+                    destination_id: hub_settings.metadata.destination_id,
+                    timestamp: hub_settings.metadata.timestamp,
+                }),
+                message_id: hub_settings.message_id,
+                network: hub_settings.network,
+                wifi_ssid: hub_settings.wifi_ssid,
+                wifi_password: hub_settings.wifi_password,
+                mqtt_uri: hub_settings.mqtt_uri,
+                device_name: hub_settings.device_name,
+                sample: hub_settings.sample,
+                energy_mode: hub_settings.energy_mode,
+            }))
+        }
         ServerMessage::FromHubSettingsAck(hub_settings_ack) => {
             debug!("serializando mensaje FromHubSettingsAck para el servidor");
-            Some(Payload::SettingOk(
-                SettOk {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: hub_settings_ack.metadata.sender_user_id,
-                        destination_id: hub_settings_ack.metadata.destination_id,
-                        timestamp: hub_settings_ack.metadata.timestamp,
-                    }),
-                    message_id: hub_settings_ack.message_id,
-                    network: hub_settings_ack.network,
-                    handshake: hub_settings_ack.handshake,
-                }
-            ))
-        },
+            Some(Payload::SettingOk(SettOk {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: hub_settings_ack.metadata.sender_user_id,
+                    destination_id: hub_settings_ack.metadata.destination_id,
+                    timestamp: hub_settings_ack.metadata.timestamp,
+                }),
+                message_id: hub_settings_ack.message_id,
+                network: hub_settings_ack.network,
+                handshake: hub_settings_ack.handshake,
+            }))
+        }
         ServerMessage::FirmwareOutcome(firmware_outcome) => {
             debug!("serializando mensaje FirmwareOutcome para el servidor");
-            Some(Payload::FirmwareOutcome(
-                FirmwareOutcome {
-                    metadata: Some(grpc::Metadata {
-                        sender_user_id: firmware_outcome.metadata.sender_user_id,
-                        destination_id: firmware_outcome.metadata.destination_id,
-                        timestamp: firmware_outcome.metadata.timestamp,
-                    }),
-                    network: firmware_outcome.network,
-                    is_ok: firmware_outcome.is_ok,
-                    percentage_ok: firmware_outcome.percentage_ok,
-                }
-            ))
-        },
+            Some(Payload::FirmwareOutcome(FirmwareOutcome {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: firmware_outcome.metadata.sender_user_id,
+                    destination_id: firmware_outcome.metadata.destination_id,
+                    timestamp: firmware_outcome.metadata.timestamp,
+                }),
+                network: firmware_outcome.network,
+                is_ok: firmware_outcome.is_ok,
+                percentage_ok: firmware_outcome.percentage_ok,
+            }))
+        }
         ServerMessage::Report(report) => {
             debug!("serializando mensaje Report para el servidor");
             Some(Payload::Measurement(grpc::Measurement {
@@ -626,7 +713,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 co2_ppm: report.co2_ppm,
                 sample: report.sample as u32,
             }))
-        },
+        }
         ServerMessage::Monitor(monitor) => {
             debug!("serializando mensaje Monitor para el servidor");
             Some(Payload::Monitor(grpc::Monitor {
@@ -656,7 +743,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 wifi_rssi: monitor.wifi_rssi as i32,
                 active_time: monitor.active_time,
             }))
-        },
+        }
         ServerMessage::AlertAir(alert_air) => {
             debug!("serializando mensaje AlertAir para el servidor");
             Some(Payload::AlertAir(grpc::AlertAir {
@@ -669,7 +756,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 co2_initial_ppm: alert_air.co2_initial_ppm,
                 co2_actual_ppm: alert_air.co2_actual_ppm,
             }))
-        },
+        }
         ServerMessage::AlertTem(alert_tem) => {
             debug!("serializando mensaje AlertTem para el servidor");
             Some(Payload::AlertTh(grpc::AlertTh {
@@ -682,7 +769,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 initial_temp: alert_tem.initial_temp,
                 actual_temp: alert_tem.actual_temp,
             }))
-        },
+        }
         ServerMessage::Metrics(metrics) => {
             debug!("serializando mensaje Metrics para el servidor");
             Some(Payload::Metrics(SystemMetrics {
@@ -705,108 +792,116 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 wifi_rssi: metrics.wifi_rssi.unwrap_or(0),
                 wifi_signal_dbm: metrics.wifi_signal_dbm.unwrap_or(0),
             }))
-        },
+        }
         ServerMessage::ReportBatch(reports) => {
             debug!("serializando mensaje ReportBatch para el servidor");
-            let proto_measurements = reports.into_iter().map(|r| grpc::Measurement {
-                metadata: Some(grpc::Metadata {
-                    sender_user_id: r.metadata.sender_user_id,
-                    destination_id: r.metadata.destination_id,
-                    timestamp: r.metadata.timestamp,
-                }),
-                network: r.network,
-                pulse_counter: r.pulse_counter,
-                pulse_max_duration: r.pulse_max_duration,
-                temperature: r.temperature,
-                humidity: r.humidity,
-                co2_ppm: r.co2_ppm,
-                sample: r.sample as u32,
-            }).collect();
+            let proto_measurements = reports
+                .into_iter()
+                .map(|r| grpc::Measurement {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: r.metadata.sender_user_id,
+                        destination_id: r.metadata.destination_id,
+                        timestamp: r.metadata.timestamp,
+                    }),
+                    network: r.network,
+                    pulse_counter: r.pulse_counter,
+                    pulse_max_duration: r.pulse_max_duration,
+                    temperature: r.temperature,
+                    humidity: r.humidity,
+                    co2_ppm: r.co2_ppm,
+                    sample: r.sample as u32,
+                })
+                .collect();
 
             Some(Payload::MeasurementBatch(grpc::MeasurementBatch {
                 measurements: proto_measurements,
             }))
-        },
+        }
         ServerMessage::MonitorBatch(monitors) => {
             debug!("serializando mensaje MonitorBatch para el servidor");
-            let proto_monitors = monitors.into_iter().map(|m| grpc::Monitor {
-                metadata: Some(grpc::Metadata {
-                    sender_user_id: m.metadata.sender_user_id,
-                    destination_id: m.metadata.destination_id,
-                    timestamp: m.metadata.timestamp,
-                }),
-                network: m.network,
-                mem_free: m.mem_free,
-                mem_free_hm: m.mem_free_hm,
-                mem_free_block: m.mem_free_block,
-                mem_free_internal: m.mem_free_internal,
-                stack_free_min_coll: m.stack_free_min_coll,
-                stack_free_min_pub: m.stack_free_min_pub,
-                stack_free_min_mic: m.stack_free_min_mic,
-                stack_free_min_th: m.stack_free_min_th,
-                stack_free_min_air: m.stack_free_min_air,
-                stack_free_min_mon: m.stack_free_min_mon,
-                stack_https_handle: m.stack_https_handle,
-                stack_health_handle: m.stack_health_handle,
-                stack_parser_handle: m.stack_parser_handle,
-                stack_converter_handle: m.stack_converter_handle,
-                stack_heartbeat_handle: m.stack_heartbeat_handle,
-                stack_fsm_handle: m.stack_fsm_handle,
-                wifi_ssid: m.wifi_ssid,
-                wifi_rssi: m.wifi_rssi as i32,
-                active_time: m.active_time,
-            }).collect();
+            let proto_monitors = monitors
+                .into_iter()
+                .map(|m| grpc::Monitor {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: m.metadata.sender_user_id,
+                        destination_id: m.metadata.destination_id,
+                        timestamp: m.metadata.timestamp,
+                    }),
+                    network: m.network,
+                    mem_free: m.mem_free,
+                    mem_free_hm: m.mem_free_hm,
+                    mem_free_block: m.mem_free_block,
+                    mem_free_internal: m.mem_free_internal,
+                    stack_free_min_coll: m.stack_free_min_coll,
+                    stack_free_min_pub: m.stack_free_min_pub,
+                    stack_free_min_mic: m.stack_free_min_mic,
+                    stack_free_min_th: m.stack_free_min_th,
+                    stack_free_min_air: m.stack_free_min_air,
+                    stack_free_min_mon: m.stack_free_min_mon,
+                    stack_https_handle: m.stack_https_handle,
+                    stack_health_handle: m.stack_health_handle,
+                    stack_parser_handle: m.stack_parser_handle,
+                    stack_converter_handle: m.stack_converter_handle,
+                    stack_heartbeat_handle: m.stack_heartbeat_handle,
+                    stack_fsm_handle: m.stack_fsm_handle,
+                    wifi_ssid: m.wifi_ssid,
+                    wifi_rssi: m.wifi_rssi as i32,
+                    active_time: m.active_time,
+                })
+                .collect();
 
             Some(Payload::MonitorBatch(grpc::MonitorBatch {
                 monitors: proto_monitors,
             }))
-        },
+        }
         ServerMessage::AlertAirBatch(alerts) => {
             debug!("serializando mensaje AlertAirBatch para el servidor");
-            let proto_alerts = alerts.into_iter().map(|a| grpc::AlertAir {
-                metadata: Some(grpc::Metadata {
-                    sender_user_id: a.metadata.sender_user_id,
-                    destination_id: a.metadata.destination_id,
-                    timestamp: a.metadata.timestamp,
-                }),
-                network: a.network,
-                co2_initial_ppm: a.co2_initial_ppm,
-                co2_actual_ppm: a.co2_actual_ppm,
-            }).collect();
+            let proto_alerts = alerts
+                .into_iter()
+                .map(|a| grpc::AlertAir {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: a.metadata.sender_user_id,
+                        destination_id: a.metadata.destination_id,
+                        timestamp: a.metadata.timestamp,
+                    }),
+                    network: a.network,
+                    co2_initial_ppm: a.co2_initial_ppm,
+                    co2_actual_ppm: a.co2_actual_ppm,
+                })
+                .collect();
 
             Some(Payload::AlertAirBatch(grpc::AlertAirBatch {
                 alerts: proto_alerts,
             }))
-        },
+        }
         ServerMessage::AlertTemBatch(alerts) => {
             debug!("serializando mensaje AlertTemBatch para el servidor");
-            let proto_alerts = alerts.into_iter().map(|a| grpc::AlertTh {
-                metadata: Some(grpc::Metadata {
-                    sender_user_id: a.metadata.sender_user_id,
-                    destination_id: a.metadata.destination_id,
-                    timestamp: a.metadata.timestamp,
-                }),
-                network: a.network,
-                initial_temp: a.initial_temp,
-                actual_temp: a.actual_temp,
-            }).collect();
+            let proto_alerts = alerts
+                .into_iter()
+                .map(|a| grpc::AlertTh {
+                    metadata: Some(grpc::Metadata {
+                        sender_user_id: a.metadata.sender_user_id,
+                        destination_id: a.metadata.destination_id,
+                        timestamp: a.metadata.timestamp,
+                    }),
+                    network: a.network,
+                    initial_temp: a.initial_temp,
+                    actual_temp: a.actual_temp,
+                })
+                .collect();
 
             Some(Payload::AlertThBatch(grpc::AlertThBatch {
                 alerts: proto_alerts,
             }))
-        },
+        }
         _ => None,
     };
 
     generate_edge_upload(payload, edge_id.to_string())
 }
 
-
 /// Envuelve el `Payload` gRPC validado en la estructura final de transmisión `FromEdge`.
-fn generate_edge_upload(payload: Option<Payload>,
-                        edge_id: String
-) -> Option<FromEdge> {
-
+fn generate_edge_upload(payload: Option<Payload>, edge_id: String) -> Option<FromEdge> {
     if let Some(p) = payload {
         Some(FromEdge {
             edge_id,
@@ -817,44 +912,71 @@ fn generate_edge_upload(payload: Option<Payload>,
     }
 }
 
-
 /// Itera y procesa por lotes los datos históricos recuperados de la base de datos local.
 ///
 /// Se ejecuta cuando el patrón "Store and Forward" detecta que la red regresó y
 /// la base de datos inyecta un `TableDataVector` (Batch). Convierte cada fila a gRPC
 /// y las encola para envío.
-async fn process_batch(batch: TableDataVector,
-                       tx: &mpsc::Sender<MessageServiceResponse>,
-                       system: &System
+async fn process_batch(
+    batch: TableDataVector,
+    tx: &mpsc::Sender<MessageServiceResponse>,
+    system: &System,
 ) -> Result<(), ()> {
-
     if !batch.measurement.is_empty() {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::ReportBatch(batch.measurement), system.id_edge.clone()) {
-            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+        if let Some(proto_msg) = convert_to_proto_upload(
+            ServerMessage::ReportBatch(batch.measurement),
+            system.id_edge.clone(),
+        ) {
+            if tx
+                .send(MessageServiceResponse::EdgeUpload(proto_msg))
+                .await
+                .is_err()
+            {
                 error!("no se puede enviar batch de measurements al cliente gRPC");
             }
         }
     }
 
     if !batch.monitor.is_empty() {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::MonitorBatch(batch.monitor), system.id_edge.clone()) {
-            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+        if let Some(proto_msg) = convert_to_proto_upload(
+            ServerMessage::MonitorBatch(batch.monitor),
+            system.id_edge.clone(),
+        ) {
+            if tx
+                .send(MessageServiceResponse::EdgeUpload(proto_msg))
+                .await
+                .is_err()
+            {
                 error!("no se puede enviar batch de monitors al cliente gRPC");
             }
         }
     }
 
     if !batch.alert_air.is_empty() {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertAirBatch(batch.alert_air), system.id_edge.clone()) {
-            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+        if let Some(proto_msg) = convert_to_proto_upload(
+            ServerMessage::AlertAirBatch(batch.alert_air),
+            system.id_edge.clone(),
+        ) {
+            if tx
+                .send(MessageServiceResponse::EdgeUpload(proto_msg))
+                .await
+                .is_err()
+            {
                 error!("no se puede enviar batch de alert_air al cliente gRPC");
             }
         }
     }
 
     if !batch.alert_th.is_empty() {
-        if let Some(proto_msg) = convert_to_proto_upload(ServerMessage::AlertTemBatch(batch.alert_th), system.id_edge.clone()) {
-            if tx.send(MessageServiceResponse::EdgeUpload(proto_msg)).await.is_err() {
+        if let Some(proto_msg) = convert_to_proto_upload(
+            ServerMessage::AlertTemBatch(batch.alert_th),
+            system.id_edge.clone(),
+        ) {
+            if tx
+                .send(MessageServiceResponse::EdgeUpload(proto_msg))
+                .await
+                .is_err()
+            {
                 error!("no se puede enviar batch de alert_th al cliente gRPC");
             }
         }
@@ -863,9 +985,7 @@ async fn process_batch(batch: TableDataVector,
     Ok(())
 }
 
-
 // -------------------------------------------------------------------------------------------------
-
 
 /// Procesador de mensajes entrantes del Servidor (Downlink Remoto).
 ///
@@ -876,11 +996,12 @@ async fn process_batch(batch: TableDataVector,
 /// Extrae la carga útil (`Payload`) de los mensajes Protobuf y delega la traducción
 /// al dominio a la función `handle_grpc_message`.
 #[instrument(name = "msg_from_server", skip_all)]
-pub async fn msg_from_server(tx: mpsc::Sender<MessageServiceResponse>,
-                             tx_to_msg_to_hub: mpsc::Sender<ServerMessage>,
-                             mut rx: mpsc::Receiver<MessageServiceCommand>,
-                             shutdown: CancellationToken) {
-
+pub async fn msg_from_server(
+    tx: mpsc::Sender<MessageServiceResponse>,
+    tx_to_msg_to_hub: mpsc::Sender<ServerMessage>,
+    mut rx: mpsc::Receiver<MessageServiceCommand>,
+    shutdown: CancellationToken,
+) {
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
@@ -907,13 +1028,13 @@ pub async fn msg_from_server(tx: mpsc::Sender<MessageServiceResponse>,
     }
 }
 
-
 /// Convierte los mensajes gRPC (`ToEdge`) entrantes en tipos nativos de dominio (`ServerMessage`)
 /// y los enruta al destino adecuado (Hub local o procesos internos del Edge).
-async fn handle_grpc_message(proto_msg: ToEdge,
-                             tx: &mpsc::Sender<MessageServiceResponse>,
-                             tx_to_msg_to_hub: &mpsc::Sender<ServerMessage>) {
-
+async fn handle_grpc_message(
+    proto_msg: ToEdge,
+    tx: &mpsc::Sender<MessageServiceResponse>,
+    tx_to_msg_to_hub: &mpsc::Sender<ServerMessage>,
+) {
     if let Some(payload) = proto_msg.payload {
         match payload {
             to_edge::Payload::UpdateFirmware(update_firmware) => {
@@ -922,10 +1043,16 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     metadata: extract_metadata(update_firmware.metadata),
                     network: update_firmware.network,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::UpdateFirmware(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(
+                        ServerMessage::UpdateFirmware(msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje UpdateFirmware a firmware");
                 }
-            },
+            }
             to_edge::Payload::Settings(settings) => {
                 debug!("mensaje Settings entrante desde el servidor");
                 let msg = Settings {
@@ -939,20 +1066,32 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     sample: settings.sample,
                     energy_mode: settings.energy_mode,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::FromServerSettings(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(
+                        ServerMessage::FromServerSettings(msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje a network");
                 }
-            },
+            }
             to_edge::Payload::DeleteHub(delete) => {
                 debug!("mensaje DeleteHub entrante desde el servidor");
                 let msg = DeleteHub {
                     metadata: extract_metadata(delete.metadata),
                     network: delete.network,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::DeleteHub(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(
+                        ServerMessage::DeleteHub(msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje a network");
                 }
-            },
+            }
             to_edge::Payload::SettingOk(setting_ok) => {
                 debug!("mensaje SettingOk entrante desde el servidor");
                 let msg = SettingOk {
@@ -961,10 +1100,14 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     network: setting_ok.network,
                     handshake: setting_ok.handshake,
                 };
-                if tx_to_msg_to_hub.send(ServerMessage::FromServerSettingsAck(msg)).await.is_err() {
+                if tx_to_msg_to_hub
+                    .send(ServerMessage::FromServerSettingsAck(msg))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje al hub");
                 }
-            },
+            }
             to_edge::Payload::Network(network) => {
                 debug!("mensaje Network entrante desde el servidor");
                 let msg = Network {
@@ -974,34 +1117,51 @@ async fn handle_grpc_message(proto_msg: ToEdge,
                     active: network.active,
                     delete_network: network.delete_network,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::Network(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(ServerMessage::Network(
+                        msg,
+                    )))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje a network");
                 }
-            },
+            }
             to_edge::Payload::Heartbeat(heartbeat) => {
                 debug!("mensaje Heartbeat entrante desde el servidor");
                 let msg = HeartbeatMsg {
                     metadata: extract_metadata(heartbeat.metadata),
                     beat: true,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::Heartbeat(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(
+                        ServerMessage::Heartbeat(msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje a heartbeat");
                 }
-            },
+            }
             to_edge::Payload::HelloWorld(hello_ack) => {
                 debug!("mensaje HelloWorldAck entrante desde el servidor");
                 let msg = HelloWorld {
                     metadata: extract_metadata(hello_ack.metadata),
                     hello: hello_ack.hello,
                 };
-                if tx.send(MessageServiceResponse::FromServer(ServerMessage::HelloWorld(msg))).await.is_err() {
+                if tx
+                    .send(MessageServiceResponse::FromServer(
+                        ServerMessage::HelloWorld(msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje HelloWorld a la fsm general");
                 }
-            },
+            }
         }
     }
 }
-
 
 /// Helper para convertir la metadata de red generada por Protobuf en la estructura
 /// plana de `Metadata` usada en el dominio del negocio.
@@ -1014,20 +1174,19 @@ fn extract_metadata(proto_meta: Option<grpc::Metadata>) -> Metadata {
     }
 }
 
-
 // -------------------------------------------------------------------------------------------------
-
 
 /// Utilidad genérica de serialización y encolamiento para el Downlink Local.
 ///
 /// Serializa cualquier estructura de dominio (T) a un arreglo de bytes utilizando **MessagePack**
 /// y la empaqueta en un objeto [`SerializedMessage`] listo para ser procesado y publicado
 /// por el cliente MQTT.
-pub async fn send<T>(tx: &mpsc::Sender<MessageServiceResponse>,
-                     topic: String,
-                     qos: u8,
-                     msg: T,
-                     retain: bool
+pub async fn send<T>(
+    tx: &mpsc::Sender<MessageServiceResponse>,
+    topic: String,
+    qos: u8,
+    msg: T,
+    retain: bool,
 ) -> Result<(), ()>
 where
     T: Serialize,
@@ -1035,7 +1194,11 @@ where
     match to_vec(&msg) {
         Ok(payload) => {
             let serialized = SerializedMessage::new(topic, payload, qos, retain);
-            if tx.send(MessageServiceResponse::Serialized(serialized)).await.is_err() {
+            if tx
+                .send(MessageServiceResponse::Serialized(serialized))
+                .await
+                .is_err()
+            {
                 return Err(());
             }
         }
@@ -1046,12 +1209,13 @@ where
     Ok(())
 }
 
-
-pub async fn send_clear_state(tx: &mpsc::Sender<MessageServiceResponse>,
-                               topic: String,
-                               qos: u8) {
+pub async fn send_clear_state(tx: &mpsc::Sender<MessageServiceResponse>, topic: String, qos: u8) {
     let msg = SerializedMessage::new(topic, vec![], qos, true);
-    if tx.send(MessageServiceResponse::Serialized(msg)).await.is_err() {
+    if tx
+        .send(MessageServiceResponse::Serialized(msg))
+        .await
+        .is_err()
+    {
         error!("no se pudo serializar mensaje ClearState");
     }
 }
