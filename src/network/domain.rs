@@ -17,20 +17,18 @@
 //! el `NetworkManager` mantiene una copia en memoria (`HashMap`) de las redes y hubs activos,
 //! acelerando drásticamente el enrutamiento de mensajes.
 
-
-use sqlx::{FromRow};
-use std::collections::{HashMap, HashSet};
-use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
-use crate::system::domain::System;
-use rand::seq::IteratorRandom;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use crate::context::domain::AppContext;
 use crate::database::domain::DataServiceCommand;
 use crate::message::domain::{HubMessage, ServerMessage};
 use crate::network::logic::{network_admin, network_dba};
-
+use crate::system::domain::System;
+use rand::seq::IteratorRandom;
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 /// Respuestas emitidas por el servicio de red hacia el Core o FSM.
 pub enum NetworkServiceResponse {
@@ -44,7 +42,6 @@ pub enum NetworkServiceResponse {
     GenerateLinkageAck(String),
 }
 
-
 /// Comandos entrantes que el servicio de red debe procesar.
 pub enum NetworkServiceCommand {
     /// Mensaje proveniente de un Hub local.
@@ -55,7 +52,6 @@ pub enum NetworkServiceCommand {
     Batch(Batch),
 }
 
-
 /// Lotes de entidades para carga inicial o sincronización masiva.
 pub enum Batch {
     /// Lista plana de redes proveniente de la DB.
@@ -63,7 +59,6 @@ pub enum Batch {
     /// Lista plana de Hubs proveniente de la DB.
     Hub(Vec<HubRow>),
 }
-
 
 /// Actor principal que administra el subsistema de redes.
 ///
@@ -79,17 +74,17 @@ pub struct NetworkService {
     context: AppContext,
 }
 
-
 impl NetworkService {
-
     /// Crea una nueva instancia del servicio de red.
-    pub fn new(sender: mpsc::Sender<NetworkServiceResponse>,
-               receiver: mpsc::Receiver<NetworkServiceCommand>,
-               context: AppContext) -> Self {
+    pub fn new(
+        sender: mpsc::Sender<NetworkServiceResponse>,
+        receiver: mpsc::Receiver<NetworkServiceCommand>,
+        context: AppContext,
+    ) -> Self {
         Self {
             sender,
             receiver,
-            context
+            context,
         }
     }
 
@@ -98,7 +93,6 @@ impl NetworkService {
     /// Crea la topología interna de canales para aislar la lógica de negocio (`admin`)
     /// de la lógica de persistencia (`dba`).
     pub async fn run(mut self, shutdown: CancellationToken) {
-
         let (tx_to_insert_network, rx_from_network) = mpsc::channel::<NetworkChanged>(50);
         let (tx_to_core, mut rx_response_admin) = mpsc::channel::<NetworkServiceResponse>(50);
         let (tx_to_insert_hub, rx_from_network_hub) = mpsc::channel::<HubChanged>(50);
@@ -107,19 +101,23 @@ impl NetworkService {
         let (tx_dba_response, mut rx_response_dba) = mpsc::channel::<DataServiceCommand>(50);
         let (tx_command_batch, rx_batch) = mpsc::channel::<Batch>(50);
 
-        tokio::spawn(network_admin(tx_to_insert_network,
-                                   tx_to_core,
-                                   tx_to_insert_hub,
-                                   rx_from_server,
-                                   rx_from_hub,
-                                   rx_batch,
-                                   self.context.clone(),
-                                   shutdown.clone()));
+        tokio::spawn(network_admin(
+            tx_to_insert_network,
+            tx_to_core,
+            tx_to_insert_hub,
+            rx_from_server,
+            rx_from_hub,
+            rx_batch,
+            self.context.clone(),
+            shutdown.clone(),
+        ));
 
-        tokio::spawn(network_dba(tx_dba_response,
-                                 rx_from_network,
-                                 rx_from_network_hub,
-                                 shutdown.clone()));
+        tokio::spawn(network_dba(
+            tx_dba_response,
+            rx_from_network,
+            rx_from_network_hub,
+            shutdown.clone(),
+        ));
 
         loop {
             tokio::select! {
@@ -170,7 +168,6 @@ impl NetworkService {
     }
 }
 
-
 /// Gestor en memoria de las configuraciones de redes, hubs y tópicos del sistema.
 ///
 /// Este struct actúa como una caché de lectura rápida (O(1)) para evitar consultar
@@ -194,9 +191,8 @@ pub struct NetworkManager {
     pub topic_state: Topic,
     pub topic_heartbeat: Topic,
     pub topic_linkage_request: Topic,
-    pub topic_linkage_ack: Topic
+    pub topic_linkage_ack: Topic,
 }
-
 
 impl NetworkManager {
     /// Crea una nueva instancia vacía del gestor.
@@ -225,13 +221,21 @@ impl NetworkManager {
     pub fn add_network(&mut self, network: Network) {
         self.networks.insert(network.id_network.clone(), network);
     }
-    
+
     pub fn change_active(&mut self, active: bool, id: &str) {
         if self.networks.get(id).is_some() {
             self.networks.get_mut(id).unwrap().active = active;
         }
     }
-    
+
+    pub fn is_active(&self, id: &str) -> bool {
+        if let Some(network) = self.networks.get(id) {
+            network.active // Si existe, devolvemos su estado
+        } else {
+            false // Si no existe, devolvemos false
+        }
+    }
+
     /// Elimina una red de la memoria.
     pub fn remove_network(&mut self, id: &str) {
         self.networks.remove(id);
@@ -242,10 +246,7 @@ impl NetworkManager {
         // 1. Busca la entrada por id.
         // 2. Si no existe, crea un HashSet vacío (or_default).
         // 3. Intenta insertar el hub.
-        let is_new = self.hubs
-            .entry(id)
-            .or_default()
-            .insert(hub);
+        let is_new = self.hubs.entry(id).or_default().insert(hub);
 
         if is_new {
             info!("Hub agregado.");
@@ -266,7 +267,10 @@ impl NetworkManager {
                 warn!("El Hub '{}' no existía en la red '{}'.", id_hub, id_network);
             }
         } else {
-            warn!("Intento de borrar hub en red inexistente: '{}'.", id_network);
+            warn!(
+                "Intento de borrar hub en red inexistente: '{}'.",
+                id_network
+            );
         }
     }
 
@@ -290,7 +294,6 @@ impl NetworkManager {
 
     /// Obtener un id de un Hub aleatorio perteneciente a una determinada red.
     pub fn get_random_hub_id_by_network(&self, id_net: &str) -> Option<String> {
-        
         let hubs_set = self.hubs.get(id_net)?;
         let random_hub = hubs_set.iter().choose(&mut rand::thread_rng())?;
         Some(random_hub.id.clone())
@@ -314,7 +317,6 @@ impl NetworkManager {
 
     /// Resuelve el tópico MQTT específico de salida basándose en el tipo de mensaje a enviar al Hub.
     pub fn get_topic_to_send_msg_to_hub(&self, msg: &HubMessage) -> Option<Topic> {
-
         match msg {
             HubMessage::UpdateFirmware(firmware) => {
                 let id_net = firmware.network.clone();
@@ -323,7 +325,7 @@ impl NetworkManager {
                 } else {
                     None
                 }
-            },
+            }
             HubMessage::FromServerSettings(settings) => {
                 let id_net = settings.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
@@ -331,7 +333,7 @@ impl NetworkManager {
                 } else {
                     None
                 }
-            },
+            }
             HubMessage::FromServerSettingsAck(settings_ack) => {
                 let id_net = settings_ack.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
@@ -339,15 +341,15 @@ impl NetworkManager {
                 } else {
                     None
                 }
-            },
+            }
             HubMessage::DeleteHub(delete_hub) => {
                 let id_net = delete_hub.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_delete_hub.clone())
-                } else { 
-                    None 
+                } else {
+                    None
                 }
-            },
+            }
             HubMessage::ActiveHub(active_hub) => {
                 let id_net = active_hub.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
@@ -355,7 +357,7 @@ impl NetworkManager {
                 } else {
                     None
                 }
-            },
+            }
             HubMessage::PingToHub(ping) => {
                 let id_net = ping.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
@@ -369,7 +371,6 @@ impl NetworkManager {
     }
 }
 
-
 /// Representación simple de un Tópico MQTT y su calidad de servicio (QoS).
 #[derive(Debug, Clone)]
 pub struct Topic {
@@ -377,13 +378,11 @@ pub struct Topic {
     pub qos: u8,
 }
 
-
 impl Topic {
     pub fn new(topic: String, qos: u8) -> Self {
         Self { topic, qos }
     }
 }
-
 
 /// Configuración operativa completa de una Red IoT lógica.
 ///
@@ -417,9 +416,7 @@ pub struct Network {
     pub active: bool,
 }
 
-
 impl Network {
-
     /// Instancia una nueva red generando dinámicamente todos sus tópicos.
     /// Utiliza wildcards `+` en los tópicos entrantes para capturar eventos de cualquier hub en la red.
     pub fn new(id_network: String, active: bool) -> Self {
@@ -454,15 +451,14 @@ impl Network {
             topic_new_firmware: Topic::new(t_new_firmware, 0),
             topic_setting_ok: Topic::new(t_setting_ok, 0),
             topic_delete_hub: Topic::new(t_delete_hub, 0),
-            topic_active_hub: Topic::new(t_active, 0),
+            topic_active_hub: Topic::new(t_active, 1),
             topic_ping: Topic::new(t_ping, 1),
             topic_ping_ack: Topic::new(t_ping_ack, 1),
             topic_queue_empty: Topic::new(t_queue_empty, 1),
-            active
+            active,
         }
     }
 }
-
 
 /// DTO (Data Transfer Object) para mapear redes planas desde la tabla SQL.
 #[derive(Debug, FromRow, Deserialize, PartialEq, Clone)]
@@ -470,7 +466,6 @@ pub struct NetworkRow {
     pub id_network: String,
     pub active: bool,
 }
-
 
 /// Convierte una fila plana de base de datos (`NetworkRow`) a la estructura jerárquica (`Network`).
 impl NetworkRow {
@@ -483,7 +478,6 @@ impl NetworkRow {
     }
 }
 
-
 /// Acciones operacionales posibles sobre una red para notificar al DBA.
 #[derive(Debug, PartialEq)]
 pub enum NetworkAction {
@@ -493,7 +487,6 @@ pub enum NetworkAction {
     Ignore,
 }
 
-
 /// Eventos de mutación de estado en redes para sincronizar la BD.
 #[derive(Debug, PartialEq, Clone)]
 pub enum NetworkChanged {
@@ -502,7 +495,6 @@ pub enum NetworkChanged {
     Delete { id: String },
 }
 
-
 /// Eventos de mutación de estado en Hubs para sincronizar la BD.
 #[derive(Debug, PartialEq, Clone)]
 pub enum HubChanged {
@@ -510,14 +502,12 @@ pub enum HubChanged {
     Delete(String),
 }
 
-
 /// Representación liviana en memoria caché de un dispositivo nodo/Hub.
 #[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
 pub struct Hub {
     pub id: String,
-    pub device_name: String
+    pub device_name: String,
 }
-
 
 /// DTO (Data Transfer Object) para mapear Hubs físicos desde la tabla SQL.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
@@ -526,7 +516,6 @@ pub struct HubRow {
     pub device_name: String,
     pub network_id: String,
 }
-
 
 impl HubRow {
     pub fn cast_to_hub(self) -> Hub {

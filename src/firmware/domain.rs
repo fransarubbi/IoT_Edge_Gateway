@@ -9,18 +9,16 @@
 //! * Generar acciones (efectos secundarios) que el orquestador debe ejecutar.
 //! * Gestionar la sesión de actualización (métricas y progreso).
 
-
+use crate::context::domain::AppContext;
+use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
+use crate::message::domain::{FirmwareOk, HubMessage, ServerMessage, UpdateFirmware};
 use std::cmp::PartialEq;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
-use crate::context::domain::AppContext;
-use crate::firmware::logic::{run_fsm_firmware, update_firmware_task};
-use crate::message::domain::{FirmwareOk, HubMessage, ServerMessage, UpdateFirmware};
-
 
 pub enum FirmwareServiceCommand {
     Update(UpdateFirmware),
@@ -29,19 +27,16 @@ pub enum FirmwareServiceCommand {
     DeleteRuntime,
 }
 
-
 pub enum FirmwareServiceResponse {
     ServerAck(ServerMessage),
     HubCommand(HubMessage),
 }
-
 
 pub struct FirmwareService {
     sender: mpsc::Sender<FirmwareServiceResponse>,
     receiver: mpsc::Receiver<FirmwareServiceCommand>,
     context: AppContext,
 }
-
 
 struct FirmwareRuntime {
     handles: Vec<JoinHandle<()>>,
@@ -50,11 +45,12 @@ struct FirmwareRuntime {
     rx_response: mpsc::Receiver<FirmwareServiceResponse>,
 }
 
-
 impl FirmwareService {
-    pub fn new(sender: mpsc::Sender<FirmwareServiceResponse>,
-               receiver: mpsc::Receiver<FirmwareServiceCommand>,
-               context: AppContext) -> Self {
+    pub fn new(
+        sender: mpsc::Sender<FirmwareServiceResponse>,
+        receiver: mpsc::Receiver<FirmwareServiceCommand>,
+        context: AppContext,
+    ) -> Self {
         Self {
             sender,
             receiver,
@@ -63,7 +59,6 @@ impl FirmwareService {
     }
 
     fn spawn_runtime(&self) -> FirmwareRuntime {
-
         let token = CancellationToken::new();
         let mut handles = Vec::new();
 
@@ -76,39 +71,41 @@ impl FirmwareService {
         let child_token = token.child_token();
         let update_tx_to_fsm = tx_to_fsm.clone();
         handles.push(tokio::spawn(update_firmware_task(
-                                          tx_response,
-                                          update_tx_to_fsm,
-                                          tx_to_timer,
-                                          rx_msg,
-                                          rx_from_fsm,
-                                          self.context.clone(),
-                                          child_token)));
+            tx_response,
+            update_tx_to_fsm,
+            tx_to_timer,
+            rx_msg,
+            rx_from_fsm,
+            self.context.clone(),
+            child_token,
+        )));
 
         let child_token = token.child_token();
         handles.push(tokio::spawn(run_fsm_firmware(
-                                         tx_to_update_task,
-                                         fsm_rx_from_update_task,
-                                         child_token)));
+            tx_to_update_task,
+            fsm_rx_from_update_task,
+            child_token,
+        )));
 
         let child_token = token.child_token();
         let timer_tx_to_fsm = tx_to_fsm.clone();
         handles.push(tokio::spawn(firmware_watchdog_timer(
-                                            timer_tx_to_fsm,
-                                            timer_rx_from_update_task,
-                                            child_token)));
+            timer_tx_to_fsm,
+            timer_rx_from_update_task,
+            child_token,
+        )));
 
         FirmwareRuntime {
             handles,
             cancel_token: token,
             tx_msg,
-            rx_response
+            rx_response,
         }
     }
 
     pub async fn run(mut self, shutdown: CancellationToken) {
-        
         let mut runtime: Option<FirmwareRuntime> = None;
-        
+
         loop {
             match runtime {
                 Some(ref mut rt) => {
@@ -168,7 +165,7 @@ impl FirmwareService {
                             info!("shutdown recibido FirmwareService");
                             break;
                         }
-                        
+
                         Some(cmd) = self.receiver.recv() => {
                             match cmd {
                                 FirmwareServiceCommand::CreateRuntime => {
@@ -186,14 +183,12 @@ impl FirmwareService {
     }
 }
 
-
 /// Envoltorio principal para el estado de la FSM.
 #[derive(Debug, Clone)]
 pub struct FsmStateFirmware {
     /// Estado actual del proceso.
     state: StateFirmwareUpdate,
 }
-
 
 /// Enumeración de todos los estados posibles en el ciclo de vida de la actualización OTA.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,7 +201,6 @@ pub enum StateFirmwareUpdate {
     WaitingNetworkAnswer,
 }
 
-
 /// Resultado de intentar aplicar un evento a la FSM.
 pub enum Transition {
     /// La transición es lógica y permitida.
@@ -214,7 +208,6 @@ pub enum Transition {
     /// El evento no aplica al estado actual.
     Invalid(TransitionInvalid),
 }
-
 
 /// Representa un cambio de estado exitoso y las acciones resultantes.
 #[derive(Debug)]
@@ -225,7 +218,6 @@ pub struct TransitionValid {
     actions: Vec<Action>,
 }
 
-
 impl TransitionValid {
     pub fn get_change_state(&self) -> FsmStateFirmware {
         self.change_state.clone()
@@ -235,7 +227,6 @@ impl TransitionValid {
     }
 }
 
-
 /// Representa un intento fallido de transición.
 #[derive(Debug)]
 pub struct TransitionInvalid {
@@ -243,13 +234,11 @@ pub struct TransitionInvalid {
     invalid: String,
 }
 
-
 impl TransitionInvalid {
     pub fn get_invalid(&self) -> &str {
         &self.invalid
     }
 }
-
 
 /// Eventos de entrada (Inputs) que estimulan la FSM.
 pub enum Event {
@@ -268,7 +257,6 @@ pub enum Event {
     /// Comando interno para detener el timer.
     StopTimer,
 }
-
 
 /// Acciones de salida (Outputs) o instrucciones para el ejecutor.
 #[derive(Debug, PartialEq, Clone)]
@@ -289,7 +277,6 @@ pub enum Action {
     Nothing,
 }
 
-
 /// Define la estrategia de despliegue actual dentro de una sesión.
 #[derive(Debug, PartialEq)]
 pub enum Phase {
@@ -298,7 +285,6 @@ pub enum Phase {
     /// Despliegue masivo al resto de la red.
     Broadcast,
 }
-
 
 /// Mantiene el contexto volátil y las métricas de una actualización en curso.
 pub struct UpdateSession {
@@ -321,7 +307,6 @@ pub struct UpdateSession {
     /// Fase actual del despliegue.
     pub phase: Phase,
 }
-
 
 impl UpdateSession {
     /// Crea una nueva sesión de actualización en fase Canario.
@@ -363,9 +348,7 @@ impl UpdateSession {
     }
 }
 
-
 impl FsmStateFirmware {
-
     /// Inicializa la máquina en estado de espera.
     pub fn new() -> Self {
         Self {
@@ -379,29 +362,29 @@ impl FsmStateFirmware {
             (StateFirmwareUpdate::WaitingForFirmware, Event::MessageFromServer) => {
                 let next_fsm = self.clone();
                 state_waiting_for_firmware_event_message_update(next_fsm)
-            },
+            }
             (StateFirmwareUpdate::NotifyHub, Event::MessageFromHub) => {
                 let next_fsm = self.clone();
                 state_notify_hub_event_message_from_hub(next_fsm)
-            },
+            }
             (StateFirmwareUpdate::NotifyHub, Event::Error) => {
                 let next_fsm = self.clone();
                 state_notify_hub_event_error(next_fsm)
-            },
+            }
             (StateFirmwareUpdate::WaitingNetworkAnswer, Event::Timeout | Event::Error) => {
                 let next_fsm = self.clone();
                 state_waiting_network_answer_event_timeout_or_error(next_fsm)
-            },
+            }
             (StateFirmwareUpdate::WaitingNetworkAnswer, Event::AllMessageReceived) => {
                 let next_fsm = self.clone();
                 state_waiting_network_answer_event_all_message_received(next_fsm)
-            },
+            }
             _ => {
                 let invalid = TransitionInvalid {
                     invalid: "Transición inválida".to_string(),
                 };
                 Transition::Invalid(invalid)
-            },
+            }
         }
     }
 
@@ -417,7 +400,7 @@ impl FsmStateFirmware {
                 let entry_action = compute_on_entry(self, &t.change_state);
                 if entry_action != Action::Nothing {
                     // Importante: Insertar al inicio para que timers se inicien antes de operaciones de red.
-                    t.actions.insert(0, entry_action);
+                    t.actions.push(entry_action);
                 }
                 Transition::Valid(t)
             }
@@ -425,7 +408,6 @@ impl FsmStateFirmware {
         }
     }
 }
-
 
 // --- Funciones auxiliares de transición de estado ---
 
@@ -438,7 +420,6 @@ fn state_waiting_for_firmware_event_message_update(mut next_fsm: FsmStateFirmwar
     Transition::Valid(valid)
 }
 
-
 fn state_notify_hub_event_message_from_hub(mut next_fsm: FsmStateFirmware) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingNetworkAnswer;
     let valid = TransitionValid {
@@ -447,7 +428,6 @@ fn state_notify_hub_event_message_from_hub(mut next_fsm: FsmStateFirmware) -> Tr
     };
     Transition::Valid(valid)
 }
-
 
 fn state_notify_hub_event_error(mut next_fsm: FsmStateFirmware) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
@@ -458,8 +438,9 @@ fn state_notify_hub_event_error(mut next_fsm: FsmStateFirmware) -> Transition {
     Transition::Valid(valid)
 }
 
-
-fn state_waiting_network_answer_event_timeout_or_error(mut next_fsm: FsmStateFirmware) -> Transition {
+fn state_waiting_network_answer_event_timeout_or_error(
+    mut next_fsm: FsmStateFirmware,
+) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
     let valid = TransitionValid {
         change_state: next_fsm,
@@ -468,8 +449,9 @@ fn state_waiting_network_answer_event_timeout_or_error(mut next_fsm: FsmStateFir
     Transition::Valid(valid)
 }
 
-
-fn state_waiting_network_answer_event_all_message_received(mut next_fsm: FsmStateFirmware) -> Transition {
+fn state_waiting_network_answer_event_all_message_received(
+    mut next_fsm: FsmStateFirmware,
+) -> Transition {
     next_fsm.state = StateFirmwareUpdate::WaitingForFirmware;
     let valid = TransitionValid {
         change_state: next_fsm,
@@ -477,7 +459,6 @@ fn state_waiting_network_answer_event_all_message_received(mut next_fsm: FsmStat
     };
     Transition::Valid(valid)
 }
-
 
 /// Calcula acciones automáticas al entrar en un nuevo estado.
 /// Usado principalmente para inicializar timers (Watchdog).
@@ -489,21 +470,22 @@ fn compute_on_entry(old: &FsmStateFirmware, new: &FsmStateFirmware) -> Action {
     Action::Nothing
 }
 
-
 /// Tarea asíncrona dedicada al temporizador de seguridad (Watchdog).
 ///
 /// Implementa un patrón "Dead Man's Switch". Espera un comando `InitTimer`.
 /// Si el tiempo expira antes de recibir `StopTimer`, envía un evento `Timeout` a la FSM.
 #[instrument(name = "firmware_watchdog_timer", skip(cmd_rx))]
-async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
-                                mut cmd_rx: mpsc::Receiver<Event>,
-                                cancel: CancellationToken) {
+async fn firmware_watchdog_timer(
+    tx_to_fsm: mpsc::Sender<Event>,
+    mut cmd_rx: mpsc::Receiver<Event>,
+    cancel: CancellationToken,
+) {
     loop {
         // Estado IDLE: Esperar comando de inicio
         let duration = match cmd_rx.recv().await {
             Some(Event::InitTimer(d)) => d,
             Some(Event::StopTimer) => continue, // Si ya estaba parado, ignorar
-            None => break, // Canal cerrado, terminar tarea
+            None => break,                      // Canal cerrado, terminar tarea
             _ => continue,
         };
 
@@ -526,13 +508,11 @@ async fn firmware_watchdog_timer(tx_to_fsm: mpsc::Sender<Event>,
     }
 }
 
-
-
 //--------------------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use super::*;
+    use chrono::Utc;
 
     // ============================================================
     //                   TRANSICIONES VÁLIDAS
@@ -553,7 +533,10 @@ mod tests {
             Transition::Valid(t) => {
                 assert_eq!(t.change_state.state, StateFirmwareUpdate::NotifyHub);
                 assert!(t.actions.contains(&Action::SelectRandomHub));
-                assert!(t.actions.contains(&Action::OnEntry(StateFirmwareUpdate::NotifyHub)));
+                assert!(
+                    t.actions
+                        .contains(&Action::OnEntry(StateFirmwareUpdate::NotifyHub))
+                );
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
         }
@@ -568,7 +551,10 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingNetworkAnswer);
+                assert_eq!(
+                    t.change_state.state,
+                    StateFirmwareUpdate::WaitingNetworkAnswer
+                );
                 assert!(t.actions.contains(&Action::SendMessageToNetwork));
                 assert!(t.actions.contains(&Action::StopTimer));
             }
@@ -585,7 +571,10 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert_eq!(
+                    t.change_state.state,
+                    StateFirmwareUpdate::WaitingForFirmware
+                );
                 assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
@@ -601,7 +590,10 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert_eq!(
+                    t.change_state.state,
+                    StateFirmwareUpdate::WaitingForFirmware
+                );
                 assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
@@ -617,7 +609,10 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert_eq!(
+                    t.change_state.state,
+                    StateFirmwareUpdate::WaitingForFirmware
+                );
                 assert!(t.actions.contains(&Action::SendMessageFailToServer));
             }
             Transition::Invalid(_) => panic!("Se esperaba una transición válida"),
@@ -633,7 +628,10 @@ mod tests {
 
         match transition {
             Transition::Valid(t) => {
-                assert_eq!(t.change_state.state, StateFirmwareUpdate::WaitingForFirmware);
+                assert_eq!(
+                    t.change_state.state,
+                    StateFirmwareUpdate::WaitingForFirmware
+                );
                 assert!(t.actions.contains(&Action::StopTimer));
                 assert!(t.actions.contains(&Action::SendMessageOkToServer));
             }
@@ -692,7 +690,10 @@ mod tests {
         match transition {
             Transition::Valid(t) => {
                 // OnEntry debe estar al principio
-                assert_eq!(t.actions[0], Action::OnEntry(StateFirmwareUpdate::NotifyHub));
+                assert_eq!(
+                    t.actions[0],
+                    Action::OnEntry(StateFirmwareUpdate::NotifyHub)
+                );
             }
             _ => panic!("Se esperaba una transición válida"),
         }
@@ -707,18 +708,16 @@ mod tests {
         use crate::message::domain::*;
         let timestamp = Utc::now().timestamp();
 
-        let metadata = Metadata { 
+        let metadata = Metadata {
             sender_user_id: "server".to_string(),
             destination_id: "hub1".to_string(),
             timestamp,
         };
 
-        let message = ServerMessage::UpdateFirmware(
-            UpdateFirmware {
-                metadata,
-                network: "sala8".to_string(),
-            }
-        );
+        let message = ServerMessage::UpdateFirmware(UpdateFirmware {
+            metadata,
+            network: "sala8".to_string(),
+        });
 
         message
     }

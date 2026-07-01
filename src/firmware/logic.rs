@@ -3,31 +3,35 @@
 //! Este módulo actúa como el orquestador asíncrono. Gestiona la concurrencia,
 //! la comunicación I/O con la red y ejecuta las acciones dictadas por el dominio.
 
-
-use chrono::{Utc};
+use crate::config::firmware::OTA_TIMEOUT;
+use crate::context::domain::AppContext;
+use crate::firmware::domain::{
+    Action, FirmwareServiceCommand, FirmwareServiceResponse, FsmStateFirmware, Phase,
+    StateFirmwareUpdate, UpdateSession,
+};
+use crate::firmware::domain::{Event, Transition};
+use crate::message::domain::{
+    FirmwareOk, FirmwareOutcome, HubMessage, Metadata, ServerMessage, UpdateFirmware,
+};
+use chrono::Utc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
-use crate::context::domain::AppContext;
-use crate::firmware::domain::{Action, FirmwareServiceCommand, FirmwareServiceResponse, FsmStateFirmware, Phase, StateFirmwareUpdate, UpdateSession};
-use crate::firmware::domain::{Event, Transition};
-use crate::message::domain::{FirmwareOk, FirmwareOutcome, HubMessage, Metadata, ServerMessage, UpdateFirmware};
-use crate::config::firmware::{OTA_TIMEOUT};
-
 
 /// Tarea principal de actualización de firmware.
 ///
 /// Mantiene un bucle infinito que escucha múltiples canales (Server, Hub, FSM)
 #[instrument(name = "update_firmware", skip_all)]
-pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceResponse>,
-                                  tx_to_fsm: mpsc::Sender<Event>,
-                                  tx_to_timer: mpsc::Sender<Event>,
-                                  mut rx_msg: mpsc::Receiver<FirmwareServiceCommand>,
-                                  mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
-                                  app_context: AppContext,
-                                  cancel: CancellationToken) {
-
-    let mut session : Option<UpdateSession> = None;
+pub async fn update_firmware_task(
+    tx_to_core: mpsc::Sender<FirmwareServiceResponse>,
+    tx_to_fsm: mpsc::Sender<Event>,
+    tx_to_timer: mpsc::Sender<Event>,
+    mut rx_msg: mpsc::Receiver<FirmwareServiceCommand>,
+    mut rx_from_fsm: mpsc::Receiver<Vec<Action>>,
+    app_context: AppContext,
+    cancel: CancellationToken,
+) {
+    let mut session: Option<UpdateSession> = None;
 
     loop {
         tokio::select! {
@@ -100,14 +104,14 @@ pub async fn update_firmware_task(tx_to_core: mpsc::Sender<FirmwareServiceRespon
     }
 }
 
-
 /// Actor que encapsula la Máquina de Estados (FSM).
 /// Mantiene el estado en memoria y procesa eventos secuencialmente.
 #[instrument(name = "run_fsm_firmware", skip_all)]
-pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
-                              mut rx_event: mpsc::Receiver<Event>,
-                              cancel: CancellationToken) {
-
+pub async fn run_fsm_firmware(
+    tx_actions: mpsc::Sender<Vec<Action>>,
+    mut rx_event: mpsc::Receiver<Event>,
+    cancel: CancellationToken,
+) {
     let mut state = FsmStateFirmware::new();
 
     loop {
@@ -134,10 +138,13 @@ pub async fn run_fsm_firmware(tx_actions: mpsc::Sender<Vec<Action>>,
     }
 }
 
-
 /// Maneja la recepción de confirmaciones de firmware de los dispositivos.
 /// Implementa la lógica de Canario y la política de éxito estricta.
-async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &FirmwareOk, tx_to_fsm: &mpsc::Sender<Event>) {
+async fn handle_message_from_hub(
+    session_ref: &mut UpdateSession,
+    firmware: &FirmwareOk,
+    tx_to_fsm: &mpsc::Sender<Event>,
+) {
     let sender_id = firmware.metadata.sender_user_id.clone();
     let is_ok = firmware.is_ok;
 
@@ -151,8 +158,14 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
     if session_ref.is_canary() {
         if firmware.is_ok {
             info!(hub_id = %sender_id, "canario actualizado exitosamente. Avanzando a Broadcast.");
+
+            session_ref.responses.insert(sender_id.clone());
+            session_ref.successes += 1;
+
             if tx_to_fsm.send(Event::MessageFromHub).await.is_err() {
-                error!("no se pudo enviar evento MessageFromHub a la fsm de actualización de firmware");
+                error!(
+                    "no se pudo enviar evento MessageFromHub a la fsm de actualización de firmware"
+                );
             }
         } else {
             warn!(hub_id = %sender_id, "canario falló la actualización. Abortando despliegue.");
@@ -160,8 +173,7 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
                 error!("no se pudo enviar evento Error a la fsm de actualización de firmware");
             }
         }
-    }
-    else if session_ref.is_broadcast() {
+    } else if session_ref.is_broadcast() {
         let user_id = firmware.metadata.sender_user_id.to_string();
         if session_ref.responses.insert(user_id) {
             if firmware.is_ok {
@@ -177,11 +189,15 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
 
                 if session_ref.failures == 0 {
                     if tx_to_fsm.send(Event::AllMessageReceived).await.is_err() {
-                        error!("no se pudo enviar evento AllMessageReceived a la fsm de actualización de firmware");
+                        error!(
+                            "no se pudo enviar evento AllMessageReceived a la fsm de actualización de firmware"
+                        );
                     }
                 } else {
                     if tx_to_fsm.send(Event::Error).await.is_err() {
-                        error!("no se pudo enviar evento Error a la fsm de actualización de firmware");
+                        error!(
+                            "no se pudo enviar evento Error a la fsm de actualización de firmware"
+                        );
                     }
                 }
 
@@ -196,40 +212,48 @@ async fn handle_message_from_hub(session_ref: &mut UpdateSession, firmware: &Fir
     }
 }
 
-
 /// Manejador de entrada de estados. Gestiona limpieza y timers.
-async fn on_entry(state_firm: StateFirmwareUpdate, session: &mut Option<UpdateSession>, tx_to_timer: &mpsc::Sender<Event>) {
+async fn on_entry(
+    state_firm: StateFirmwareUpdate,
+    session: &mut Option<UpdateSession>,
+    tx_to_timer: &mpsc::Sender<Event>,
+) {
     match state_firm {
-        StateFirmwareUpdate::WaitingForFirmware => {
-            *session = None;
-        },
         StateFirmwareUpdate::NotifyHub => {
             init_timer_and_update_phase(session, &tx_to_timer, Phase::Canary).await;
-        },
+        }
         StateFirmwareUpdate::WaitingNetworkAnswer => {
             init_timer_and_update_phase(session, &tx_to_timer, Phase::Broadcast).await;
         }
+        _ => {}
     }
 }
 
-
 /// Helper para inicializar el timer y cambiar la fase de la sesión.
-async fn init_timer_and_update_phase(session: &mut Option<UpdateSession>, tx_to_timer: &mpsc::Sender<Event>, phase: Phase) {
+async fn init_timer_and_update_phase(
+    session: &mut Option<UpdateSession>,
+    tx_to_timer: &mpsc::Sender<Event>,
+    phase: Phase,
+) {
     if let Some(session_ref) = session {
-        if tx_to_timer.send(Event::InitTimer(OTA_TIMEOUT)).await.is_err() {
+        if tx_to_timer
+            .send(Event::InitTimer(OTA_TIMEOUT))
+            .await
+            .is_err()
+        {
             error!("no se pudo enviar evento de inicialización del watchdog de firmware");
         }
         session_ref.phase = phase;
     }
 }
 
-
 /// Selecciona un Hub aleatorio (Canario) y le envía el firmware.
-async fn handle_select_random(session: &mut Option<UpdateSession>,
-                              tx_to_core: &mpsc::Sender<FirmwareServiceResponse>,
-                              tx_to_fsm: &mpsc::Sender<Event>,
-                              app_context: &AppContext) {
-
+async fn handle_select_random(
+    session: &mut Option<UpdateSession>,
+    tx_to_core: &mpsc::Sender<FirmwareServiceResponse>,
+    tx_to_fsm: &mpsc::Sender<Event>,
+    app_context: &AppContext,
+) {
     if let Some(session_ref) = session {
         let manager = app_context.net_man.read().await;
         if let Some(id_hub) = manager.get_random_hub_id_by_network(&session_ref.network) {
@@ -241,20 +265,25 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
 
             match session_ref.message.clone() {
                 ServerMessage::UpdateFirmware(update) => {
-                    
                     let mut metadata = update.metadata.clone();
                     metadata.destination_id = id_hub.clone();
-                    
+
                     let update_msg = UpdateFirmware {
                         metadata,
                         network: update.network,
                     };
-                    
-                    if tx_to_core.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
+
+                    if tx_to_core
+                        .send(FirmwareServiceResponse::HubCommand(
+                            HubMessage::UpdateFirmware(update_msg),
+                        ))
+                        .await
+                        .is_err()
+                    {
                         error!("no se pudo enviar mensaje al Hub canario");
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
         } else {
             error!(network = %session_ref.network, "la red está vacía, no se puede seleccionar canario.");
@@ -265,55 +294,85 @@ async fn handle_select_random(session: &mut Option<UpdateSession>,
     }
 }
 
-
 /// Envía mensaje Broadcast a toda la red ("all").
-async fn handle_send_message_to_network(session: &mut Option<UpdateSession>,
-                                        tx_to_hub: &mpsc::Sender<FirmwareServiceResponse>) {
-
+async fn handle_send_message_to_network(
+    session: &mut Option<UpdateSession>,
+    tx_to_hub: &mpsc::Sender<FirmwareServiceResponse>,
+) {
     if let Some(session_ref) = session {
         match session_ref.message.clone() {
             ServerMessage::UpdateFirmware(update) => {
                 let mut metadata = update.metadata.clone();
                 metadata.destination_id = "all".to_string();
-                
+
                 let update_msg = UpdateFirmware {
                     metadata,
                     network: update.network.clone(),
                 };
-                
-                if tx_to_hub.send(FirmwareServiceResponse::HubCommand(HubMessage::UpdateFirmware(update_msg))).await.is_err() {
+
+                if tx_to_hub
+                    .send(FirmwareServiceResponse::HubCommand(
+                        HubMessage::UpdateFirmware(update_msg),
+                    ))
+                    .await
+                    .is_err()
+                {
                     error!("no se pudo enviar mensaje al resto de Hubs (Broadcast Firmware)");
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
 
-
 /// Genera y envía el reporte final (Outcome) al servidor.
-async fn handle_send_message_outcome(session: &mut Option<UpdateSession>,
-                                     tx_to_server: &mpsc::Sender<FirmwareServiceResponse>,
-                                     app_context: &AppContext) {
-
-    if let Some(session_ref) = session {
+async fn handle_send_message_outcome(
+    session: &mut Option<UpdateSession>,
+    tx_to_server: &mpsc::Sender<FirmwareServiceResponse>,
+    app_context: &AppContext,
+) {
+    if let Some(mut session_ref) = session.take() {
         let timestamp = Utc::now().timestamp();
 
         let metadata = Metadata {
             sender_user_id: app_context.system.id_edge.clone(),
             destination_id: "server0".to_string(),
-            timestamp
+            timestamp,
         };
+
+        session_ref.percentage = session_ref.success_rate();
 
         let network = session_ref.network.clone();
         if session_ref.percentage == 100.00 {
-            let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: 100.00 };
-            if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
+            let firm_out = FirmwareOutcome {
+                metadata,
+                network,
+                is_ok: true,
+                percentage_ok: 100.00,
+            };
+            if tx_to_server
+                .send(FirmwareServiceResponse::ServerAck(
+                    ServerMessage::FirmwareOutcome(firm_out),
+                ))
+                .await
+                .is_err()
+            {
                 error!("no se pudo enviar FirmwareOutcome Ok al servidor");
             }
         } else {
-            let firm_out = FirmwareOutcome { metadata, network, is_ok: true, percentage_ok: session_ref.percentage };
-            if tx_to_server.send(FirmwareServiceResponse::ServerAck(ServerMessage::FirmwareOutcome(firm_out))).await.is_err() {
+            let firm_out = FirmwareOutcome {
+                metadata,
+                network,
+                is_ok: false,
+                percentage_ok: session_ref.percentage,
+            };
+            if tx_to_server
+                .send(FirmwareServiceResponse::ServerAck(
+                    ServerMessage::FirmwareOutcome(firm_out),
+                ))
+                .await
+                .is_err()
+            {
                 error!("no se pudo enviar FirmwareOutcome Fail al servidor");
             }
         }
