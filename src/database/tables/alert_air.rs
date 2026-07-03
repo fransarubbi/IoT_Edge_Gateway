@@ -1,7 +1,6 @@
-use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 use crate::database::repository::pop_batch_generic;
 use crate::message::domain::AlertAir;
-
+use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 
 /// Crea la tabla `alert_air` en la base de datos si aún no existe.
 ///
@@ -40,7 +39,7 @@ use crate::message::domain::AlertAir;
 /// - Se asume que el nombre de la tabla es estable y conocido por el sistema.
 ///
 
-pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
+pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     pool.execute(
         r#"
         CREATE TABLE IF NOT EXISTS alert_air (
@@ -48,15 +47,14 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
             sender_user_id       TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
             timestamp            INTEGER NOT NULL,
-            co2_initial_ppm      REAL NOT NULL,
-            co2_actual_ppm       REAL NOT NULL
+            initial_air_quality      REAL NOT NULL,
+            actual_air_quality       REAL NOT NULL
         );
-        "#
+        "#,
     )
-        .await?;
+    .await?;
     Ok(())
 }
-
 
 /// Inserta un lote (*batch*) de mediciones en la tabla `alert_air`.
 ///
@@ -95,36 +93,35 @@ pub async fn create_table_alert_air(pool: &SqlitePool) -> Result<(), sqlx::Error
 ///   (controlados por `BATCH_SIZE` en capas superiores).
 ///
 
-pub async fn insert_alert_air(pool: &SqlitePool,
-                              data_vec: &Vec<AlertAir>
-                              ) -> Result<(), sqlx::Error> {
-    
+pub async fn insert_alert_air(
+    pool: &SqlitePool,
+    data_vec: &Vec<AlertAir>,
+) -> Result<(), sqlx::Error> {
     if data_vec.is_empty() {
         return Ok(());
     }
 
     let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-      "INSERT INTO alert_air (
+        "INSERT INTO alert_air (
             sender_user_id, destination_id, timestamp,
-            network_id, co2_initial_ppm, co2_actual_ppm
-      )"
+            network_id, initial_air_quality, actual_air_quality
+      )",
     );
-    
+
     query_builder.push_values(data_vec, |mut b, data| {
         b.push_bind(data.metadata.sender_user_id.clone())
             .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
             .push_bind(data.network.clone())
-            .push_bind(data.co2_initial_ppm)
-            .push_bind(data.co2_actual_ppm);
+            .push_bind(data.initial_air_quality)
+            .push_bind(data.actual_air_quality);
     });
-    
+
     let query = query_builder.build();
     query.execute(pool).await?;
-    
+
     Ok(())
 }
-
 
 /// Extrae y elimina un lote de mediciones de la tabla `alert_air`.
 ///
@@ -159,4 +156,3 @@ pub async fn insert_alert_air(pool: &SqlitePool,
 pub async fn pop_batch_alert_air(pool: &SqlitePool) -> Result<Vec<AlertAir>, sqlx::Error> {
     pop_batch_generic(pool, "alert_air").await
 }
-

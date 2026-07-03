@@ -710,7 +710,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 pulse_max_duration: report.pulse_max_duration,
                 temperature: report.temperature,
                 humidity: report.humidity,
-                co2_ppm: report.co2_ppm,
+                air_quality: report.air_quality,
                 sample: report.sample as u32,
             }))
         }
@@ -753,8 +753,8 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                     timestamp: alert_air.metadata.timestamp,
                 }),
                 network: alert_air.network,
-                co2_initial_ppm: alert_air.co2_initial_ppm,
-                co2_actual_ppm: alert_air.co2_actual_ppm,
+                initial_air_quality: alert_air.initial_air_quality,
+                actual_air_quality: alert_air.actual_air_quality,
             }))
         }
         ServerMessage::AlertTem(alert_tem) => {
@@ -808,7 +808,7 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                     pulse_max_duration: r.pulse_max_duration,
                     temperature: r.temperature,
                     humidity: r.humidity,
-                    co2_ppm: r.co2_ppm,
+                    air_quality: r.air_quality,
                     sample: r.sample as u32,
                 })
                 .collect();
@@ -865,8 +865,8 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                         timestamp: a.metadata.timestamp,
                     }),
                     network: a.network,
-                    co2_initial_ppm: a.co2_initial_ppm,
-                    co2_actual_ppm: a.co2_actual_ppm,
+                    initial_air_quality: a.initial_air_quality,
+                    actual_air_quality: a.actual_air_quality,
                 })
                 .collect();
 

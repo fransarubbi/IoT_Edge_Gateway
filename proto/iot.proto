@@ -2,12 +2,10 @@ syntax = "proto3";
 
 package grpc;
 
-
 service EdgeService {
   // Streaming Bidireccional
   rpc ConnectStream(stream FromEdge) returns (stream ToEdge);
 }
-
 
 // =================
 // CARRIL DE SUBIDA
@@ -33,7 +31,6 @@ message FromEdge {
   }
 }
 
-
 // =================
 // CARRIL DE BAJADA
 // =================
@@ -50,7 +47,6 @@ message ToEdge {
   }
 }
 
-
 message Metadata {
   string sender_user_id = 1;
   string destination_id = 2;
@@ -64,15 +60,15 @@ message Measurement {
   int64 pulse_max_duration = 4;
   float temperature = 5;
   float humidity = 6;
-  float co2_ppm = 7;
+  float air_quality = 7;
   uint32 sample = 8;
 }
 
 message AlertAir {
   Metadata metadata = 1;
   string network = 2;
-  float co2_initial_ppm = 3;
-  float co2_actual_ppm = 4;
+  float initial_air_quality = 3;
+  float actual_air_quality = 4;
 }
 
 message AlertTh {

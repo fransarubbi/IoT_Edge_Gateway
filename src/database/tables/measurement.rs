@@ -1,6 +1,6 @@
-use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 use crate::database::repository::pop_batch_generic;
 use crate::message::domain::Measurement;
+use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
 
 /// Crea la tabla `measurement` en la base de datos si aún no existe.
 ///
@@ -45,7 +45,7 @@ use crate::message::domain::Measurement;
 /// - Se asume que el nombre de la tabla es estable y conocido por el sistema.
 ///
 
-pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Error>  {
+pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     pool.execute(
         r#"
         CREATE TABLE IF NOT EXISTS measurement (
@@ -57,16 +57,15 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
             pulse_max_duration   INTEGER NOT NULL,
             temperature          REAL NOT NULL,
             humidity             REAL NOT NULL,
-            co2_ppm              REAL NOT NULL,
+            air_quality          REAL NOT NULL,
             sample               INTEGER NOT NULL
         );
-        "#
+        "#,
     )
-        .await?;
+    .await?;
 
     Ok(())
 }
-
 
 /// Inserta un lote (*batch*) de mediciones en la tabla `measurement`.
 ///
@@ -105,10 +104,10 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
 ///   (controlados por `BATCH_SIZE` en capas superiores).
 ///
 
-pub async fn insert_measurement(pool: &SqlitePool,
-                                data_vec: &Vec<Measurement>
-                               ) -> Result<(), sqlx::Error> {
-
+pub async fn insert_measurement(
+    pool: &SqlitePool,
+    data_vec: &Vec<Measurement>,
+) -> Result<(), sqlx::Error> {
     if data_vec.is_empty() {
         return Ok(());
     }
@@ -117,8 +116,8 @@ pub async fn insert_measurement(pool: &SqlitePool,
         "INSERT INTO measurement (
             sender_user_id, destination_id, timestamp,
             network_id, pulse_counter, pulse_max_duration,
-            temperature, humidity, co2_ppm, sample
-        ) "
+            temperature, humidity, air_quality, sample
+        ) ",
     );
 
     query_builder.push_values(data_vec, |mut b, data| {
@@ -130,7 +129,7 @@ pub async fn insert_measurement(pool: &SqlitePool,
             .push_bind(data.pulse_max_duration)
             .push_bind(data.temperature)
             .push_bind(data.humidity)
-            .push_bind(data.co2_ppm)
+            .push_bind(data.air_quality)
             .push_bind(data.sample);
     });
 
@@ -139,7 +138,6 @@ pub async fn insert_measurement(pool: &SqlitePool,
 
     Ok(())
 }
-
 
 /// Extrae y elimina un lote de mediciones de la tabla `measurement`.
 ///
@@ -174,4 +172,3 @@ pub async fn insert_measurement(pool: &SqlitePool,
 pub async fn pop_batch_measurement(pool: &SqlitePool) -> Result<Vec<Measurement>, sqlx::Error> {
     pop_batch_generic(pool, "measurement").await
 }
-
