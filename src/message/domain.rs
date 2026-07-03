@@ -351,7 +351,7 @@ pub struct Measurement {
     pub pulse_max_duration: i64,
     pub temperature: f32,
     pub humidity: f32,
-    pub co2_ppm: f32,
+    pub air_quality: f32,
     pub sample: u16,
 }
 
@@ -361,8 +361,8 @@ pub struct AlertAir {
     #[sqlx(flatten)]
     pub metadata: Metadata,
     pub network: String,
-    pub co2_initial_ppm: f32,
-    pub co2_actual_ppm: f32,
+    pub initial_air_quality: f32,
+    pub actual_air_quality: f32,
 }
 
 /// Alerta de Temperatura y Humedad.
