@@ -169,17 +169,7 @@ impl MessageService {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
-                                HubMessage::StateBalanceMode(_) => {
-                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("no se pudo enviar mensaje a msg_to_hub");
-                                    }
-                                },
-                                HubMessage::StateNormal(_) => {
-                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("no se pudo enviar mensaje a msg_to_hub");
-                                    }
-                                },
-                                HubMessage::StateSafeMode(_) => {
+                                HubMessage::StateToHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
@@ -190,11 +180,6 @@ impl MessageService {
                                     }
                                 },
                                 HubMessage::Heartbeat(_) => {
-                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("no se pudo enviar mensaje a msg_to_hub");
-                                    }
-                                },
-                                HubMessage::Ping(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
@@ -220,11 +205,6 @@ impl MessageService {
                                     }
                                 },
                                 HubMessage::ActiveHub(_) => {
-                                    if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
-                                        error!("no se pudo enviar mensaje a msg_to_hub");
-                                    }
-                                },
-                                HubMessage::PingToHub(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
@@ -334,8 +314,11 @@ impl MessageService {
 /// Proporciona contexto de trazabilidad, origen y destino para cada paquete de datos.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow, Hash)]
 pub struct Metadata {
+    #[serde(rename = "s")]
     pub sender_user_id: String,
+    #[serde(rename = "d")]
     pub destination_id: String,
+    #[serde(rename = "t")]
     pub timestamp: i64,
 }
 
@@ -345,13 +328,21 @@ pub struct Metadata {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct Measurement {
     #[sqlx(flatten)]
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "n")]
     pub network: String,
-    pub pulse_counter: i64,
-    pub pulse_max_duration: i64,
+    #[serde(rename = "pc")]
+    pub pulse_counter: f32,
+    #[serde(rename = "pm")]
+    pub pulse_max_duration: f32,
+    #[serde(rename = "t")]
     pub temperature: f32,
+    #[serde(rename = "h")]
     pub humidity: f32,
+    #[serde(rename = "aq")]
     pub air_quality: f32,
+    #[serde(rename = "s")]
     pub sample: u16,
 }
 
@@ -359,9 +350,13 @@ pub struct Measurement {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertAir {
     #[sqlx(flatten)]
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "n")]
     pub network: String,
+    #[serde(rename = "i")]
     pub initial_air_quality: f32,
+    #[serde(rename = "a")]
     pub actual_air_quality: f32,
 }
 
@@ -369,9 +364,13 @@ pub struct AlertAir {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, FromRow)]
 pub struct AlertTh {
     #[sqlx(flatten)]
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "n")]
     pub network: String,
+    #[serde(rename = "i")]
     pub initial_temp: f32,
+    #[serde(rename = "a")]
     pub actual_temp: f32,
 }
 
@@ -381,27 +380,18 @@ pub struct AlertTh {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, FromRow)]
 pub struct Monitor {
     #[sqlx(flatten)]
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "n")]
     pub network: String,
-    pub mem_free: i64,
-    pub mem_free_hm: i64,
-    pub mem_free_block: i64,
-    pub mem_free_internal: i64,
-    pub stack_free_min_coll: i64,
-    pub stack_free_min_pub: i64,
-    pub stack_free_min_mic: i64,
-    pub stack_free_min_th: i64,
-    pub stack_free_min_air: i64,
-    pub stack_free_min_mon: i64,
-    pub stack_https_handle: i64,
-    pub stack_health_handle: i64,
-    pub stack_parser_handle: i64,
-    pub stack_converter_handle: i64,
-    pub stack_heartbeat_handle: i64,
-    pub stack_fsm_handle: i64,
-    pub wifi_ssid: String,
-    pub wifi_rssi: i8,
-    pub active_time: i64,
+    #[serde(rename = "hf")]
+    pub heap_free: u32,
+    #[serde(rename = "hm")]
+    pub heap_min_free: u32,
+    #[serde(rename = "hb")]
+    pub heap_largest_block: u32,
+    #[serde(rename = "ut")]
+    pub uptime_sec: i64,
 }
 
 /// Definición de una Red lógica.
@@ -443,14 +433,23 @@ pub struct NetworkAck {
 /// Contiene credenciales WiFi/MQTT y parámetros operativos.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
-    pub message_id: u64,
+    #[serde(rename = "mi")]
+    pub message_id: u32,
+    #[serde(rename = "n")]
     pub network: String,
+    #[serde(rename = "ws")]
     pub wifi_ssid: String,
+    #[serde(rename = "wp")]
     pub wifi_password: String,
+    #[serde(rename = "mu")]
     pub mqtt_uri: String,
+    #[serde(rename = "dn")]
     pub device_name: String,
-    pub sample: u32,
+    #[serde(rename = "s")]
+    pub sample: u16,
+    #[serde(rename = "e")]
     pub energy_mode: u32,
 }
 
@@ -470,59 +469,66 @@ impl Settings {
 /// Mensaje de Handshake enviado HACIA el Hub (Downlink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeToHub {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "f")]
     pub flag: String,
+    #[serde(rename = "b")]
     pub balance_epoch: u32,
 }
 
 /// Mensaje de Handshake proveniente del Hub (Uplink).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeFromHub {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
-    pub state: String,
+    #[serde(rename = "f")]
+    pub flag: String,
+    #[serde(rename = "b")]
     pub balance_epoch: u32,
 }
 
-/// Notificación de cambio a Modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageStateBalanceMode {
+pub struct StateToHub {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "s")]
     pub state: String,
+
+    #[serde(rename = "b")]
     pub balance_epoch: u32,
+    #[serde(rename = "d")]
     pub duration: u32,
-}
 
-/// Notificación de cambio a Modo Normal.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageStateNormal {
-    pub metadata: Metadata,
-    pub state: String,
-}
-
-/// Notificación de cambio a Modo Seguro (Safe Mode).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageStateSafeMode {
-    pub metadata: Metadata,
-    pub state: String,
+    #[serde(rename = "f")]
     pub frequency: u32,
+    #[serde(rename = "j")]
     pub jitter: u32,
 }
 
 /// Notificación de cambio de Fase dentro del modo Balance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PhaseNotification {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "s")]
     pub state: String,
+    #[serde(rename = "e")]
     pub epoch: u32,
+    #[serde(rename = "p")]
     pub phase: String,
+    #[serde(rename = "f")]
     pub frequency: u32,
+    #[serde(rename = "j")]
     pub jitter: u32,
 }
 
 /// Mensaje de latido (Heartbeat) para indicar a los Hubs que el Edge está vivo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Heartbeat {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "b")]
     pub beat: bool,
 }
 
@@ -539,10 +545,13 @@ pub struct EdgeState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Ping {
+pub struct HubState {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "n")]
     pub network: String,
-    pub ping: bool,
+    #[serde(rename = "s")]
+    pub state: String,
 }
 
 /// Comando para eliminar un Hub del registro.
@@ -562,9 +571,13 @@ pub struct ActiveHub {
 /// Confirmación de recepción de configuración (Handshake bidireccional).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SettingOk {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
-    pub message_id: u64,
+    #[serde(rename = "i")]
+    pub message_id: u32,
+    #[serde(rename = "n")]
     pub network: String,
+    #[serde(rename = "h")]
     pub handshake: bool,
 }
 
@@ -576,8 +589,11 @@ pub struct UpdateFirmware {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FirmwareOk {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "v")]
     pub version: String,
+    #[serde(rename = "o")]
     pub is_ok: bool,
 }
 
@@ -608,24 +624,35 @@ pub struct SystemMetrics {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EmptyQueue {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "s")]
     pub state: String,
+    #[serde(rename = "p")]
     pub phase: String,
+    #[serde(rename = "q")]
     pub queue_empty: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EmptyQueueSafeMode {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "s")]
     pub state: String,
+    #[serde(rename = "q")]
     pub queue_empty: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkageRequest {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "d")]
     pub device_name: String,
+    #[serde(rename = "n")]
     pub network: String,
+    #[serde(rename = "l")]
     pub linkage_request: bool,
 }
 
@@ -641,7 +668,9 @@ impl LinkageRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkageAck {
+    #[serde(rename = "m")]
     pub metadata: Metadata,
+    #[serde(rename = "l")]
     pub linkage_ack: bool,
 }
 
@@ -659,8 +688,8 @@ pub enum HubMessage {
     FromHubSettingsAck(SettingOk),
     EmptyQueue(EmptyQueue),
     EmptyQueueSafe(EmptyQueueSafeMode),
-    Ping(Ping),
     LinkageRequest(LinkageRequest),
+    HubState(HubState),
 
     // Mensajes para el Hub
     UpdateFirmware(UpdateFirmware),
@@ -669,12 +698,9 @@ pub enum HubMessage {
     DeleteHub(DeleteHub),
     ActiveHub(ActiveHub),
     Heartbeat(Heartbeat),
-    PingToHub(Ping),
     HandshakeToHub(HandshakeToHub),
     PhaseNotification(PhaseNotification),
-    StateBalanceMode(MessageStateBalanceMode),
-    StateNormal(MessageStateNormal),
-    StateSafeMode(MessageStateSafeMode),
+    StateToHub(StateToHub),
     LinkageAck(LinkageAck),
 }
 
@@ -705,6 +731,7 @@ pub enum ServerMessage {
     AlertTemBatch(Vec<AlertTh>),
     EdgePeriodic(EdgeState),
     NetworkAck(NetworkAck),
+    HubState(HubState),
 }
 
 /// Estado de conexión con el servidor remoto.

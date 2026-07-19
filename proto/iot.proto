@@ -28,6 +28,7 @@ message FromEdge {
     AlertThBatch alert_th_batch = 14;
     EdgeState edge_state = 15;
     NetworkAck network_ack = 16;
+    HubState hub_state = 17;
   }
 }
 
@@ -56,8 +57,8 @@ message Metadata {
 message Measurement {
   Metadata metadata = 1;
   string network = 2;
-  int64 pulse_counter = 3;
-  int64 pulse_max_duration = 4;
+  float pulse_counter = 3;
+  float pulse_max_duration = 4;
   float temperature = 5;
   float humidity = 6;
   float air_quality = 7;
@@ -81,25 +82,16 @@ message AlertTh {
 message Monitor {
   Metadata metadata = 1;
   string network = 2;
-  int64 mem_free = 3;
-  int64 mem_free_hm = 4;
-  int64 mem_free_block = 5;
-  int64 mem_free_internal = 6;
-  int64 stack_free_min_coll = 7;
-  int64 stack_free_min_pub = 8;
-  int64 stack_free_min_mic = 9;
-  int64 stack_free_min_th = 10;
-  int64 stack_free_min_air = 11;
-  int64 stack_free_min_mon = 12;
-  int64 stack_https_handle = 13;
-  int64 stack_health_handle = 14;
-  int64 stack_parser_handle = 15;
-  int64 stack_converter_handle = 16;
-  int64 stack_heartbeat_handle = 17;
-  int64 stack_fsm_handle = 18;
-  string wifi_ssid = 19;
-  int32 wifi_rssi = 20;
-  int64 active_time = 21;
+  uint32 heap_free = 3;
+  uint32 heap_min_free = 4;
+  uint32 heap_largest_block = 5;
+  uint64 uptime_sec = 6;
+}
+
+message HubState {
+  Metadata metadata = 1;
+  string network = 2;
+  string state = 3;
 }
 
 message MeasurementBatch {
@@ -120,7 +112,7 @@ message AlertThBatch {
 
 message Settings {
   Metadata metadata = 1;
-  uint64 message_id = 2;
+  uint32 message_id = 2;
   string network = 3;
   string wifi_ssid = 4;
   string wifi_password = 5;
@@ -132,7 +124,7 @@ message Settings {
 
 message SettingOk {
   Metadata metadata = 1;
-  uint64 message_id = 2;
+  uint32 message_id = 2;
   string network = 3;
   bool handshake = 4;
 }

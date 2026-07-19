@@ -271,6 +271,7 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
     subs.insert(manager.topic_linkage_request.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&manager.topic_linkage_request.qos)});
 
     for net in manager.networks.values() {
+        subs.insert(net.topic_hub_state.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_state.qos)});
         subs.insert(net.topic_data.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_data.qos)});
         subs.insert(net.topic_monitor.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_monitor.qos)});
         subs.insert(net.topic_alert_air.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_alert_air.qos)});
@@ -279,7 +280,6 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
         subs.insert(net.topic_balance_mode_handshake.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_balance_mode_handshake.qos)});
         subs.insert(net.topic_hub_setting_ok.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_setting_ok.qos)});
         subs.insert(net.topic_setting.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_setting.qos)});
-        subs.insert(net.topic_ping.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_ping.qos)});
         subs.insert(net.topic_queue_empty.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_queue_empty.qos)});
     }
 
@@ -303,6 +303,7 @@ async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, su
 
     // Reactivar o registrar los tópicos definidos en la topología de red actual
     for net in manager.networks.values() {
+        all_topics(&net.topic_hub_state.topic, net.topic_hub_state.qos, subs);
         all_topics(&net.topic_data.topic, net.topic_data.qos, subs);
         all_topics(&net.topic_monitor.topic, net.topic_monitor.qos, subs);
         all_topics(&net.topic_alert_air.topic, net.topic_alert_air.qos, subs);
@@ -311,7 +312,6 @@ async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, su
         all_topics(&net.topic_balance_mode_handshake.topic, net.topic_balance_mode_handshake.qos, subs);
         all_topics(&net.topic_hub_setting_ok.topic, net.topic_hub_setting_ok.qos, subs);
         all_topics(&net.topic_setting.topic, net.topic_setting.qos, subs);
-        all_topics(&net.topic_ping.topic, net.topic_ping.qos, subs);
         all_topics(&net.topic_queue_empty.topic, net.topic_queue_empty.qos, subs);
     }
 

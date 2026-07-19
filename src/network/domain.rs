@@ -210,7 +210,7 @@ impl NetworkManager {
             networks: HashMap::new(),
             hubs: HashMap::new(),
             topic_handshake: Topic::new(t_handshake, 1),
-            topic_state: Topic::new(t_state, 1),
+            topic_state: Topic::new(t_state, 0),
             topic_heartbeat: Topic::new(t_heartbeat, 0),
             topic_linkage_request: Topic::new(t_linkage_req, 1),
             topic_linkage_ack: Topic::new(t_linkage_ack, 1),
@@ -358,14 +358,6 @@ impl NetworkManager {
                     None
                 }
             }
-            HubMessage::PingToHub(ping) => {
-                let id_net = ping.network.clone();
-                if let Some(n) = self.networks.get(&id_net) {
-                    Some(n.topic_ping_ack.clone())
-                } else {
-                    None
-                }
-            }
             _ => None,
         }
     }
@@ -393,6 +385,7 @@ pub struct Network {
     pub id_network: String,
 
     // ================= Tópicos Suscritos (Inbound) =================
+    pub topic_hub_state: Topic,
     pub topic_data: Topic,
     pub topic_alert_air: Topic,
     pub topic_alert_temp: Topic,
@@ -401,7 +394,6 @@ pub struct Network {
     pub topic_hub_firmware_ok: Topic,
     pub topic_balance_mode_handshake: Topic,
     pub topic_setting: Topic,
-    pub topic_ping: Topic,
     pub topic_queue_empty: Topic,
 
     // ================= Tópicos Publicados (Outbound) =================
@@ -410,7 +402,6 @@ pub struct Network {
     pub topic_setting_ok: Topic,
     pub topic_delete_hub: Topic,
     pub topic_active_hub: Topic,
-    pub topic_ping_ack: Topic,
 
     /// Indica si la red está en procesamiento activo o pausado.
     pub active: bool,
@@ -420,6 +411,7 @@ impl Network {
     /// Instancia una nueva red generando dinámicamente todos sus tópicos.
     /// Utiliza wildcards `+` en los tópicos entrantes para capturar eventos de cualquier hub en la red.
     pub fn new(id_network: String, active: bool) -> Self {
+        let t_hub_state = format!("iot/{id_network}/hub/+/hub_state");
         let t_data = format!("iot/{id_network}/hub/+/data");
         let t_alert_air = format!("iot/{id_network}/hub/+/alert_air");
         let t_alert_temp = format!("iot/{id_network}/hub/+/alert_temp");
@@ -433,12 +425,11 @@ impl Network {
         let t_setting_ok = format!("iot/{id_network}/new_setting_ok");
         let t_delete_hub = format!("iot/{id_network}/delete_hub");
         let t_active = format!("iot/{id_network}/active");
-        let t_ping = format!("iot/{id_network}/hub/+/ping");
-        let t_ping_ack = format!("iot/{id_network}/ping");
         let t_queue_empty = format!("iot/{id_network}/hub/+/empty_queue");
 
         Self {
             id_network,
+            topic_hub_state: Topic::new(t_hub_state, 0), 
             topic_data: Topic::new(t_data, 0),
             topic_alert_air: Topic::new(t_alert_air, 1),
             topic_alert_temp: Topic::new(t_alert_temp, 1),
@@ -452,8 +443,6 @@ impl Network {
             topic_setting_ok: Topic::new(t_setting_ok, 0),
             topic_delete_hub: Topic::new(t_delete_hub, 0),
             topic_active_hub: Topic::new(t_active, 1),
-            topic_ping: Topic::new(t_ping, 1),
-            topic_ping_ack: Topic::new(t_ping_ack, 1),
             topic_queue_empty: Topic::new(t_queue_empty, 1),
             active,
         }
