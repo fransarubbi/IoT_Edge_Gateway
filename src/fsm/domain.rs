@@ -107,6 +107,7 @@ impl FsmService {
         handles.push(tokio::spawn(edge_state(
             general_tx_to_core,
             rx_from_fsm_to_edge,
+            self.context.clone(),
             child_token)));
 
         let child_token = token.child_token();
@@ -246,7 +247,7 @@ pub enum StateGlobal {
     Start,
     /// **Modo de Balanceo:** Fase crítica de negociación distribuida. El dispositivo
     /// intenta sincronizarse con sus hubs, verificar quórum y establecer su rol.
-    BalanceMode,
+    BalanceMode(u32),
     /// **Operación Normal:** El dispositivo ha completado el balanceo exitosamente y opera en régimen estable.
     Normal,
     /// **Modo Seguro:** Estado de fallo o emergencia. El dispositivo entra aquí tras errores críticos
@@ -481,7 +482,7 @@ impl FsmState {
     fn step_inner(&self, event: Event) -> Transition {
         match self.global {
             StateGlobal::Start => self.step_start(event),
-            StateGlobal::BalanceMode => self.step_balance_mode(event),
+            StateGlobal::BalanceMode(_) => self.step_balance_mode(event),
             StateGlobal::SafeMode => self.step_safe_mode(event),
             _ => {
                 let invalid = TransitionInvalid {
@@ -496,7 +497,7 @@ impl FsmState {
         match (&self.global, event) {
             (StateGlobal::Start, Event::Start) => {
                 let mut next_fsm = self.clone();
-                next_fsm.global = StateGlobal::BalanceMode;
+                next_fsm.global = StateGlobal::BalanceMode(0);
                 next_fsm.balance = Some(SubStateBalanceMode::InitBalanceMode);
 
                 let valid = TransitionValid {

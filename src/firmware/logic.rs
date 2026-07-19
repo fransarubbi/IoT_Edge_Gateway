@@ -337,7 +337,7 @@ async fn handle_send_message_outcome(
         let metadata = Metadata {
             sender_user_id: app_context.system.id_edge.clone(),
             destination_id: "server0".to_string(),
-            timestamp,
+            timestamp: timestamp,
         };
 
         session_ref.percentage = session_ref.success_rate();

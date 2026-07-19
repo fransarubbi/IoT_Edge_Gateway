@@ -249,7 +249,7 @@ fn create_metadata(app_context: AppContext) -> Metadata {
     let metadata = Metadata {
         sender_user_id: app_context.system.id_edge.clone(),
         destination_id: "all".to_string(),
-        timestamp,
+        timestamp: timestamp,
     };
     metadata
 }

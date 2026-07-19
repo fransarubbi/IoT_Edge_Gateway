@@ -393,11 +393,6 @@ impl Core {
                                         error!("no se pudo enviar EmptyQueueSafe desde Core");
                                     }
                                 },
-                                HubMessage::Ping(_) => {
-                                    if self.core_to_fsm_service.send(FsmServiceCommand::FromHub(from_hub)).await.is_err() {
-                                        error!("no se pudo enviar Ping desde Core");
-                                    }
-                                },
                                 HubMessage::LinkageRequest(_) => {
                                     if self.core_to_network_service.send(NetworkServiceCommand::HubMessage(from_hub)).await.is_err() {
                                         error!("no se pudo enviar LinkageRequest desde Core");

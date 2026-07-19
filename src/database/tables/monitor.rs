@@ -14,28 +14,6 @@ use crate::message::domain::Monitor;
 /// La tabla almacena mediciones provenientes de nodos IoT y está diseñada
 /// para escritura frecuente y lectura por lotes (*batch consumption*).
 ///
-/// # Esquema de la tabla
-///
-/// La tabla `monitor` contiene las siguientes columnas:
-///
-/// - `id`: clave primaria autoincremental.
-/// - `sender_user_id`: identificador del nodo emisor.
-/// - `destination_type`: tipo de destino lógico del mensaje.
-/// - `destination_id`: identificador del destino.
-/// - `timestamp`: instante de generación de la medición (formato texto).
-/// - `mem_free`: memoria RAM libre total del nodo.
-/// - `mem_free_hm`: heap libre mínimo.
-/// - `mem_free_block`: bloque de memoria más grande.
-/// - `mem_free_internal`: heap libre.
-/// - `stack_free_min_coll`: mínimo stack libre de la tarea collector.
-/// - `stack_free_min_pub`: mínimo stack libre de la tarea publisher.
-/// - `stack_free_min_mic`: mínimo stack libre de la tarea mic.
-/// - `stack_free_min_th`: mínimo stack libre de la tarea temperature.
-/// - `stack_free_min_air`: mínimo stack libre de la tarea air.
-/// - `stack_free_min_mon`: mínimo stack libre de la tarea monitor.
-/// - `wifi_ssid`: ssid del wifi al que está conectado el nodo.
-/// - `wifi_rssi`: valor rssi del wifi al que está conectado el nodo.
-/// - `active_time`: tiempo activo del nodo.
 ///
 /// # Errores
 ///
@@ -58,19 +36,11 @@ pub async fn create_table_monitor(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             sender_user_id       TEXT NOT NULL,
             destination_id       TEXT NOT NULL,
             timestamp            INTEGER NOT NULL,
-            mem_free             INTEGER NOT NULL,
-            mem_free_hm          INTEGER NOT NULL,
-            mem_free_block       INTEGER NOT NULL,
-            mem_free_internal    INTEGER NOT NULL,
-            stack_free_min_coll  INTEGER NOT NULL,
-            stack_free_min_pub   INTEGER NOT NULL,
-            stack_free_min_mic   INTEGER NOT NULL,
-            stack_free_min_th    INTEGER NOT NULL,
-            stack_free_min_air   INTEGER NOT NULL,
-            stack_free_min_mon   INTEGER NOT NULL,
-            wifi_ssid            TEXT NOT NULL,
-            wifi_rssi            INTEGER NOT NULL,
-            active_time          INTEGER NOT NULL
+            network_id           TEXT NOT NULL,
+            heap_free            INTEGER NOT NULL,
+            heap_min_free        INTEGER NOT NULL,
+            heap_largest_block   INTEGER NOT NULL,
+            uptime_sec           INTEGER NOT NULL
         );
         "#
     )
@@ -128,10 +98,7 @@ pub async fn insert_monitor(pool: &SqlitePool,
     let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
         "INSERT INTO monitor (
             sender_user_id, destination_id, timestamp, network_id,
-            mem_free, mem_free_hm, mem_free_block, mem_free_internal,
-            stack_free_min_coll, stack_free_min_pub, stack_free_min_mic,
-            stack_free_min_th, stack_free_min_air, stack_free_min_mon,
-            wifi_ssid, wifi_rssi, active_time
+            heap_free, heap_min_free, heap_largest_block, uptime_sec
         ) "
     );
 
@@ -140,19 +107,10 @@ pub async fn insert_monitor(pool: &SqlitePool,
             .push_bind(data.metadata.destination_id.clone())
             .push_bind(data.metadata.timestamp)
             .push_bind(data.network.clone())
-            .push_bind(data.mem_free)
-            .push_bind(data.mem_free_hm)
-            .push_bind(data.mem_free_block)
-            .push_bind(data.mem_free_internal)
-            .push_bind(data.stack_free_min_coll)
-            .push_bind(data.stack_free_min_pub)
-            .push_bind(data.stack_free_min_mic)
-            .push_bind(data.stack_free_min_th)
-            .push_bind(data.stack_free_min_air)
-            .push_bind(data.stack_free_min_mon)
-            .push_bind(data.wifi_ssid.clone())
-            .push_bind(data.wifi_rssi)
-            .push_bind(data.active_time);
+            .push_bind(data.heap_free)
+            .push_bind(data.heap_min_free)
+            .push_bind(data.heap_largest_block)
+            .push_bind(data.uptime_sec);
     });
 
     let query = query_builder.build();

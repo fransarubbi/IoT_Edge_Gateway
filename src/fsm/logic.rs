@@ -21,9 +21,9 @@ use crate::fsm::domain::{
     Action, Event, FsmServiceCommand, FsmServiceResponse, FsmState, StateGlobal, StateOfSession,
     SubStateBalanceMode, SubStatePhase, SubStateQuorum, Transition, UpdateSession,
 };
+
 use crate::message::domain::{
-    HandshakeToHub, Heartbeat, HubMessage, MessageStateBalanceMode, MessageStateNormal,
-    MessageStateSafeMode, Metadata, PhaseNotification, Ping,
+    HandshakeToHub, Heartbeat, HubMessage, Metadata, PhaseNotification, StateToHub
 };
 use crate::quorum::domain::ProtocolSettings;
 use chrono::Utc;
@@ -111,19 +111,6 @@ pub async fn fsm(
                                     _ => {}
                                 }
                             },
-                            HubMessage::Ping(msg) => {
-                                if msg.ping {
-                                    let metadata = build_metadata(&app_context, &msg.metadata.sender_user_id.clone());
-                                    let ping_ack = Ping {
-                                        metadata,
-                                        network: msg.network,
-                                        ping: true,
-                                    };
-                                    if tx_to_core.send(FsmServiceResponse::ToHub(HubMessage::Ping(ping_ack))).await.is_err() {
-                                        error!("no se pudo enviar mensaje Ping ack al hub");
-                                    }
-                                }
-                            },
                             _ => {}
                         }
                     },
@@ -139,6 +126,9 @@ pub async fn fsm(
                         }
                         if tx_to_core.send(FsmServiceResponse::NewEpoch(current_epoch)).await.is_err() {
                             error!("no se pudo enviar comando NewEpoch");
+                        }
+                        if tx_to_edge_state.send(StateGlobal::BalanceMode(current_epoch)).await.is_err() {
+                            error!("no se pudo enviar StateGlobal::BalanceMode a edge_state");
                         }
                     },
                     _ => {}
@@ -164,7 +154,7 @@ pub async fn fsm(
     }
 }
 
-/// Tarea asíncrona que gestiona el envío periódico del mensaje de estado al servidor.
+/// Tarea asíncrona que gestiona el envío periódico del mensaje de estado al servidor y a los hub.
 ///
 /// # Canal Monitorizado
 /// * `rx_command`: Mensajes de tipo StateGlobal proveniente de `handle_action`.
@@ -173,10 +163,11 @@ pub async fn fsm(
 pub async fn edge_state(
     tx: mpsc::Sender<FsmServiceResponse>,
     mut rx_command: mpsc::Receiver<StateGlobal>,
+    app_context: AppContext,
     cancel: CancellationToken,
 ) {
-    let mut state: StateGlobal = StateGlobal::BalanceMode;
-    let mut ticker = interval(Duration::from_secs(20));
+    let mut state: StateGlobal = StateGlobal::Start;
+    let mut ticker = interval(Duration::from_secs(10));
 
     loop {
         tokio::select! {
@@ -187,8 +178,20 @@ pub async fn edge_state(
 
             _ = ticker.tick() => {
                 match state {
-                    StateGlobal::Start | StateGlobal::BalanceMode => {
+                    StateGlobal::BalanceMode(epoch) => {
                         if tx.send(FsmServiceResponse::EdgeState("Balance".to_string())).await.is_err() {
+                            error!("no se pudo enviar mensaje EdgeState periódico");
+                        }
+                        let metadata = build_metadata(&app_context, "all");
+                        let state = StateToHub {
+                            metadata,
+                            state: "balance".to_string(),
+                            balance_epoch: epoch,
+                            duration: 300,
+                            frequency: 0,
+                            jitter: 0,
+                        };
+                        if tx.send(FsmServiceResponse::ToHub(HubMessage::StateToHub(state))).await.is_err() {
                             error!("no se pudo enviar mensaje EdgeState periódico");
                         }
                     },
@@ -196,19 +199,45 @@ pub async fn edge_state(
                         if tx.send(FsmServiceResponse::EdgeState("Normal".to_string())).await.is_err() {
                             error!("no se pudo enviar mensaje EdgeState periódico");
                         }
-                    },
+                        let metadata = build_metadata(&app_context, "all");
+                        let state = StateToHub {
+                            metadata,
+                            state: "normal".to_string(),
+                            balance_epoch: 0,
+                            duration: 0,
+                            frequency: 0,
+                            jitter: 0,
+                        };
+                        if tx.send(FsmServiceResponse::ToHub(HubMessage::StateToHub(state))).await.is_err() {
+                            error!("no se pudo enviar mensaje EdgeState periódico");
+                        }
+                    }
                     StateGlobal::SafeMode => {
                         if tx.send(FsmServiceResponse::EdgeState("SafeMode".to_string())).await.is_err() {
                             error!("no se pudo enviar mensaje EdgeState periódico");
                         }
+                        let metadata = build_metadata(&app_context, "all");
+                        let jitter = fastrand::u32(0..=5);
+                        let state = StateToHub {
+                            metadata: metadata.clone(),
+                            state: "safe".to_string(),
+                            balance_epoch: 0,
+                            duration: 0,
+                            frequency: app_context.quorum.get_frequency_safe_mode(),
+                            jitter,
+                        };
+                        if tx.send(FsmServiceResponse::ToHub(HubMessage::StateToHub(state))).await.is_err() {
+                            error!("no se pudo enviar mensaje EdgeState periódico");
+                        }
                     }
+                    _ => {}
                 }
             }
 
             Some(msg) = rx_command.recv() => {
                 match msg {
-                    StateGlobal::Start | StateGlobal::BalanceMode => {
-                        state = StateGlobal::BalanceMode;
+                    StateGlobal::BalanceMode(epoch) => {
+                        state = StateGlobal::BalanceMode(epoch);
                     },
                     StateGlobal::Normal => {
                         state = StateGlobal::Normal;
@@ -216,6 +245,7 @@ pub async fn edge_state(
                     StateGlobal::SafeMode => {
                         state = StateGlobal::SafeMode;
                     }
+                    _ => {}
                 }
             }
         }
@@ -247,14 +277,19 @@ async fn handle_action(
     match action {
         Action::OnEntryBalance(sub_bm) => match sub_bm {
             SubStateBalanceMode::InitBalanceMode => {
-                if tx_to_edge_state
-                    .send(StateGlobal::BalanceMode)
-                    .await
-                    .is_err()
-                {
-                    error!("no se pudo enviar StateGlobal::BalanceMode a edge_state");
+                debug!("entrando a init_balance_mode");
+                let mut flag = true;
+                loop {
+                    if tx_to_core.send(FsmServiceResponse::GetEpoch).await.is_err() {
+                        error!("no se pudo enviar comando GetEpoch");
+                        flag = false;
+                    }
+                    if flag {
+                        break;
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
-                on_entry_init_balance_mode(tx_to_core, app_context.clone(), current_epoch).await;
             }
             SubStateBalanceMode::InHandshake => {
                 session.set_state(StateOfSession::InHandshake);
@@ -345,7 +380,7 @@ async fn handle_action(
             }
         }
         Action::OnEntryNormal => {
-            on_entry_normal(tx_to_core, tx_to_heartbeat, app_context).await;
+            on_entry_normal(tx_to_heartbeat).await;
             if tx_to_edge_state.send(StateGlobal::Normal).await.is_err() {
                 error!("no se pudo enviar StateGlobal::Normal a edge_state");
             }
@@ -354,11 +389,9 @@ async fn handle_action(
             session.reset_empty_hash();
             session.set_state(StateOfSession::SafeMode);
             on_entry_safe_mode(
-                tx_to_core,
                 tx_to_timer,
                 tx_to_heartbeat,
                 app_context,
-                &app_context.quorum,
             )
             .await;
             if tx_to_edge_state.send(StateGlobal::SafeMode).await.is_err() {
@@ -395,28 +428,6 @@ async fn handle_action(
 async fn init_timer(tx_to_timer: &mpsc::Sender<Event>, duration: Duration) {
     if tx_to_timer.send(Event::InitTimer(duration)).await.is_err() {
         error!("no se pudo enviar evento de inicialización del watchdog de fsm general");
-    }
-}
-
-async fn on_entry_init_balance_mode(
-    tx_to_core: &mpsc::Sender<FsmServiceResponse>,
-    app_context: AppContext,
-    current_epoch: &u32,
-) {
-    debug!("entrando a init_balance_mode");
-    let metadata = build_metadata(&app_context, "all");
-    send_balance_state(tx_to_core, metadata.clone(), *current_epoch).await;
-    let mut flag = true;
-    loop {
-        if tx_to_core.send(FsmServiceResponse::GetEpoch).await.is_err() {
-            error!("no se pudo enviar comando GetEpoch");
-            flag = false;
-        }
-        if flag {
-            break;
-        } else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
     }
 }
 
@@ -714,25 +725,9 @@ async fn on_entry_monitor(
 }
 
 async fn on_entry_normal(
-    tx_to_core: &mpsc::Sender<FsmServiceResponse>,
     tx_to_heartbeat: &mpsc::Sender<Action>,
-    app_context: &AppContext,
 ) {
     debug!("entrando a estado normal");
-    let metadata = build_metadata(app_context, "all");
-    let state = MessageStateNormal {
-        metadata,
-        state: "normal".to_string(),
-    };
-
-    if tx_to_core
-        .send(FsmServiceResponse::ToHub(HubMessage::StateNormal(state)))
-        .await
-        .is_err()
-    {
-        error!("no se pudo enviar el mensaje de Normal a los hubs");
-    }
-
     if tx_to_heartbeat
         .send(Action::SendHeartbeatMessageNormal)
         .await
@@ -743,11 +738,9 @@ async fn on_entry_normal(
 }
 
 async fn on_entry_safe_mode(
-    tx_to_core: &mpsc::Sender<FsmServiceResponse>,
     tx_to_timer: &mpsc::Sender<Event>,
     tx_to_heartbeat: &mpsc::Sender<Action>,
     app_context: &AppContext,
-    protocol_settings: &ProtocolSettings,
 ) {
     debug!("entrando a estado safe_mode");
     init_timer(
@@ -755,23 +748,6 @@ async fn on_entry_safe_mode(
         Duration::from_secs(app_context.quorum.get_timeout_safe_mode()),
     )
     .await;
-
-    let metadata = build_metadata(app_context, "all");
-    let jitter = fastrand::u32(0..=60);
-    let state = MessageStateSafeMode {
-        metadata: metadata.clone(),
-        state: "safe_mode".to_string(),
-        frequency: protocol_settings.get_frequency_safe_mode(),
-        jitter,
-    };
-
-    if tx_to_core
-        .send(FsmServiceResponse::ToHub(HubMessage::StateSafeMode(state)))
-        .await
-        .is_err()
-    {
-        error!("no se pudo enviar mensaje de SafeMode a los hubs");
-    }
 
     if tx_to_heartbeat
         .send(Action::SendHeartbeatMessageSafeMode)
@@ -944,29 +920,6 @@ fn build_metadata(app_context: &AppContext, destination: &str) -> Metadata {
     }
 }
 
-async fn send_balance_state(
-    tx_to_core: &mpsc::Sender<FsmServiceResponse>,
-    metadata: Metadata,
-    epoch: u32,
-) {
-    let state = MessageStateBalanceMode {
-        metadata,
-        state: "balance_mode".to_string(),
-        balance_epoch: epoch,
-        duration: 60,
-    };
-
-    if tx_to_core
-        .send(FsmServiceResponse::ToHub(HubMessage::StateBalanceMode(
-            state,
-        )))
-        .await
-        .is_err()
-    {
-        error!("no se pudo enviar mensaje StateBalanceMode");
-    }
-}
-
 async fn send_handshake(
     tx: &mpsc::Sender<FsmServiceResponse>,
     metadata: Metadata,
@@ -1013,7 +966,7 @@ async fn send_phase_notification(
     phase: String,
     protocol_settings: &ProtocolSettings,
 ) {
-    let jitter = fastrand::u32(0..=60);
+    let jitter = fastrand::u32(0..=5);
     let phase = PhaseNotification {
         metadata,
         state: "balance_mode".to_string(),
