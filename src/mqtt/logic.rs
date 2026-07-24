@@ -281,6 +281,7 @@ fn collect_subscriptions(manager: &NetworkManager) -> HashMap<String, SubEntry> 
         subs.insert(net.topic_hub_setting_ok.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_hub_setting_ok.qos)});
         subs.insert(net.topic_setting.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_setting.qos)});
         subs.insert(net.topic_queue_empty.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_queue_empty.qos)});
+        subs.insert(net.topic_queue_empty_safe.topic.clone(), SubEntry { active: true, subscribed: true, qos: cast_qos(&net.topic_queue_empty_safe.qos)});
     }
 
     subs
@@ -313,6 +314,7 @@ async fn update_subscriptions(manager: &NetworkManager, client: &AsyncClient, su
         all_topics(&net.topic_hub_setting_ok.topic, net.topic_hub_setting_ok.qos, subs);
         all_topics(&net.topic_setting.topic, net.topic_setting.qos, subs);
         all_topics(&net.topic_queue_empty.topic, net.topic_queue_empty.qos, subs);
+        all_topics(&net.topic_queue_empty_safe.topic, net.topic_queue_empty_safe.qos, subs);
     }
 
     let mut to_sub = Vec::new();

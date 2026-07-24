@@ -54,7 +54,6 @@ pub async fn create_table_measurement(pool: &SqlitePool) -> Result<(), sqlx::Err
             destination_id       TEXT NOT NULL,
             timestamp            INTEGER NOT NULL,
             pulse_counter        INTEGER NOT NULL,
-            pulse_max_duration   INTEGER NOT NULL,
             temperature          REAL NOT NULL,
             humidity             REAL NOT NULL,
             air_quality          REAL NOT NULL,
@@ -115,8 +114,8 @@ pub async fn insert_measurement(
     let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
         "INSERT INTO measurement (
             sender_user_id, destination_id, timestamp,
-            network_id, pulse_counter, pulse_max_duration,
-            temperature, humidity, air_quality, sample
+            network_id, pulse_counter, temperature, 
+            humidity, air_quality, sample
         ) ",
     );
 
@@ -126,7 +125,6 @@ pub async fn insert_measurement(
             .push_bind(data.metadata.timestamp)
             .push_bind(data.network.clone())
             .push_bind(data.pulse_counter)
-            .push_bind(data.pulse_max_duration)
             .push_bind(data.temperature)
             .push_bind(data.humidity)
             .push_bind(data.air_quality)

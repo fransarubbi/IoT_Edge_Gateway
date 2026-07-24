@@ -29,6 +29,7 @@ message FromEdge {
     EdgeState edge_state = 15;
     NetworkAck network_ack = 16;
     HubState hub_state = 17;
+    FirmwareOutcomeError outcome_error = 18;
   }
 }
 
@@ -58,11 +59,10 @@ message Measurement {
   Metadata metadata = 1;
   string network = 2;
   float pulse_counter = 3;
-  float pulse_max_duration = 4;
-  float temperature = 5;
-  float humidity = 6;
-  float air_quality = 7;
-  uint32 sample = 8;
+  float temperature = 4;
+  float humidity = 5;
+  float air_quality = 6;
+  uint32 sample = 7;
 }
 
 message AlertAir {
@@ -167,8 +167,13 @@ message UpdateFirmware {
 message FirmwareOutcome {
   Metadata metadata = 1;
   string network = 2;
-  bool is_ok = 3;
-  float percentage_ok = 4;
+  float percentage_ok = 3;
+}
+
+message FirmwareOutcomeError {
+  Metadata metadata = 1;
+  string network = 2;
+  string error = 3;
 }
 
 message HelloWorld {
@@ -182,14 +187,15 @@ message SystemMetrics {
   float cpu_usage_percent = 3;
   float cpu_temp_celsius = 4;
   uint64 ram_total_mb = 5;
-  uint64 ram_used_mb = 6;
-  uint64 sd_total_gb = 7;
-  uint64 sd_used_gb = 8;
-  float sd_usage_percent = 9;
-  uint64 network_rx_bytes = 10;
-  uint64 network_tx_bytes = 11;
-  int32 wifi_rssi = 12;
-  int32 wifi_signal_dbm = 13;
+  uint64 ram_used_by_service_mb = 6;
+  uint64 ram_used_mb = 7;
+  uint64 sd_total_gb = 8;
+  uint64 sd_used_gb = 9;
+  float sd_usage_percent = 10;
+  uint64 network_rx_bytes = 11;
+  uint64 network_tx_bytes = 12;
+  int32 wifi_rssi = 13;
+  int32 wifi_signal_dbm = 14;
 }
 
 message EdgeState {

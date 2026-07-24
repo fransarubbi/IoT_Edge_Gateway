@@ -20,6 +20,7 @@ use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument};
 
+
 /// Eventos de control para la coordinación del temporizador de métricas.
 ///
 /// Este enumerado define el protocolo de comunicación entre la tarea lógica (`system_metrics`)
@@ -55,7 +56,7 @@ pub async fn system_metrics(
     let mut metrics = MetricsCollector::new();
 
     if tx_to_timer
-        .send(MetricsTimerEvent::InitTimer(Duration::from_secs(120)))
+        .send(MetricsTimerEvent::InitTimer(Duration::from_secs(30)))
         .await
         .is_err()
     {
@@ -88,7 +89,7 @@ pub async fn system_metrics(
                         if tx_to_server.send(msg).await.is_err() {
                             error!("no se pudo enviar mensaje de métricas a MetricsService");
                         }
-                        if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(120))).await.is_err() {
+                        if tx_to_timer.send(MetricsTimerEvent::InitTimer(Duration::from_secs(30))).await.is_err() {
                             error!("no se pudo enviar evento InitTimer a metrics_timer");
                         }
                     },

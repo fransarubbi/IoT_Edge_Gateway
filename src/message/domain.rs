@@ -184,7 +184,7 @@ impl MessageService {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
                                 },
-                                HubMessage::UpdateFirmware(_) => {
+                                HubMessage::UpdateFirmwareRequest(_) => {
                                     if tx_command_to_hub.send(MessageServiceCommand::ToHub(to_hub)).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_hub");
                                     }
@@ -237,6 +237,11 @@ impl MessageService {
                                 ServerMessage::FirmwareOutcome(firmware_outcome) => {
                                     if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::FirmwareOutcome(firmware_outcome))).await.is_err() {
                                         error!("no se pudo enviar mensaje a msg_to_server");
+                                    }
+                                },
+                                ServerMessage::FirmwareOutcomeError(firmware_outcome_error) => {
+                                    if tx_command_to_server.send(MessageServiceCommand::ToServer(ServerMessage::FirmwareOutcomeError(firmware_outcome_error))).await.is_err() {
+                                        error!("no se pudo enviar mensaje FirmwareOutcomeError a msg_to_server");
                                     }
                                 },
                                 ServerMessage::Report(report) => {
@@ -334,8 +339,6 @@ pub struct Measurement {
     pub network: String,
     #[serde(rename = "pc")]
     pub pulse_counter: f32,
-    #[serde(rename = "pm")]
-    pub pulse_max_duration: f32,
     #[serde(rename = "t")]
     pub temperature: f32,
     #[serde(rename = "h")]
@@ -354,9 +357,9 @@ pub struct AlertAir {
     pub metadata: Metadata,
     #[serde(rename = "n")]
     pub network: String,
-    #[serde(rename = "i")]
+    #[serde(rename = "ia")]
     pub initial_air_quality: f32,
-    #[serde(rename = "a")]
+    #[serde(rename = "aa")]
     pub actual_air_quality: f32,
 }
 
@@ -587,22 +590,38 @@ pub struct UpdateFirmware {
     pub network: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateFirmwareRequestHub {
+    #[serde(rename = "m")]
+    pub metadata: Metadata,
+    #[serde(rename = "n")]
+    pub network: String,
+    #[serde(rename = "v")]
+    pub version: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FirmwareOk {
     #[serde(rename = "m")]
     pub metadata: Metadata,
-    #[serde(rename = "v")]
-    pub version: String,
-    #[serde(rename = "o")]
-    pub is_ok: bool,
+    #[serde(rename = "u")]
+    pub is_updated: bool,
+    #[serde(rename = "s")]
+    pub success: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FirmwareOutcome {
     pub metadata: Metadata,
     pub network: String,
-    pub is_ok: bool,
     pub percentage_ok: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FirmwareOutcomeError {
+    pub metadata: Metadata,
+    pub network: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -613,6 +632,7 @@ pub struct SystemMetrics {
     pub cpu_temp_celsius: f32,
     pub ram_total_mb: u64,
     pub ram_used_mb: u64,
+    pub ram_used_by_service_mb: u64,
     pub sd_total_gb: u64,
     pub sd_used_gb: u64,
     pub sd_usage_percent: f32,
@@ -692,7 +712,7 @@ pub enum HubMessage {
     HubState(HubState),
 
     // Mensajes para el Hub
-    UpdateFirmware(UpdateFirmware),
+    UpdateFirmwareRequest(UpdateFirmwareRequestHub),
     FromServerSettings(Settings),
     FromServerSettingsAck(SettingOk),
     DeleteHub(DeleteHub),
@@ -717,6 +737,7 @@ pub enum ServerMessage {
 
     // Mensajes para el Server
     FirmwareOutcome(FirmwareOutcome),
+    FirmwareOutcomeError(FirmwareOutcomeError),
     HelloWorld(HelloWorld), // y proveniente del server tambien
     FromHubSettings(Settings),
     FromHubSettingsAck(SettingOk),
