@@ -14,7 +14,7 @@ pub mod sqlite {
 
 pub mod firmware {
     use tokio::time::{Duration};
-    pub const OTA_TIMEOUT: Duration = Duration::from_secs(300); // 5 min
+    pub const OTA_TIMEOUT: Duration = Duration::from_secs(120); // 2 min
 }
 
 pub mod fsm {

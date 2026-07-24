@@ -966,7 +966,7 @@ async fn send_phase_notification(
     phase: String,
     protocol_settings: &ProtocolSettings,
 ) {
-    let jitter = fastrand::u32(0..=5);
+    let jitter = fastrand::u32(0..=10);
     let phase = PhaseNotification {
         metadata,
         state: "balance_mode".to_string(),

@@ -22,7 +22,7 @@ use crate::grpc::from_edge::Payload;
 use crate::grpc::{
     EdgeState as StateEdge, FirmwareOutcome, FromEdge, HelloWorld as Hello,
     NetworkAck as AckNetwork, SettingOk as SettOk, Settings as Sett, SystemMetrics, ToEdge,
-    to_edge, HubState as Hub,
+    to_edge, HubState as Hub, FirmwareOutcomeError
 };
 use crate::message::domain::{
     AlertAir, AlertTh, DeleteHub, EdgeState, EmptyQueue, EmptyQueueSafeMode, FirmwareOk,
@@ -262,9 +262,11 @@ pub async fn msg_from_hub(
                                     from_slice::<Settings>(&payload).ok().map(HubMessage::FromHubSettings)
                                 } else if topic.ends_with("linkage_request") {
                                     from_slice::<LinkageRequest>(&payload).ok().map(HubMessage::LinkageRequest)
-                                } else if topic.ends_with("empty_queue") {
+                                } else if topic.ends_with("empty_queue_safe") {
+                                    from_slice::<EmptyQueueSafeMode>(&payload).ok().map(HubMessage::EmptyQueueSafe)
+                                } 
+                                else if topic.ends_with("empty_queue") {
                                     from_slice::<EmptyQueue>(&payload).ok().map(HubMessage::EmptyQueue)
-                                        .or_else(|| from_slice::<EmptyQueueSafeMode>(&payload).ok().map(HubMessage::EmptyQueueSafe))
                                 } else {
                                     None
                                 };
@@ -631,8 +633,19 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                     timestamp: firmware_outcome.metadata.timestamp,
                 }),
                 network: firmware_outcome.network,
-                is_ok: firmware_outcome.is_ok,
                 percentage_ok: firmware_outcome.percentage_ok,
+            }))
+        }
+        ServerMessage::FirmwareOutcomeError(firmware_outcome) => {
+            debug!("serializando mensaje FirmwareOutcomeError para el servidor");
+            Some(Payload::OutcomeError(FirmwareOutcomeError {
+                metadata: Some(grpc::Metadata {
+                    sender_user_id: firmware_outcome.metadata.sender_user_id,
+                    destination_id: firmware_outcome.metadata.destination_id,
+                    timestamp: firmware_outcome.metadata.timestamp,
+                }),
+                network: firmware_outcome.network,
+                error: firmware_outcome.error,
             }))
         }
         ServerMessage::Report(report) => {
@@ -645,7 +658,6 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                 }),
                 network: report.network, // Asegúrate de mapear este campo requerido por el proto
                 pulse_counter: report.pulse_counter,
-                pulse_max_duration: report.pulse_max_duration,
                 temperature: report.temperature,
                 humidity: report.humidity,
                 air_quality: report.air_quality,
@@ -701,12 +713,12 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                     destination_id: metrics.metadata.destination_id,
                     timestamp: metrics.metadata.timestamp,
                 }),
-                // Nota: SystemMetrics en tu proto NO tiene campo 'network', así que no lo ponemos aquí.
                 uptime_seconds: metrics.uptime_seconds,
                 cpu_usage_percent: metrics.cpu_usage_percent,
                 cpu_temp_celsius: metrics.cpu_temp_celsius,
                 ram_total_mb: metrics.ram_total_mb,
                 ram_used_mb: metrics.ram_used_mb,
+                ram_used_by_service_mb: metrics.ram_used_by_service_mb,
                 sd_total_gb: metrics.sd_total_gb,
                 sd_used_gb: metrics.sd_used_gb,
                 sd_usage_percent: metrics.sd_usage_percent,
@@ -728,7 +740,6 @@ fn convert_to_proto_upload(msg: ServerMessage, edge_id: String) -> Option<FromEd
                     }),
                     network: r.network,
                     pulse_counter: r.pulse_counter,
-                    pulse_max_duration: r.pulse_max_duration,
                     temperature: r.temperature,
                     humidity: r.humidity,
                     air_quality: r.air_quality,

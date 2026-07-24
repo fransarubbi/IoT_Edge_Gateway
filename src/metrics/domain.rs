@@ -13,6 +13,7 @@
 use sysinfo::{System, Disks, Networks};
 use std::fs;
 use std::process::Command;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -80,6 +81,7 @@ pub struct MetricsCollector {
     networks: Networks,
     last_rx_bytes: u64,
     last_tx_bytes: u64,
+    start_time: Instant,
 }
 
 
@@ -118,6 +120,7 @@ impl MetricsCollector {
             networks,
             last_rx_bytes,
             last_tx_bytes,
+            start_time: Instant::now(),
         }
     }
 
@@ -195,8 +198,12 @@ impl MetricsCollector {
         let wifi_rssi = wifi.as_ref().map(|w| w.rssi);
         let wifi_signal_dbm  = wifi.as_ref().map(|w| w.dbm);
 
+        let ram_used_by_service_mb = match read_service_memory_mb() {
+            Some(ram) => ram,
+            _ => 0,
+        };
 
-        let uptime_seconds = System::uptime();
+        let uptime_seconds = self.start_time.elapsed().as_secs();
 
         SystemMetrics {
             metadata,
@@ -205,6 +212,7 @@ impl MetricsCollector {
             cpu_temp_celsius,
             ram_total_mb,
             ram_used_mb,
+            ram_used_by_service_mb,
             sd_total_gb,
             sd_used_gb,
             sd_usage_percent,
@@ -295,4 +303,28 @@ fn calculate_rssi_from_dbm(dbm: i32) -> i32 {
         // Escala lineal de -90 a -30 → 0 a 100
         ((dbm + 90) * 100 / 60).max(0).min(100)
     }
+}
+
+
+/// Lee la memoria RAM real (Resident Set Size) consumida por este proceso.
+///
+/// Intenta leer `/proc/self/status` y buscar la línea VmRSS.
+///
+/// # Retorno
+/// * `Some(u64)`: Memoria en Megabytes (MB).
+/// * `None`: Si falla la lectura o el parseo.
+fn read_service_memory_mb() -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/self/status").ok()?;
+    
+    for line in content.lines() {
+        if line.starts_with("VmRSS:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // parts[0] = "VmRSS:", parts[1] = valor, parts[2] = "kB"
+            if parts.len() >= 2 {
+                let kb: u64 = parts[1].parse().ok()?;
+                return Some((kb * 1024) / 1000000); // Convertir de KiB a MB
+            }
+        }
+    }
+    None
 }

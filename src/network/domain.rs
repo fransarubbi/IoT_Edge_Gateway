@@ -22,7 +22,6 @@ use crate::database::domain::DataServiceCommand;
 use crate::message::domain::{HubMessage, ServerMessage};
 use crate::network::logic::{network_admin, network_dba};
 use crate::system::domain::System;
-use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::collections::{HashMap, HashSet};
@@ -292,17 +291,13 @@ impl NetworkManager {
         }
     }
 
-    /// Obtener un id de un Hub aleatorio perteneciente a una determinada red.
-    pub fn get_random_hub_id_by_network(&self, id_net: &str) -> Option<String> {
-        let hubs_set = self.hubs.get(id_net)?;
-        let random_hub = hubs_set.iter().choose(&mut rand::thread_rng())?;
-        Some(random_hub.id.clone())
-    }
-
-    /// Obtener la cantidad de Hubs asociados a una red en particular.
-    pub fn get_total_hubs_by_network(&self, id_net: &str) -> Option<usize> {
-        let hubs_set = self.hubs.get(id_net)?;
-        Some(hubs_set.len())
+    /// Obtener todos los IDs de los Hubs pertenecientes a una red en particular.
+    pub fn get_all_hub_ids_by_network(&self, id_network: &str) -> Vec<String> {
+        if let Some(hubs_set) = self.hubs.get(id_network) {
+            hubs_set.iter().map(|hub| hub.id.clone()).collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Obtiene la cantidad total de hubs asociados al Edge.
@@ -318,7 +313,7 @@ impl NetworkManager {
     /// Resuelve el tópico MQTT específico de salida basándose en el tipo de mensaje a enviar al Hub.
     pub fn get_topic_to_send_msg_to_hub(&self, msg: &HubMessage) -> Option<Topic> {
         match msg {
-            HubMessage::UpdateFirmware(firmware) => {
+            HubMessage::UpdateFirmwareRequest(firmware) => {
                 let id_net = firmware.network.clone();
                 if let Some(n) = self.networks.get(&id_net) {
                     Some(n.topic_new_firmware.clone())
@@ -395,6 +390,7 @@ pub struct Network {
     pub topic_balance_mode_handshake: Topic,
     pub topic_setting: Topic,
     pub topic_queue_empty: Topic,
+    pub topic_queue_empty_safe: Topic,
 
     // ================= Tópicos Publicados (Outbound) =================
     pub topic_new_setting: Topic,
@@ -426,6 +422,7 @@ impl Network {
         let t_delete_hub = format!("iot/{id_network}/delete_hub");
         let t_active = format!("iot/{id_network}/active");
         let t_queue_empty = format!("iot/{id_network}/hub/+/empty_queue");
+        let t_queue_empty_safe = format!("iot/{id_network}/hub/+/empty_queue_safe");
 
         Self {
             id_network,
@@ -435,15 +432,16 @@ impl Network {
             topic_alert_temp: Topic::new(t_alert_temp, 1),
             topic_monitor: Topic::new(t_monitor, 0),
             topic_hub_setting_ok: Topic::new(t_hub_setting_ok, 0),
-            topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 0),
+            topic_hub_firmware_ok: Topic::new(t_hub_firmware_ok, 2),
             topic_balance_mode_handshake: Topic::new(t_balance_mode_handshake, 0),
             topic_setting: Topic::new(t_setting, 0),
             topic_new_setting: Topic::new(t_new_setting, 0),
-            topic_new_firmware: Topic::new(t_new_firmware, 0),
+            topic_new_firmware: Topic::new(t_new_firmware, 2),
             topic_setting_ok: Topic::new(t_setting_ok, 0),
             topic_delete_hub: Topic::new(t_delete_hub, 0),
             topic_active_hub: Topic::new(t_active, 1),
             topic_queue_empty: Topic::new(t_queue_empty, 1),
+            topic_queue_empty_safe: Topic::new(t_queue_empty_safe, 1),
             active,
         }
     }

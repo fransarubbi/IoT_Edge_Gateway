@@ -1,11 +1,14 @@
 [package]
 name = "iot_edge_gateway"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2024"
 
 [dependencies]
 # Async Runtime
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "signal"] }
+
+# Consultas http
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # MQTT
 rumqttc = "0.25.1"
